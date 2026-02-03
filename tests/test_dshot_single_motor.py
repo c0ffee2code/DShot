@@ -22,11 +22,12 @@ COMMAND_INTERVAL_MS = 1  # Send commands every X ms
 def test_single_motor():
     print("=== Single Motor Test (Low-level DShotPIO) ===")
     print(f"Pin: GPIO {MOTOR_PIN}")
-    print(f"Speed: DSHOT600")
+    print(f"Speed: {DSHOT_SPEED}")
     print()
 
     # Create motor driver
     motor = DShotPIO(0, MOTOR_PIN, DSHOT_SPEED)
+    motor.start()
 
     try:
         # Phase 1: Arming

@@ -7,7 +7,8 @@
 #
 # Hardware: Two ESCs + motors on GPIO 4 and GPIO 5
 
-from dshot_pio import DShotPIO, DSHOT_SPEEDS
+from machine import Pin
+from dshot_pio import DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
 import utime
 
@@ -24,15 +25,11 @@ def test_motor_group():
     print("=== Motor Throttle Group Test ===")
     print(f"Motor 1: GPIO {MOTOR1_PIN}")
     print(f"Motor 2: GPIO {MOTOR2_PIN}")
-    print(f"Speed: DSHOT600")
+    print(f"Speed: {DSHOT_SPEED}")
     print()
 
-    # Create individual motor drivers
-    motor1 = DShotPIO(0, MOTOR1_PIN, DSHOT_SPEED)
-    motor2 = DShotPIO(1, MOTOR2_PIN, DSHOT_SPEED)
-
-    # Create motor throttle group facade
-    motors = MotorThrottleGroup([motor1, motor2])
+    # Create motor throttle group facade (accepts Pin objects, creates DShotPIO internally)
+    motors = MotorThrottleGroup([Pin(MOTOR1_PIN), Pin(MOTOR2_PIN)], DSHOT_SPEED)
 
     try:
         # Start Core 1 command loop

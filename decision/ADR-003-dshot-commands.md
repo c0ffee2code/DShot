@@ -1,6 +1,6 @@
 # ADR-003: DShot Special Commands Implementation
 
-**Status:** Implemented (not functional on current hardware)
+**Status:** Blocked (cannot verify - several different ESCs required for testing)
 **Date:** 2026-02-01
 **Context:** Implementing DShot special commands beyond throttle control
 
@@ -48,7 +48,7 @@ DShot commands require ESC firmware that implements them:
 
 ## Decision
 
-Implement special commands in `DShotPIO` driver. The code is ready for compatible ESCs, but non-functional on current hardware.
+Defer implementation of special commands in `DShotPIO` driver until several different ESCs are available for testing. The API design below documents the intended interface.
 
 ### API Design
 
@@ -80,17 +80,17 @@ class DShotPIO:
 
 | Component | Status |
 |-----------|--------|
-| `DSHOT_CMD` constants | Implemented |
-| `sendCommand()` method | Implemented |
-| Beep functionality | Code ready, ESC incompatible |
-| Spin direction | Code ready, ESC incompatible |
+| `DSHOT_CMD` constants | Not implemented |
+| `sendCommand()` method | Not implemented |
+| Beep functionality | Blocked - several different ESCs required for testing |
+| Spin direction | Blocked - several different ESCs required for testing |
 
 ## Consequences
 
 ### Current State
 
-- Code is implemented and ready for compatible ESCs
-- No test programs included (removed due to hardware incompatibility)
+- Implementation blocked until several different ESCs available for testing
+- API design documented above for future implementation
 - Motors already spin in opposite directions, no configuration needed
 
 ### Future

@@ -39,21 +39,30 @@ class DShotPIO:
     def start(self):
         self._sm.active(1)
 
-    # Every time this is called, one 16 bit throttle packet will be sent on the configured wire
-    def sendThrottleCommand(self, throttle):    
-        if throttle<0:
+    def sendThrottleCommand(self, throttle):
+        """
+        Send a throttle command to the ESC.
+
+        Args:
+            throttle: Throttle value (0-2047)
+
+        Note: DShot protocol includes a telemetry request bit, but this implementation
+        always sets it to 0. Telemetry requires bidirectional DShot which is not
+        implemented (see ADR-002).
+        """
+        if throttle < 0:
             raise InvalidThrottleException("Throttle should be greater than 0.")
-        if throttle>2047:
+        if throttle > 2047:
             raise InvalidThrottleException("Throttle value is too high. Maximum value is 2047.")
-        # Shift bits one left to set telemetry bit to 0
-        throttleWithTelemetry = throttle << 1
-        
-        # Calculate CRC 
-        crc = (throttleWithTelemetry ^ (throttleWithTelemetry >> 4) ^ (throttleWithTelemetry >> 8)) & 0x0F
-        
-        # Add CRC to the end of the binary
-        # Should now look like SSSSSSSSSSSTCCCC (S: Throttle bits, T: Telemetry bit, C: CRC bits)
-        dShotPacket = (throttleWithTelemetry << 4) | crc
+
+        # Build 12-bit value: 11-bit throttle shifted left, telemetry bit = 0
+        packetValue = throttle << 1
+
+        # Calculate 4-bit CRC
+        crc = (packetValue ^ (packetValue >> 4) ^ (packetValue >> 8)) & 0x0F
+
+        # Build 16-bit packet: SSSSSSSSSSSTCCCC (S=throttle, T=telemetry=0, C=CRC)
+        dShotPacket = (packetValue << 4) | crc
         
         # Since the state machine consumes the bits from high order to low order, we need to shift the
         #  data all the way to the high bit

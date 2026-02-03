@@ -1,6 +1,6 @@
 # DShot Driver for Raspberry Pi Pico
 
-DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using PIO, designed for flight control test benches.
+DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using PIO, built for pet project - flight control test bench.
 
 ## Features
 
@@ -113,10 +113,12 @@ motors.stop()
 
 ## Verified Parameters
 
+Tested with specific hardware (JHEMCU 40A ESC + test bench motors). May differ with other ESC/motor combinations.
+
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Protocol | DShot600 | Best balance of speed and reliability |
-| Minimum throttle | 70 | Below this, motors may stall |
+| Minimum throttle | 70 | Hardware-specific; values 50-69 unreliable on test bench |
 | Command interval | 1ms | Required for reliable operation |
 | Arming duration | 500ms | Works with BLHeli_S firmware |
 
@@ -149,7 +151,7 @@ See [DSHOT_PROTOCOL.md](specification/DSHOT_PROTOCOL.md) for complete protocol d
 
 | Feature | Status | Dependencies |
 |---------|--------|--------------|
-| **DShot commands** | Planned | None - beeps, spin direction |
+| **DShot commands** | Blocked | Several different ESCs required for testing |
 | **Bidirectional DShot** | Deferred | ESC firmware: Bluejay, BLHeli_32, or AM32 |
 | **Extended telemetry (EDT)** | Blocked | Bidirectional DShot + compatible firmware |
 

@@ -233,9 +233,11 @@ This is safe because each write is atomic and Core 1 will pick up the zeros with
 
 ### Verified Parameters
 
+Tested with specific hardware (JHEMCU 40A ESC + test bench motors). Not tested with alternative hardware.
+
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Minimum throttle | 70 | Below this, motors unreliable |
+| Minimum throttle | 70 | Hardware-specific; values 50-69 unreliable on test bench |
 | Command interval (single-threaded) | 1ms | 2ms caused occasional dropouts |
 | Command interval (facade) | 1ms | Core 1 maintains steady 1kHz |
 | Arming duration | 500ms | Reliable with BLHeli_S firmware |

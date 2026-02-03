@@ -13,7 +13,7 @@ Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0
 | Goal | Status | Details |
 |------|--------|---------|
 | **Improve arming sequence** | Done | ADR-001: Dual-core facade solves timing issues |
-| **DShot commands** | Deferred | ADR-003: Beeps and spin direction - not needed for test bench |
+| **DShot commands** | Blocked | ADR-003: Several different ESCs required for testing |
 | **Bidirectional DShot** | Deferred | ADR-002: Needs Bluejay firmware or BLHeli_32/AM32 ESCs |
 
 ## Development Environment
@@ -40,7 +40,7 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 1. **`MotorThrottleGroup` class**: Manages multiple motors with guaranteed 1kHz command rate via Core 1 dedicated loop. Provides `arm()`, `setThrottle()`, `emergencyStop()`.
 
-2. **Lock-free design**: Shared throttle array allows Core 0 to update values while Core 1 continuously sends commands.
+2. **Lock-free design**: Shared throttle array allows Core 0 to update values while Core 1 continuously sends commands. See ADR-001 for technical details on atomic writes.
 
 ### DShot Protocol
 
