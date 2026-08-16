@@ -12,7 +12,8 @@ Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0
 
 | Goal | Status | Details |
 |------|--------|---------|
-| **Improve arming sequence** | Done | ADR-001: Dual-core facade solves timing issues |
+| **Improve arming sequence** | Done | ADR-001: continuous 1kHz commands solve timing issues |
+| **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
 | **DShot commands** | Blocked | ADR-003: Several different ESCs required for testing |
 | **Bidirectional DShot** | Deferred | ADR-002: Needs Bluejay firmware or BLHeli_32/AM32 ESCs |
 
@@ -24,6 +25,13 @@ Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0
 
 Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremote.
 
+## Code Style
+
+- **No `_` prefix for visibility.** This is MicroPython on a microcontroller, not a published CPython package — attributes and methods are named plainly (`self.motors`, `self.state`, `runner.loop()`). The underscore convention buys nothing here and just adds noise. `_thread` (a stdlib module) and `__init__` are unaffected, as is `for _ in range(n)` for a throwaway loop variable.
+- **snake_case** throughout `driver/`, including method names.
+- Prefer plain attributes over accessor methods. Keep a method only when it does real work — `get_all_throttles()` converts an `array` to a list, `is_armed()` compares against a state constant.
+- Avoid f-strings on error paths in `driver/`; they allocate, and that code may run on a core with a constrained stack.
+
 ## Architecture
 
 ### Core Components
@@ -34,13 +42,23 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 2. **`DSHOT_SPEEDS` class**: Protocol variant constants (DSHOT150/300/600/1200). Values are clock frequencies: `bit_rate * 8_cycles_per_bit`.
 
-3. **`DShotPIO` class**: Main driver. Initializes PIO state machine on specified pin, provides `sendThrottleCommand(throttle)` to send 16-bit packets (11-bit throttle + 1-bit telemetry + 4-bit CRC).
+3. **`DShotPIO` class**: Main driver. Creates a PIO state machine on the specified pin (inactive until `start()`), provides `send_throttle_command(throttle)` to send 16-bit packets (11-bit throttle + 1-bit telemetry + 4-bit CRC), and `stop()` to deactivate.
 
-**`driver/motor_throttle_group.py`** - Dual-core facade (see ADR-001):
+**`driver/motor_throttle_group.py`** - Multi-motor facade (see ADR-004):
 
-1. **`MotorThrottleGroup` class**: Manages multiple motors with guaranteed 1kHz command rate via Core 1 dedicated loop. Provides `arm()`, `setThrottle()`, `emergencyStop()`.
+1. **`MotorThrottleGroup` class**: Owns the PIO state machines and throttle values for a group of motors. Provides `arm()`, `disarm()`, `update()`, `is_armed()`, `set_throttle()`.
 
-2. **Lock-free design**: Shared throttle array allows Core 0 to update values while Core 1 continuously sends commands. See ADR-001 for technical details on atomic writes.
+2. **Core-agnostic by design**: The library does **not** spawn threads or pick a core. The application calls `update()` at least every 1ms from wherever its architecture dictates. Do not add `_thread` to anything under `driver/` — that inversion is the whole point of ADR-004.
+
+3. **Non-blocking arming**: `arm()` opens the arming window and returns; `update()` completes it. The application polls `is_armed()`. This is what lets the library work in a cooperative single-core loop as well as on a dedicated core.
+
+4. **`update()` is inert while disarmed**: a safety requirement, not an optimisation. Writing to deactivated state machines would fill the TX FIFO and block the calling core forever.
+
+5. **`disarm()` transmits its own zeros**, then drains them, then deactivates — in that order. It is the one method in the facade that blocks (a few hundred microseconds). Deactivating alone is not a stop: the motor keeps spinning at its last throttle until the ESC's own 100-250ms signal-loss timeout expires. Do not "optimise" the transmit away.
+
+6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
+
+**`tests/core1_runner.py`** - Example application code, deliberately *not* part of the library. A Core 1 loop that drives `update()` at 1kHz; projects copy and adapt it.
 
 ### DShot Protocol
 
@@ -57,12 +75,24 @@ See `specification/DSHOT_PROTOCOL.md` for complete protocol documentation includ
 from machine import Pin
 from dshot_pio import DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
+from core1_runner import Core1Runner  # application code, see tests/
+import utime
 
 motors = MotorThrottleGroup([Pin(4), Pin(5)], DSHOT_SPEEDS.DSHOT600)
-motors.start()  # Start Core 1 loop
-motors.arm()    # Arm ESCs
-motors.setThrottle(0, 100)  # Motor 0
-motors.setThrottle(1, 150)  # Motor 1
+
+# The application picks the core - here, a dedicated Core 1 loop
+runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
+runner.start()
+
+motors.arm()                    # non-blocking
+while not motors.is_armed():
+    utime.sleep_ms(10)
+
+motors.set_throttle(0, 100)     # Motor 0
+motors.set_throttle(1, 150)     # Motor 1
+
+motors.disarm()                 # commands zero, then cuts the signal
+runner.stop()
 ```
 
 **Low-level (single motor):**
@@ -72,5 +102,6 @@ from dshot_pio import DShotPIO, DSHOT_SPEEDS
 
 motor = DShotPIO(0, Pin(4), DSHOT_SPEEDS.DSHOT600)
 motor.start()  # Activate PIO state machine
-motor.sendThrottleCommand(100)  # Must call continuously at 1ms intervals
+motor.send_throttle_command(100)  # Must call continuously at 1ms intervals
+motor.stop()   # Deactivate
 ```

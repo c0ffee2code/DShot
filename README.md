@@ -5,8 +5,8 @@ DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using
 ## Features
 
 - **DShot150/300/600/1200** protocol support via PIO state machines
-- **Dual-core architecture** for reliable motor control
-- **Lock-free design** for low-latency throttle updates
+- **Scheduling-agnostic** - your application decides which core runs the command loop
+- **Lock-free design** for low-latency throttle updates across cores
 - **MicroPython** runtime (no external dependencies)
 
 ## Hardware
@@ -43,27 +43,39 @@ This driver was developed and tested on a flight control test bench:
 
 ## Architecture
 
-The driver uses a three-layer architecture (see [ADR-001](decision/ADR-001-dual-core-motor-control.md)):
+The driver uses a three-layer architecture. The library is deliberately
+core-agnostic: it exposes `update()`, and **your application decides where that
+runs** - a dedicated Core 1 thread, a timer IRQ, or its own main loop. See
+[ADR-004](decision/ADR-004-client-owned-command-loop.md) for why, and
+[ADR-001](decision/ADR-001-dual-core-motor-control.md) for the timing
+requirements that drive it.
 
 ```
 ┌─────────────────────────────────────┐
-│         Client Code (Core 0)        │
+│            Application              │
 │   UI, control algorithms, sensors   │
+│   OWNS THE COMMAND LOOP             │
 └──────────────────┬──────────────────┘
-                   │ setThrottle()
+                   │ update()  ── at least every 1ms
+                   │ set_throttle()
                    ▼
 ┌─────────────────────────────────────┐
-│    MotorThrottleGroup Facade (Both)    │
-│  Core 0: API, throttle updates      │
-│  Core 1: 1kHz command transmission  │
+│    MotorThrottleGroup Facade        │
+│  Throttle state, arming sequence,   │
+│  PIO lifecycle. Core-agnostic.      │
 └──────────────────┬──────────────────┘
-                   │ sendThrottleCommand()
+                   │ send_throttle_command()
                    ▼
 ┌─────────────────────────────────────┐
-│       DShotPIO Driver (Core 1)      │
+│          DShotPIO Driver            │
 │     PIO state machine, encoding     │
 └─────────────────────────────────────┘
 ```
+
+ESCs disarm if commands stop arriving, so whatever context you choose must call
+`update()` at least every millisecond. On this test bench that means a dedicated
+Core 1 thread, keeping Core 0 free for the display and buttons - see
+`tests/core1_runner.py` for a ready-made example to copy into your project.
 
 ## Quick Start
 
@@ -79,13 +91,15 @@ motor.start()  # Activate PIO state machine
 
 # Arm ESC (send throttle=0 for 500ms)
 for _ in range(500):
-    motor.sendThrottleCommand(0)
+    motor.send_throttle_command(0)
     utime.sleep_ms(1)
 
 # Run motor
 while True:
-    motor.sendThrottleCommand(100)
+    motor.send_throttle_command(100)
     utime.sleep_ms(1)
+
+motor.stop()  # Deactivate - the ESC times out and the motor cannot spin
 ```
 
 ### Multiple Motors (Recommended)
@@ -94,21 +108,45 @@ while True:
 from machine import Pin
 from dshot_pio import DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
+from core1_runner import Core1Runner  # your code - see tests/core1_runner.py
+import utime
 
 # Create group with Pin objects (DShotPIO instances created internally)
 motors = MotorThrottleGroup([Pin(4), Pin(5)], DSHOT_SPEEDS.DSHOT600)
-motors.start()  # Start 1kHz command loop on Core 1
-motors.arm()    # Arm all ESCs
+
+# You choose where the command loop runs. This one dedicates Core 1.
+runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
+runner.start()
+
+# Arming is non-blocking - poll while doing something useful
+motors.arm()
+while not motors.is_armed():
+    utime.sleep_ms(10)
 
 # Control motors independently
-motors.setThrottle(0, 100)  # Motor 1
-motors.setThrottle(1, 150)  # Motor 2
+motors.set_throttle(0, 100)  # Motor 1
+motors.set_throttle(1, 150)  # Motor 2
 
 # Or update all at once
-motors.setAllThrottles([100, 150])
+motors.set_all_throttles([100, 150])
 
-# Cleanup
-motors.stop()
+# Commands zero throttle and then cuts the signal, whether or not the loop
+# is still alive. The only call in the API that blocks - for ~0.3ms.
+motors.disarm()
+runner.stop()
+```
+
+### Without a Second Core
+
+The same group works when you pump it from your own main loop - useful when
+Core 1 is busy or unavailable:
+
+```python
+motors.arm()
+while True:
+    motors.update()          # must happen at least every 1ms
+    ...your work here...
+    utime.sleep_us(motors.UPDATE_INTERVAL_US)
 ```
 
 ## Verified Parameters
@@ -125,18 +163,22 @@ Tested with specific hardware (JHEMCU 40A ESC + test bench motors). May differ w
 ## Project Structure
 
 ```
-├── driver/
-│   ├── dshot_pio.py          # Low-level PIO driver
-│   └── motor_throttle_group.py  # Dual-core facade
-├── tests/
-│   ├── test_dshot_single_motor.py  # Single motor test
-│   ├── test_motor_throttle_group.py   # Multi-motor test
-│   └── demo_manual_control.py      # Interactive demo with display
+├── driver/                          # the library - core-agnostic
+│   ├── dshot_pio.py                 # Low-level PIO driver
+│   └── motor_throttle_group.py      # Multi-motor facade
+├── tests/                           # application code
+│   ├── core1_runner.py              # Example Core 1 loop (copy into your project)
+│   ├── test_dshot_single_motor.py   # Single motor test
+│   ├── test_motor_throttle_group.py # Multi-motor test
+│   └── demo_manual_control.py       # Interactive demo with display
 ├── specification/
 │   └── DSHOT_PROTOCOL.md     # Protocol documentation
 └── decision/
-    └── ADR-001-*.md          # Architecture decision record
+    └── ADR-00N-*.md          # Architecture decision records
 ```
+
+Nothing under `driver/` imports `_thread` or picks a core. `core1_runner.py`
+lives in `tests/` because it is an application concern, not a DShot one.
 
 ## DShot Protocol
 

@@ -34,7 +34,7 @@ def test_single_motor():
         print("Arming ESC...")
         arm_start = utime.ticks_ms()
         while utime.ticks_diff(utime.ticks_ms(), arm_start) < ARM_DURATION_MS:
-            motor.sendThrottleCommand(0)
+            motor.send_throttle_command(0)
             utime.sleep_ms(COMMAND_INTERVAL_MS)
         print("Armed.")
         print()
@@ -45,7 +45,7 @@ def test_single_motor():
         run_duration_ms = RUN_DURATION_SEC * 1000
 
         while utime.ticks_diff(utime.ticks_ms(), run_start) < run_duration_ms:
-            motor.sendThrottleCommand(THROTTLE_MIN)
+            motor.send_throttle_command(THROTTLE_MIN)
             utime.sleep_ms(COMMAND_INTERVAL_MS)
 
         print("Run complete.")
@@ -55,16 +55,22 @@ def test_single_motor():
         print("Stopping motor...")
         stop_start = utime.ticks_ms()
         while utime.ticks_diff(utime.ticks_ms(), stop_start) < 500:
-            motor.sendThrottleCommand(0)
+            motor.send_throttle_command(0)
             utime.sleep_ms(COMMAND_INTERVAL_MS)
         print("Motor stopped and disarmed.")
 
     except KeyboardInterrupt:
         print("\nInterrupted! Emergency stop...")
         for _ in range(100):
-            motor.sendThrottleCommand(0)
+            motor.send_throttle_command(0)
             utime.sleep_ms(COMMAND_INTERVAL_MS)
         print("Motor stopped.")
+
+    finally:
+        # Deactivate the state machine - the line stops carrying DShot
+        # transitions, so the ESC times out and the motor cannot spin
+        motor.stop()
+        print("State machine deactivated.")
 
     print()
     print("=== Test Complete ===")

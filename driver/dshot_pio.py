@@ -3,6 +3,7 @@
 # Licensed under GNU General Public License v3.0
 # DShot protocol reference: https://brushlesswhoop.com/dshot-and-bidirectional-dshot/
 
+import utime
 from rp2 import PIO, StateMachine, asm_pio
 
 class InvalidThrottleException(Exception):
@@ -32,14 +33,63 @@ class DSHOT_SPEEDS:
 
 
 class DShotPIO:
-    # Once the class is initialized, it will create and enable the state machine
-    def __init__(self, stateMachineID, pin, dshotSpeed=DSHOT_SPEEDS.DSHOT150):
-        self._sm = StateMachine(stateMachineID, dshot, freq=dshotSpeed, sideset_base=pin)
+    # Words the PIO TX FIFO holds before put() starts blocking
+    TX_FIFO_DEPTH = 4
+
+    # Creates the state machine but leaves it inactive - call start() to enable it
+    def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT150):
+        self.sm = StateMachine(state_machine_id, dshot, freq=dshot_speed, sideset_base=pin)
+
+        # Wall-clock time of one 16-bit frame at 8 PIO cycles per bit, rounded
+        # up so a wait built from it is never short
+        self.frame_us = (16 * 8 * 1_000_000 + dshot_speed - 1) // dshot_speed
 
     def start(self):
-        self._sm.active(1)
+        self.sm.active(1)
 
-    def sendThrottleCommand(self, throttle):
+    def drain(self):
+        """
+        Block until everything queued has been transmitted.
+
+        Call this before stop() when the queued frames still need to reach the
+        ESC - stop() cuts them off otherwise. It also parks the line low: with
+        the FIFO empty the program stalls on its side(0) out instruction.
+
+        Only meaningful on an active state machine. The wait is bounded rather
+        than a spin on tx_fifo(), so calling it on an inactive one costs a few
+        hundred microseconds instead of hanging.
+        """
+        for _ in range(self.TX_FIFO_DEPTH):
+            if not self.sm.tx_fifo():
+                break
+            utime.sleep_us(self.frame_us)
+
+        # tx_fifo() reaching zero only means the last word has been pulled into
+        # the shift register - it is still going out on the wire
+        utime.sleep_us(self.frame_us)
+
+    def stop(self):
+        """
+        Deactivate the state machine.
+
+        The signal line stops carrying DShot transitions, so the ESC times out
+        and cannot spin.
+
+        Stopping mid-frame truncates that frame - it fails CRC and the ESC
+        drops it - and leaves the pin at whatever level the frame was driving.
+        Call drain() first when that matters.
+
+        Call start() to reactivate - the PIO program stays loaded.
+        """
+        self.sm.active(0)
+
+        # Clears the shift state and jumps to the start of the program, so a
+        # frame interrupted by active(0) cannot resume mid-bit on restart.
+        # This does NOT drain the TX FIFO: whatever is still queued goes out on
+        # the next start(), which is why drain() exists as a separate call.
+        self.sm.restart()
+
+    def send_throttle_command(self, throttle):
         """
         Send a throttle command to the ESC.
 
@@ -69,4 +119,4 @@ class DShotPIO:
         rightPaddedPacket = dShotPacket << 16
 
         # Put the packet into the PIO machine
-        self._sm.put(rightPaddedPacket)
+        self.sm.put(rightPaddedPacket)

@@ -1,12 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MotorThrottleGroup: Dual-core facade for reliable motor throttle control
-# See decision/ADR-001-dual-core-motor-control.md for architecture details
+# MotorThrottleGroup: facade over the PIO state machines and throttle state
+# of a group of DShot motors.
+#
+# See decision/ADR-004-client-owned-command-loop.md for the threading model
+# See decision/ADR-001-dual-core-motor-control.md for the lock-free throttle store
 
-import _thread
 import utime
 from array import array
 
 from dshot_pio import DShotPIO, DSHOT_SPEEDS
+
+# Lifecycle states, as reported by MotorThrottleGroup.state
+DISARMED = 0
+ARMING = 1
+ARMED = 2
 
 
 class MotorThrottleGroupException(Exception):
@@ -16,36 +23,67 @@ class MotorThrottleGroupException(Exception):
 
 class MotorThrottleGroup:
     """
-    Facade for controlling throttle on multiple motors with guaranteed timing.
+    Facade for controlling throttle on a group of DShot motors.
 
-    Runs a dedicated loop on Core 1 that sends DShot commands at 1kHz,
-    ensuring reliable arming and consistent update rate regardless
-    of Core 0 activity (UI, sensors, control algorithms).
+    This class owns the PIO state machines and the throttle values. It does
+    NOT own a command loop: the application decides which core, thread, timer
+    or main loop calls update(), because that is an architecture choice of the
+    application, not of this library.
 
-    Usage:
+    The only requirement is that update() is called at least every
+    UPDATE_INTERVAL_US while armed - ESCs disarm if commands stop arriving.
+
+    Usage (application runs the loop on Core 1):
         from machine import Pin
         from dshot_pio import DSHOT_SPEEDS
         from motor_throttle_group import MotorThrottleGroup
 
         group = MotorThrottleGroup([Pin(4), Pin(5)], DSHOT_SPEEDS.DSHOT600)
-        group.start()
+
+        runner = Core1Runner(group.update)  # application-supplied, see tests/
+        runner.start()
+
         group.arm()
+        while not group.is_armed():         # arming is non-blocking
+            utime.sleep_ms(10)
 
-        group.setThrottle(0, 100)  # Motor 0 at throttle 100
-        group.setThrottle(1, 150)  # Motor 1 at throttle 150
+        group.set_throttle(0, 100)
+        group.set_throttle(1, 150)
 
-        group.stop()
+        group.disarm()
+        runner.stop()
+
+    Usage (application pumps update() from its own main loop):
+        group.arm()
+        while True:
+            group.update()
+            ...application work, kept under 1ms...
+            utime.sleep_us(group.UPDATE_INTERVAL_US)
     """
 
-    # Command loop interval in microseconds (1kHz = 1000us)
+    # How often the application must call update() (1kHz = 1000us)
     UPDATE_INTERVAL_US = 1000
 
     # Default arming duration in milliseconds
     DEFAULT_ARM_DURATION_MS = 500
 
+    # A gap longer than this between update() calls restarts the arming window,
+    # because the ESC resets its own arming counter when commands stop arriving
+    ARM_GAP_TOLERANCE_MS = 10
+
+    # Highest value representable in an 11-bit DShot throttle field
+    MAX_THROTTLE = 2047
+
+    # Zero-throttle frames disarm() transmits before cutting the signal. One
+    # commands the stop; the rest are margin against a frame lost to noise.
+    DISARM_FRAMES = 4
+
     def __init__(self, pins, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         """
         Initialize motor group.
+
+        Creates the PIO state machines but leaves them inactive - arm()
+        activates them.
 
         Args:
             pins: List of Pin objects for motor signal outputs
@@ -54,146 +92,194 @@ class MotorThrottleGroup:
         if not pins:
             raise MotorThrottleGroupException("At least one pin required")
 
-        self._motor_count = len(pins)
+        self.motor_count = len(pins)
 
         # Create DShotPIO instances internally (SM index = motor index)
-        self._motors = [
+        self.motors = [
             DShotPIO(i, pin, dshot_speed) for i, pin in enumerate(pins)
         ]
 
-        # Shared throttle array - lock-free access (atomic on ARM)
-        # Using unsigned 16-bit integers ('H') for DShot throttle values
-        self._throttles = array('H', [0] * self._motor_count)
+        # Shared throttle array - lock-free access (atomic on ARM).
+        # Using unsigned 16-bit integers ('H') for DShot throttle values.
+        # See ADR-001: the application may write these from a different core
+        # than the one calling update().
+        self.throttles = array('H', [0] * self.motor_count)
 
-        # Core 1 thread state
-        self._running = False
-        self._armed = False
+        # One of DISARMED / ARMING / ARMED
+        self.state = DISARMED
 
-        # Heartbeat counter - incremented by Core 1, monitored by Core 0
-        # Detects if Core 1 loop has crashed
-        self._heartbeat = array('L', [0])  # Unsigned 32-bit
+        self.arm_duration_ms = self.DEFAULT_ARM_DURATION_MS
+        self.arm_started_ms = 0
+        self.last_update_ms = utime.ticks_ms()
 
-    def start(self):
+    def arm(self, duration_ms=DEFAULT_ARM_DURATION_MS):
         """
-        Start the Core 1 command loop.
+        Begin arming all ESCs.
 
-        Must be called before arm() or setThrottle().
-        Commands are sent continuously at 1kHz.
-        Throttles are reset to 0 (disarmed state).
-        """
-        if self._running:
-            return
+        Activates the PIO state machines and starts the arming window. This
+        does NOT block: arming completes inside update(), so the application
+        must be calling update() for arming to progress. Poll is_armed().
 
-        # Reset to disarmed state
-        for i in range(self._motor_count):
-            self._throttles[i] = 0
-        self._armed = False
-
-        self._running = True
-        self._heartbeat[0] = 0
-        _thread.start_new_thread(self._core1_loop, ())
-
-        # Wait for Core 1 to start (first heartbeat)
-        timeout_ms = 100
-        start = utime.ticks_ms()
-        while self._heartbeat[0] == 0:
-            if utime.ticks_diff(utime.ticks_ms(), start) > timeout_ms:
-                self._running = False
-                raise MotorThrottleGroupException("Core 1 failed to start")
-            utime.sleep_ms(1)
-
-        # start the PIO state machines
-        for i in range(self._motor_count):
-            self._motors[i].start()
-
-    def stop(self):
-        """
-        Stop the Core 1 command loop.
-
-        Sets all throttles to 0 before stopping.
-        """
-        if not self._running:
-            return
-
-        # Set all throttles to 0 first
-        self.emergencyStop()
-
-        # Give Core 1 time to send the zero commands
-        utime.sleep_ms(10)
-
-        self._running = False
-        self._armed = False
-
-        # Give Core 1 time to exit
-        utime.sleep_ms(5)
-
-    def arm(self, duration_ms=None):
-        """
-        Arm all ESCs by sending throttle=0 for the required duration.
+        Any throttle set before arm() is discarded - arming always starts
+        from zero.
 
         Args:
             duration_ms: Arming duration (default: 500ms)
-
-        Returns:
-            True if arming completed (Core 1 still running)
         """
-        if not self._running:
-            raise MotorThrottleGroupException("Must call start() before arm()")
+        for i in range(self.motor_count):
+            self.throttles[i] = 0
 
-        if duration_ms is None:
-            duration_ms = self.DEFAULT_ARM_DURATION_MS
+        for motor in self.motors:
+            motor.start()
 
-        # Ensure all throttles are at 0
-        for i in range(self._motor_count):
-            self._throttles[i] = 0
+        now = utime.ticks_ms()
+        self.arm_duration_ms = duration_ms
+        self.arm_started_ms = now
+        self.last_update_ms = now
 
-        # Wait for arming duration while Core 1 sends zero commands
-        utime.sleep_ms(duration_ms)
-
-        # Verify Core 1 is still running
-        if not self.isHealthy():
-            raise MotorThrottleGroupException("Core 1 stopped during arming")
-
-        self._armed = True
-        return True
+        # Set last: update() must not run before the state machines are active
+        self.state = ARMING
 
     def disarm(self):
         """
-        Disarm all ESCs by setting throttles to 0.
-        """
-        self.emergencyStop()
-        self._armed = False
+        Stop all motors and disarm the ESCs.
 
-    def emergencyStop(self):
-        """
-        Immediately set all throttles to 0.
+        Commands zero throttle, waits for those frames to reach the ESCs, then
+        deactivates the PIO state machines so the signal line stops carrying
+        DShot transitions and the ESC cannot spin.
 
-        Safe to call from any context. Each write is atomic.
-        Core 1 will pick up zeros within 1ms.
-        """
-        for i in range(self._motor_count):
-            self._throttles[i] = 0
+        This is the emergency stop. It transmits the zeros itself rather than
+        leaving them for update(), so it works even when the application's
+        command loop is dead - and it stops the motors in about a millisecond
+        instead of waiting out the ESC's signal-loss timeout, which is over a
+        hundred times longer.
 
-    def setThrottle(self, motor_index, value):
+        Blocks for a few hundred microseconds while the zeros shift out.
+
+        Safe to call from any context, including a different core than the one
+        calling update().
+
+        Idempotent. Call arm() to bring the group back up.
+        """
+        # Cleared first, so a concurrent update() bails before we start cutting
+        # the signal. The prior value also tells us whether the state machines
+        # are live - putting to an inactive one fills the TX FIFO and then
+        # blocks the caller forever.
+        was_live = self.state != DISARMED
+        self.state = DISARMED
+
+        for i in range(self.motor_count):
+            self.throttles[i] = 0
+
+        if was_live:
+            # DISARM_FRAMES fits the TX FIFO, so on an idle queue these do not
+            # block at all, and on a full one they wait a few frame times for
+            # an active state machine to drain - never indefinitely
+            for _ in range(self.DISARM_FRAMES):
+                for motor in self.motors:
+                    motor.send_throttle_command(0)
+
+            # Cutting the signal before the zeros are on the wire would leave
+            # the motors spinning at their last commanded throttle
+            for motor in self.motors:
+                motor.drain()
+
+        for motor in self.motors:
+            motor.stop()
+
+        # Re-assert. An update() already past its state check when we started
+        # may have promoted the group to ARMED behind us; by now it has long
+        # returned, because transmitting the zeros above took far longer than
+        # a single update() call. Leaving ARMED set over inactive state
+        # machines is what makes the next update() block forever.
+        self.state = DISARMED
+
+    def update(self):
+        """
+        Send one DShot command to each motor and advance the arming sequence.
+
+        The application calls this at least every UPDATE_INTERVAL_US, from
+        whichever core or scheduling arrangement it chooses.
+
+        Does nothing while disarmed, so it is always safe to call - including
+        before arm() or after disarm(), when the state machines are inactive
+        and writing to them would eventually block on a full TX FIFO.
+        """
+        state = self.state
+        if state == DISARMED:
+            return
+
+        now = utime.ticks_ms()
+
+        if state == ARMING:
+            # A transmission gap resets the ESC's arming counter, so restart
+            # our window to match what the ESC actually saw
+            if utime.ticks_diff(now, self.last_update_ms) > self.ARM_GAP_TOLERANCE_MS:
+                self.arm_started_ms = now
+
+            # Send literal zeros rather than the throttle array, so the arming
+            # window stays genuinely at zero even if the application sets a
+            # throttle early
+            for motor in self.motors:
+                motor.send_throttle_command(0)
+
+            if utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms:
+                # Re-read rather than promoting from the snapshot above: a
+                # disarm() on another core may have landed since, and writing
+                # ARMED over it would leave the group "armed" with inactive
+                # state machines - the case that makes put() block forever
+                if self.state == ARMING:
+                    self.state = ARMED
+        else:
+            throttles = self.throttles
+            motors = self.motors
+            for i in range(self.motor_count):
+                motors[i].send_throttle_command(throttles[i])
+
+        self.last_update_ms = now
+
+    def is_armed(self):
+        """
+        Returns:
+            True once the arming window has completed and throttle commands
+            are being sent
+        """
+        return self.state == ARMED
+
+    def is_arming(self):
+        """
+        Returns:
+            True while the arming window is still in progress
+        """
+        return self.state == ARMING
+
+    def set_throttle(self, motor_index, value):
         """
         Set throttle for a single motor.
 
         Args:
             motor_index: Motor index (0-based)
-            value: Throttle value (0-2047)
+            value: Throttle value (0-2047), clamped to range
 
-        Lock-free: safe to call from Core 0 while Core 1 is running.
+        Accepted while disarmed, but nothing is transmitted until the group is
+        armed, and arm() resets all throttles to zero.
+
+        Lock-free: safe to call from a different core than the one calling
+        update(). The write is atomic (see ADR-001).
         """
-        if motor_index < 0 or motor_index >= self._motor_count:
-            raise MotorThrottleGroupException(f"Invalid motor index: {motor_index}")
+        if motor_index < 0 or motor_index >= self.motor_count:
+            raise MotorThrottleGroupException(
+                "Invalid motor index: " + str(motor_index)
+            )
 
-        # Clamp value to valid DShot range
-        value = max(0, min(2047, value))
+        if value < 0:
+            value = 0
+        elif value > self.MAX_THROTTLE:
+            value = self.MAX_THROTTLE
 
-        # Atomic write on ARM
-        self._throttles[motor_index] = value
+        self.throttles[motor_index] = value
 
-    def setAllThrottles(self, values):
+    def set_all_throttles(self, values):
         """
         Set throttles for all motors.
 
@@ -203,57 +289,38 @@ class MotorThrottleGroup:
         Each write is atomic but the batch is not atomic as a whole.
         For flight control this is acceptable (see ADR-001).
         """
-        if len(values) != self._motor_count:
+        if len(values) != self.motor_count:
             raise MotorThrottleGroupException(
-                f"Expected {self._motor_count} values, got {len(values)}"
+                "Expected " + str(self.motor_count) +
+                " values, got " + str(len(values))
             )
 
+        max_throttle = self.MAX_THROTTLE
         for i, value in enumerate(values):
-            self._throttles[i] = max(0, min(2047, value))
+            if value < 0:
+                value = 0
+            elif value > max_throttle:
+                value = max_throttle
+            self.throttles[i] = value
 
-    def getAllThrottles(self):
+    def get_all_throttles(self):
         """
-        Get current throttle values for all motors.
+        Get current throttle values as a plain list.
 
-        Returns:
-            List of throttle values
+        The throttles array itself is readable directly; this converts it for
+        printing and comparison.
         """
-        return [self._throttles[i] for i in range(self._motor_count)]
+        return [self.throttles[i] for i in range(self.motor_count)]
 
-    def isHealthy(self):
+    def update_age_ms(self):
         """
-        Check if Core 1 is still running by monitoring heartbeat.
+        Milliseconds since update() last transmitted.
 
-        Returns:
-            True if Core 1 has updated heartbeat recently
+        This library does not own the command loop, so it cannot judge whether
+        that loop is healthy - it only reports the fact. The application sets
+        its own threshold, which should be well under the ESC's disarm timeout.
+
+        Only meaningful while armed or arming; update() does not transmit, and
+        so does not refresh this, while disarmed.
         """
-        if not self._running:
-            return False
-
-        # Check if heartbeat has incremented
-        initial = self._heartbeat[0]
-        utime.sleep_ms(5)  # Wait for a few Core 1 cycles
-        return self._heartbeat[0] != initial
-
-    @property
-    def motor_count(self):
-        """Number of motors in this group."""
-        return self._motor_count
-
-    def _core1_loop(self):
-        """
-        Core 1 dedicated loop - sends commands at 1kHz.
-
-        This runs on the second core, isolated from Core 0 activity.
-        Maintains consistent timing regardless of UI or sensor operations.
-        """
-        while self._running:
-            # Send command to each motor
-            for i in range(self._motor_count):
-                self._motors[i].sendThrottleCommand(self._throttles[i])
-
-            # Increment heartbeat (wraps around naturally)
-            self._heartbeat[0] += 1
-
-            # Maintain 1kHz update rate
-            utime.sleep_us(self.UPDATE_INTERVAL_US)
+        return utime.ticks_diff(utime.ticks_ms(), self.last_update_ms)

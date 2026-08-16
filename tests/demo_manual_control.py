@@ -1,9 +1,12 @@
 # Demo: Manual motor control with display
 #
 # Interactive demo using MotorThrottleGroup facade for reliable
-# arming and smooth throttle control via Core 1.
+# arming and smooth throttle control.
 #
-# State machine: DISARMED → ARMED (final state)
+# The command loop runs on Core 1 via Core1Runner, which is this
+# application's choice - the library itself is core-agnostic.
+#
+# State machine: DISARMED → ARMING → ARMED (final state)
 #
 # Hardware:
 #   - Pimoroni Pico Display Pack
@@ -18,6 +21,7 @@
 
 from dshot_pio import DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
+from core1_runner import Core1Runner
 from machine import Pin
 from picographics import PicoGraphics, DISPLAY_PICO_DISPLAY
 from micropython import const
@@ -34,6 +38,12 @@ THROTTLE_MIN = 70
 THROTTLE_MAX = 600     # bench-safe limit
 THROTTLE_STEP = 5
 UPDATE_PERIOD_MS = 20  # UI update rate (Core 1 runs at 1kHz independently)
+ARM_POLL_MS = 20       # How often to re-render while waiting for arming
+ARM_TIMEOUT_MS = 3000  # Give up if arming never completes (dead command loop)
+
+# Longest gap between transmissions before we call the command loop stalled.
+# Well under the ESC's own disarm timeout, so we stop before it does.
+MAX_UPDATE_AGE_MS = 50
 
 
 # =====================================================
@@ -81,7 +91,7 @@ def draw_disarmed():
     display.update()
 
 
-def draw_arming():
+def draw_arming(dots=3):
     display.set_pen(black)
     display.clear()
     display.set_pen(green)
@@ -89,7 +99,7 @@ def draw_arming():
     display.text("ARMING", X_COL_1, Y_ROW_1, scale=SCALE)
     display.set_pen(white)
     display.text("Please", X_COL_1, Y_ROW_2, scale=SCALE)
-    display.text("wait...", X_COL_1, Y_ROW_3, scale=SCALE)
+    display.text("wait" + "." * dots, X_COL_1, Y_ROW_3, scale=SCALE)
 
     display.update()
 
@@ -127,9 +137,13 @@ def draw_error(msg):
 # Main
 # =====================================================
 def demo():
-    # Create motor throttle group (handles Core 1 command loop)
-    # DShotPIO instances are created internally by the facade
+    # Create motor throttle group (DShotPIO instances are created internally)
     motors = MotorThrottleGroup([MOTOR1_PIN, MOTOR2_PIN], DSHOT_SPEED)
+
+    # This application dedicates Core 1 to the command loop, keeping Core 0
+    # free for the display and buttons. The library does not impose this.
+    runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
+
     try:
         # -------------------------
         # DISARMED STATE
@@ -140,21 +154,38 @@ def demo():
         while btn_B.value() or btn_Y.value():
             utime.sleep_ms(50)
 
-        # Start Core 1 command loop (sends throttle=0 at 1kHz)
-        motors.start()
-        # Arm sequence
-        draw_arming()
+        # Start the command loop, then arm. Arming is non-blocking: Core 1
+        # advances it through update(), so the UI stays live while we wait.
+        runner.start()
         motors.arm()
+
+        dots = 0
+        arm_start = utime.ticks_ms()
+        while not motors.is_armed():
+            if runner.error:
+                raise runner.error
+            if utime.ticks_diff(utime.ticks_ms(), arm_start) > ARM_TIMEOUT_MS:
+                raise Exception("Arm timeout")
+            draw_arming(dots % 4)
+            dots += 1
+            utime.sleep_ms(ARM_POLL_MS)
 
         # Set initial throttle after arming
         throttle_m1 = THROTTLE_MIN
         throttle_m2 = THROTTLE_MIN
-        motors.setAllThrottles([throttle_m1, throttle_m2])
+        motors.set_all_throttles([throttle_m1, throttle_m2])
 
         # -------------------------
         # ARMED STATE (final)
         # -------------------------
         while True:
+            # The Core 1 loop can die without a traceback, so check it is still
+            # transmitting before we keep rendering ARMED at a live motor
+            if runner.error:
+                raise runner.error
+            if motors.update_age_ms() > MAX_UPDATE_AGE_MS:
+                raise Exception("Loop stalled")
+
             # Throttle adjustments (ignore B+Y combo when armed)
             if not btn_A.value():
                 throttle_m1 += THROTTLE_STEP
@@ -171,8 +202,8 @@ def demo():
             throttle_m2 = max(THROTTLE_MIN, min(THROTTLE_MAX, throttle_m2))
 
             # Update throttles (Core 1 sends commands continuously)
-            motors.setThrottle(0, throttle_m1)
-            motors.setThrottle(1, throttle_m2)
+            motors.set_throttle(0, throttle_m1)
+            motors.set_throttle(1, throttle_m2)
 
             draw_armed(throttle_m1, throttle_m2)
 
@@ -183,8 +214,10 @@ def demo():
         raise
 
     finally:
-        # Always stop motors on exit
-        motors.stop()
+        # Always stop motors on exit. disarm() takes effect immediately and
+        # does not depend on the Core 1 loop still being alive.
+        motors.disarm()
+        runner.stop()
 
 
 demo()
