@@ -11,14 +11,17 @@ DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using
 
 ## Hardware
 
-This driver was developed and tested on a flight control test bench:
+This driver was developed and tested on a flight control test bench, against
+two different ESC firmware families with meaningfully different timing
+requirements (see "Verified Parameters" below):
 
 | Component | Model | Specifications |
 |-----------|-------|----------------|
 | **Controller** | Raspberry Pi Pico 2 | RP2350, dual ARM Cortex-M33, 150MHz |
 | **Motors** | BetaFPV Lava Series 1104 (×2) | 7200KV, 5g weight |
-| **ESC** | JHEMCU Brushless Wing Dual 40A 2-in-1 | 40A×2, 2-6S (7.4-27V), 6.2g |
-| **Firmware** | BLHeli_S | G-H-30 V16.7 |
+| **ESC (1)** | JHEMCU Brushless Wing Dual 40A 2-in-1 | 40A×2, 2-6S (7.4-27V), 6.2g |
+| **Firmware (1)** | BLHeli_S | G-H-30 V16.7 |
+| **ESC (2)** | Skystar RC KM55A2 (4-in-1) | AM32 firmware |
 
 ### Test Bench Configuration
 
@@ -56,7 +59,7 @@ requirements that drive it.
 │   UI, control algorithms, sensors   │
 │   OWNS THE COMMAND LOOP             │
 └──────────────────┬──────────────────┘
-                   │ update()  ── at least every 1ms
+                   │ update()  ── as fast as UPDATE_INTERVAL_US allows
                    │ set_throttle()
                    ▼
 ┌─────────────────────────────────────┐
@@ -73,9 +76,12 @@ requirements that drive it.
 ```
 
 ESCs disarm if commands stop arriving, so whatever context you choose must call
-`update()` at least every millisecond. On this test bench that means a dedicated
-Core 1 thread, keeping Core 0 free for the display and buttons - see
-`tests/core1_runner.py` for a ready-made example to copy into your project.
+`update()` continuously, without long or irregular gaps. How fast depends on
+the ESC firmware - see "Verified Parameters" below; some ESCs need
+near-back-to-back frames just to complete arming. On this test bench that
+means a dedicated Core 1 thread, keeping Core 0 free for the display and
+buttons - see `tests/core1_runner.py` for a ready-made example to copy into
+your project.
 
 ## Quick Start
 
@@ -89,15 +95,15 @@ import utime
 motor = DShotPIO(0, Pin(4), DSHOT_SPEEDS.DSHOT600)  # SM 0, GPIO 4
 motor.start()  # Activate PIO state machine
 
-# Arm ESC (send throttle=0 for 500ms)
-for _ in range(500):
+# Arm ESC (send throttle=0 back-to-back for ~3s). Some ESC firmware needs
+# near-continuous frames to arm at all - see "Verified Parameters" below.
+arm_start = utime.ticks_ms()
+while utime.ticks_diff(utime.ticks_ms(), arm_start) < 3000:
     motor.send_throttle_command(0)
-    utime.sleep_ms(1)
 
 # Run motor
 while True:
     motor.send_throttle_command(100)
-    utime.sleep_ms(1)
 
 motor.stop()  # Deactivate - the ESC times out and the motor cannot spin
 ```
@@ -144,21 +150,33 @@ Core 1 is busy or unavailable:
 ```python
 motors.arm()
 while True:
-    motors.update()          # must happen at least every 1ms
+    motors.update()          # must happen continuously, without long gaps
     ...your work here...
     utime.sleep_us(motors.UPDATE_INTERVAL_US)
 ```
 
 ## Verified Parameters
 
-Tested with specific hardware (JHEMCU 40A ESC + test bench motors). May differ with other ESC/motor combinations.
+Timing requirements are ESC-firmware-dependent, not just protocol-dependent -
+the two ESCs tested needed meaningfully different arming behavior. The
+library's defaults (`MotorThrottleGroup.UPDATE_INTERVAL_US`,
+`DEFAULT_ARM_DURATION_MS`) target the more demanding of the two, since a
+faster/longer hold is always safe for the less demanding one too.
 
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| Protocol | DShot600 | Best balance of speed and reliability |
-| Minimum throttle | 70 | Hardware-specific; values 50-69 unreliable on test bench |
-| Command interval | 1ms | Required for reliable operation |
-| Arming duration | 500ms | Works with BLHeli_S firmware |
+| Parameter | JHEMCU / BLHeli_S | Skystar KM55A2 / AM32 |
+|-----------|---------------------|------------------------|
+| Protocol | DShot600 | DShot300 |
+| Minimum throttle | 70 (50-69 unreliable) | 100 confirmed working |
+| Command interval | 1ms (1kHz) tolerant | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
+| Arming duration | 500ms | 3000ms - 500ms never completed the ESC's own arm confirmation, even at max frame rate |
+
+The AM32 ESC gave no indication via its beep pattern alone that arming was
+failing - it decodes individual commands correctly (confirmed via the DShot
+`BEEP1` special command) regardless of whether its arm state machine has
+ever been satisfied. The only reliable signal was the ESC's own "3 short
+beeps, then 2 deeper beeps" arm confirmation tone; current draw at the power
+supply (near-zero until genuinely armed and driving) was the second
+confirming signal.
 
 ## Project Structure
 

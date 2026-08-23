@@ -57,15 +57,23 @@ class MotorThrottleGroup:
         group.arm()
         while True:
             group.update()
-            ...application work, kept under 1ms...
+            ...application work, kept under UPDATE_INTERVAL_US...
             utime.sleep_us(group.UPDATE_INTERVAL_US)
     """
 
-    # How often the application must call update() (1kHz = 1000us)
-    UPDATE_INTERVAL_US = 1000
+    # How often the application must call update(). 0 means "as fast as
+    # possible, no explicit delay" - an AM32-firmware ESC would not complete
+    # arming even at a clean 250us once Core1Runner's own per-call overhead
+    # was added on top; back-to-back calls (no sleep) is the only rate
+    # verified reliable through the real facade. See the "Verified
+    # Parameters" table in README.md.
+    UPDATE_INTERVAL_US = 0
 
-    # Default arming duration in milliseconds
-    DEFAULT_ARM_DURATION_MS = 500
+    # Default arming duration in milliseconds. An AM32-firmware ESC never
+    # completed its own arm confirmation at 500ms, even at max frame rate -
+    # 3000ms is what proved reliable. A longer hold is always safe for ESCs
+    # that need less (see README.md "Verified Parameters").
+    DEFAULT_ARM_DURATION_MS = 3000
 
     # A gap longer than this between update() calls restarts the arming window,
     # because the ESC resets its own arming counter when commands stop arriving
@@ -124,7 +132,7 @@ class MotorThrottleGroup:
         from zero.
 
         Args:
-            duration_ms: Arming duration (default: 500ms)
+            duration_ms: Arming duration (default: DEFAULT_ARM_DURATION_MS)
         """
         for i in range(self.motor_count):
             self.throttles[i] = 0
