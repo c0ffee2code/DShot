@@ -1,9 +1,10 @@
 """
-deploy.py - upload the DShot driver + Core1Runner to the Pico, then run
-tests/test_slow_spin.py live (streams output for the full ~2-minute test).
+deploy.py - upload the DShot driver + Core1Runner to the Pico, then run a
+test script live (streams output for the duration of the test).
 
 Run from project root:
-  python scripts/deploy.py
+  python scripts/deploy.py                       # runs tests/test_slow_spin.py
+  python scripts/deploy.py test_bidir_tx_arm.py   # runs a different test under tests/
 
 Pico must be connected on COM10. mpremote interrupts any running script on connect.
 """
@@ -27,7 +28,7 @@ LIBRARY_FILES = [
     ("tests/core1_runner.py", "core1_runner.py"),
 ]
 
-TEST_SCRIPT = ROOT / "tests" / "test_slow_spin.py"
+DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
 
 
 def _upload(local_rel, remote_name):
@@ -47,6 +48,11 @@ def _upload(local_rel, remote_name):
 
 
 def main():
+    test_script = ROOT / "tests" / (sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TEST_SCRIPT)
+    if not test_script.exists():
+        print(f"MISSING test script: {test_script}")
+        sys.exit(1)
+
     print(f"Deploying to Pico on {COM_PORT}...")
     ok = sum(_upload(loc, rem) for loc, rem in LIBRARY_FILES)
     failed = len(LIBRARY_FILES) - ok
@@ -54,10 +60,10 @@ def main():
     if failed:
         sys.exit(1)
 
-    print(f"\nRunning {TEST_SCRIPT.relative_to(ROOT)} on {COM_PORT} (live output)...\n")
+    print(f"\nRunning {test_script.relative_to(ROOT)} on {COM_PORT} (live output)...\n")
     result = subprocess.run(
-        [PYTHON, "-m", "mpremote", "connect", COM_PORT, "run", str(TEST_SCRIPT)],
-        timeout=150,
+        [PYTHON, "-m", "mpremote", "connect", COM_PORT, "run", str(test_script)],
+        timeout=300,
     )
     sys.exit(result.returncode)
 
