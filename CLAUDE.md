@@ -8,6 +8,14 @@ DShot driver for Raspberry Pi Pico, part of a flight control systems test bench.
 
 Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0 license).
 
+**Supported ESC targets (design constraint):** This is a pet/exploration project — it does
+not aim to support the endless universe of ESCs. Exactly two firmware families are in scope:
+**BLHeli_S** (cheap, old, unidirectional DShot only in stock form) and **AM32** (modern,
+bidirectional-capable). AM32 has a further advantage: it is open source
+(https://github.com/am32-firmware/AM32), so behavior is verified against its actual
+firmware source rather than guessed from generic protocol articles — when a generic spec and AM32's source disagree, the source wins. Do not add
+abstraction layers or configuration surface for hypothetical other ESC families.
+
 ## Project Goals
 
 | Goal | Status | Details |
