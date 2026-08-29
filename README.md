@@ -4,7 +4,7 @@ DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using
 
 ## Features
 
-- **DShot150/300/600/1200** protocol support via PIO state machines
+- **DShot300/600** protocol support via PIO state machines (restricted to what AM32 documents support for)
 - **Scheduling-agnostic** - your application decides which core runs the command loop
 - **Lock-free design** for low-latency throttle updates across cores
 - **MicroPython** runtime (no external dependencies)

@@ -1,7 +1,23 @@
-# Standalone spike (W1, see bidirectional_dshot_review.md): does the current
-# dense-oversampling RX design (dshot_bidir_rx, tuned for DSHOT300's ~2.5-2.6us
-# real GCR bit period at rx_speed=4MHz) still decode at faster DShot request
-# rates, or does it need a faster rx_speed / different predelay?
+# CLOSED spike (W1, see bidirectional_dshot_review.md) - results already
+# recorded there and folded into driver/dshot_pio.py's BIDIR_PROFILES. Kept
+# runnable for provenance/reproducibility, not as an ongoing exploration.
+#
+# Original question: does the dense-oversampling RX design (dshot_bidir_rx,
+# tuned for DSHOT300's ~2.5-2.6us real GCR bit period at rx_speed=4MHz) still
+# decode at a faster DShot request rate, or does it need a faster rx_speed?
+# Answer for DSHOT600: yes, needs 8MHz - now BIDIR_PROFILES[DSHOT600].
+#
+# This originally also swept DSHOT1200 (candidates 4/8/16MHz) - that data is
+# what showed DSHOT1200 shares DSHOT600's real reply timing (via AM32's
+# Src/signal.c checkDshot(), which only bins input rate into two coarse
+# reply-timing bands, no distinct DSHOT1200 path) and that a 16MHz rx_speed
+# actively breaks decoding (the 128-sample capture window shrinks below the
+# real frame duration). That branch is removed here because DSHOT1200 was
+# then excluded from this project entirely - AM32 doesn't document
+# bidirectional (or any) support for it, only DShot300/600 (see
+# DSHOT_SPEEDS's comment in driver/dshot_pio.py) - so DShotPIO's constructor
+# no longer accepts it and this script can no longer exercise it. See W1's
+# "DONE" entry in bidirectional_dshot_review.md for the full recorded data.
 #
 # Deliberately does NOT touch driver/dshot_pio.py or DShotPIO's public shape -
 # this is throwaway characterization, not a driver change. Channel 1's TX
@@ -9,18 +25,8 @@
 # verified packet/CRC encoding); channel 1's actual RX under test is a
 # separate, hand-built StateMachine reusing dshot_bidir_rx UNCHANGED, at
 # whatever rx_speed this run is sweeping - DShotPIO's own internal RX (fixed
-# 4MHz, required by its constructor) is created but never read here.
-#
-# rx_speed candidates: current 4MHz as the control, plus one scaled up to
-# restore ~5 samples/plausible-bit at the faster wire rate (dshot_bidir_rx's
-# own stated minimum - see its module comment). DSHOT600's real bit period is
-# nominally ~half DSHOT300's -> try 8MHz. DSHOT1200's is nominally ~half
-# DSHOT600's again -> try 8MHz (matches DSHOT600's density) and 16MHz (tries
-# to restore it further). Per AM32's Src/signal.c checkDshot(): the ESC only
-# bins detected input rate into two bands (roughly slow=150/300,
-# fast=600/1200), each with its own output_timer_prescaler/buffer_padding for
-# the reply - so 600 and 1200 likely share AM32-side reply timing, which this
-# sweep's data will confirm or refute.
+# to whatever BIDIR_PROFILES gives dshot_speed) is created but never read
+# here.
 #
 # No decoding here - see scripts/decode_bidir_capture.py (RX_CLOCK_HZ needs
 # to be set to whichever rx_speed a given block below used before decoding
@@ -37,7 +43,6 @@ import utime
 # (dshot_speed, label, [candidate rx_speeds to try])
 CANDIDATES = [
     (DSHOT_SPEEDS.DSHOT600, "DSHOT600", [4_000_000, 8_000_000]),
-    (DSHOT_SPEEDS.DSHOT1200, "DSHOT1200", [4_000_000, 8_000_000, 16_000_000]),
 ]
 
 ARM_DURATION_MS = 3000

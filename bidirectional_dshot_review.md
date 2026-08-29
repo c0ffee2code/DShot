@@ -1109,6 +1109,16 @@ DSHOT150 and DSHOT1200, and that DSHOT600 decodes CRC-valid through the real pub
 only - its `BIDIR_PROFILES` entry is already validated and populated; DSHOT1200 stays
 unsupported, matching W13's original default.
 
+**Widened 2026-08-29, whole-driver scope, not just bidirectional:** per direct user
+instruction, standardized the entire project (not only bidir mode) on AM32's documented
+speed support. `DSHOT_SPEEDS` no longer carries `DSHOT150`/`DSHOT1200` as constants at all
+(previously present but already unused anywhere in the test suite - confirmed by grep before
+removing them). `DShotPIO.__init__`'s default `dshot_speed` moved from `DSHOT_SPEEDS.DSHOT150`
+to `DSHOT_SPEEDS.DSHOT600`, matching `MotorThrottleGroup`'s own default and removing a
+pre-existing inconsistency between the two. `CLAUDE.md` and `README.md` updated to state
+DSHOT300/600 only, and `specification/DSHOT_PROTOCOL.md`'s ESC compatibility table's AM32 row
+corrected (see W2's note above) as part of the same pass.
+
 **W2 — Fix GCR table in `specification/DSHOT_PROTOCOL.md` (R11)** · `specification/DSHOT_PROTOCOL.md`
 ADR-002 established the spec's GCR symbol table is wrong (agrees with AM32's real
 `gcr_encode_table[16]` on only 6 of 16 entries) and records the corrected table, which also
@@ -1119,6 +1129,12 @@ same stale assumptions ADR-002 disproved (22-bit frame, separate seed bit, 30µs
 as universal).
 **Done when:** the spec table matches ADR-002's corrected table entry-for-entry, with the
 provenance note, and a cross-reference links spec ↔ ADR-002.
+
+*Note (2026-08-29):* the spec's separate "ESC Compatibility" table had its own, unrelated
+AM32 inaccuracy (claimed full DShot150/300/600/1200 + bidirectional support, generalized from
+other firmwares rather than checked) — already corrected while investigating W1's DSHOT1200
+result, independent of this item's GCR table fix. Nothing left to do there; check the
+surrounding bidir sections this item calls for as originally scoped.
 
 **W3 — Add verification-status table to ADR-002 (R6)** · `decision/ADR-002-bidirectional-dshot.md`
 Adopt the review's layer table (§6) into ADR-002 near the status header: inverted TX /

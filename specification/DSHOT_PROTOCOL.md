@@ -266,7 +266,18 @@ Supported by: Bluejay, BLHeli_32, AM32
 | BLHeli_S (EFM8BB2/BB21) | ✓ | ✓ | ✓ | ✓ | With Bluejay/JESC |
 | BLHeli_32 | ✓ | ✓ | ✓ | ✓ | ✓ |
 | KISS | ✓ | ✓ | ✓ | ✓ | ✓ |
-| AM32 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| AM32 | ✗ | ✓ | ✓ | ✗¹ | DShot300/600 only |
+
+¹ Corrected 2026-08-29: this row previously claimed full ✓ support, generalized from other
+firmwares rather than checked against AM32 itself. AM32's own README ("Dshot(300, 600) motor
+protocol support") and wiki.am32.ca ("Compatible with PWM and BiDirectional DShot300/600
+protocols") both document DShot300/600 only - DShot150 and DShot1200 aren't mentioned as
+supported at all. `Src/signal.c`'s `checkDshot()` confirms why a DShot1200 signal can still
+produce a CRC-valid bidirectional reply on real hardware despite that: it has no distinct
+DShot1200 code path, it just bins detected input rate into two coarse bands with loose
+pulse-width thresholds, and DShot1200 happens to fall inside the same band as DShot600 -
+undocumented incidental behavior, not a supported mode. See `bidirectional_dshot_review.md`'s
+W1 item for the hardware measurement that surfaced this.
 
 ## Implementation Notes
 

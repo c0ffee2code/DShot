@@ -186,12 +186,17 @@ def dshot_bidir_rx():
     jmp(x_dec, "outer")               # 1 cycle - only reached once per pass, after 32 samples
     wrap()
 
-# The different DShot speeds. The Pico and Pico W should be fast enough to transmit at any of these speeds
+# The DShot speeds this project supports. Restricted to what AM32 itself
+# documents (its README and wiki.am32.ca both list DShot300/600 only) -
+# DSHOT150 and DSHOT1200 were never part of that support matrix (DSHOT1200
+# was measured working once, but only via undocumented rate-detection
+# overlap with DSHOT600 - see BIDIR_PROFILES below), so this project doesn't
+# carry them as named speeds per CLAUDE.md's design constraint (AM32's
+# source/docs are ground truth; no configuration surface for cases outside
+# the two ESC families this project targets).
 class DSHOT_SPEEDS:
-    DSHOT150  = 1_200_000 #   150,000 bit/s * 8 cycle/bit
-    DSHOT300  = 2_400_000 #   300,000 bit/s * 8 cycle/bit
-    DSHOT600  = 4_800_000 #   600,000 bit/s * 8 cycle/bit
-    DSHOT1200 = 9_600_000 # 1,200,000 bit/s * 8 cycle/bit
+    DSHOT300 = 2_400_000 # 300,000 bit/s * 8 cycle/bit
+    DSHOT600 = 4_800_000 # 600,000 bit/s * 8 cycle/bit
 
 # rx_speed to use for dshot_bidir_rx per DShot request speed - hardware-verified
 # (bidirectional_dshot_review.md's W1 item), not a fixed ratio of dshot_speed.
@@ -216,7 +221,7 @@ class DShotPIO:
     TX_FIFO_DEPTH = 4
 
     # Creates the state machine but leaves it inactive - call start() to enable it
-    def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT150,
+    def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600,
                  bidirectional=False, rx_state_machine_id=None):
         """
         Args:
@@ -237,6 +242,18 @@ class DShotPIO:
                 RX synchronises itself to each TX frame via that IRQ with no
                 further calls needed - just drain rx_read() periodically.
         """
+        # Validate before claiming any hardware: a constructor that raises
+        # partway through shouldn't leave a stray, half-configured state
+        # machine bound to the pin behind it.
+        if bidirectional:
+            if rx_state_machine_id is None:
+                raise ValueError("rx_state_machine_id is required when bidirectional=True")
+
+            rx_speed = BIDIR_PROFILES.get(dshot_speed)
+            if rx_speed is None:
+                raise ValueError("bidirectional=True needs a dshot_speed with a verified "
+                                  "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
+
         self.bidirectional = bidirectional
         program = dshot_bidir_tx if bidirectional else dshot
 
@@ -263,13 +280,6 @@ class DShotPIO:
 
         self.rx_sm = None
         if bidirectional:
-            if rx_state_machine_id is None:
-                raise ValueError("rx_state_machine_id is required when bidirectional=True")
-
-            rx_speed = BIDIR_PROFILES.get(dshot_speed)
-            if rx_speed is None:
-                raise ValueError("bidirectional=True needs a dshot_speed with a verified "
-                                  "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
             self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx,
                                        freq=rx_speed, in_base=pin)
 
