@@ -195,19 +195,19 @@ class DSHOT_SPEEDS:
 
 # rx_speed to use for dshot_bidir_rx per DShot request speed - hardware-verified
 # (bidirectional_dshot_review.md's W1 item), not a fixed ratio of dshot_speed.
-# DSHOT600 and DSHOT1200 share one entry rather than needing separate ones:
-# AM32 only bins detected input rate into two reply-timing bands (confirmed
-# against its checkDshot() in Src/signal.c - one config for ~150/300, another
-# for ~600/1200), so the two speeds produce an identical real GCR reply bit
-# period on this ESC (~1.28-1.29us, measured). Going faster than the profile
-# a speed actually needs doesn't just waste margin - at DSHOT1200 a 16MHz
-# rx_speed measurably broke decoding, because the 128-sample capture window
-# shrinks in wall-clock time as rx_speed rises, and it fell below the frame's
-# real duration.
+# DSHOT1200 is deliberately absent: AM32 documents bidirectional support for
+# DSHOT300/600 only (its own README, and wiki.am32.ca) - Src/signal.c's
+# checkDshot() has no distinct DSHOT1200 path, it just bins detected input
+# rate into two coarse reply-timing bands (~150/300 and ~600/1200) with loose
+# pulse-width thresholds, so DSHOT1200 happening to fall in the "600" band and
+# getting a CRC-valid reply on this specific ESC is undocumented incidental
+# behavior, not a feature AM32 tests or guarantees - per this project's
+# AM32-source-is-ground-truth constraint (CLAUDE.md), that makes it
+# unsupported here too, even though it was observed working (4/4 CRC-valid
+# at rx_speed=8MHz, same measured ~1.28-1.29us reply bit period as DSHOT600).
 BIDIR_PROFILES = {
-    DSHOT_SPEEDS.DSHOT300:  4_000_000,  # ~2.5-2.6us measured bit period, 17/17 CRC-valid
-    DSHOT_SPEEDS.DSHOT600:  8_000_000,  # ~1.28us measured, 6/6 CRC-valid
-    DSHOT_SPEEDS.DSHOT1200: 8_000_000,  # same reply timing as DSHOT600 on this ESC, 4/4 CRC-valid
+    DSHOT_SPEEDS.DSHOT300: 4_000_000,  # ~2.5-2.6us measured bit period, 17/17 CRC-valid
+    DSHOT_SPEEDS.DSHOT600: 8_000_000,  # ~1.28us measured, 6/6 CRC-valid
 }
 
 
@@ -269,7 +269,7 @@ class DShotPIO:
             rx_speed = BIDIR_PROFILES.get(dshot_speed)
             if rx_speed is None:
                 raise ValueError("bidirectional=True needs a dshot_speed with a verified "
-                                  "BIDIR_PROFILES entry (DSHOT300, DSHOT600, or DSHOT1200 currently)")
+                                  "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
             self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx,
                                        freq=rx_speed, in_base=pin)
 

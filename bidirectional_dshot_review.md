@@ -1086,16 +1086,28 @@ capture window shrinks in wall-clock time as `rx_speed` rises, and at 16MHz that
 (~16µs) fell below the ~27µs real frame duration, truncating every capture before the CRC
 bits arrived.
 
-**Outcome: one new profile, not two.** Implemented `BIDIR_PROFILES` in `driver/dshot_pio.py`
-(module level, right after `DSHOT_SPEEDS`): `{DSHOT300: 4_000_000, DSHOT600: 8_000_000,
-DSHOT1200: 8_000_000}`. `DShotPIO.__init__` looks up `dshot_speed` in it when
-`bidirectional=True` and raises `ValueError` for anything absent (currently just DSHOT150 -
-never measured, not guessed at). Verified: `tests/test_bidir_rx_raw.py`'s DSHOT300 sweep
-unaffected (17/17 CRC-valid, matching the prior baseline); a new `tests/test_bidir_profile_check.py`
-confirms the `ValueError` fires for DSHOT150 and that DSHOT600 decodes CRC-valid through the
-real public `DShotPIO` API (not the spike's hand-built bypass). This also gives W13 a head
-start: its DSHOT600 profile is now already validated and populated, including DSHOT1200 for
-free.
+**Amendment 2026-08-29: DSHOT1200 excluded after checking AM32's documented support.** Both
+AM32's own README ("Dshot(300, 600) motor protocol support") and wiki.am32.ca ("Compatible
+with PWM and BiDirectional DShot300/600 protocols") state bidirectional support for DSHOT300
+and DSHOT600 only - DSHOT1200 is never mentioned. `Src/signal.c`'s `checkDshot()` confirms why
+the sweep still got clean replies at 1200: it has no distinct DSHOT1200 path, it just bins
+detected input rate into two coarse bands with loose pulse-width thresholds, and DSHOT1200's
+faster pulses happen to fall inside the same "fast" (~600) band. So the 4/4 CRC-valid result
+above is undocumented incidental behavior on this specific ESC/firmware build, not a feature
+AM32 tests or guarantees - per this project's AM32-source-is-ground-truth constraint
+(CLAUDE.md), that makes it unsupported here too, regardless of it having worked once.
+
+**Outcome: one new profile.** Implemented `BIDIR_PROFILES` in `driver/dshot_pio.py` (module
+level, right after `DSHOT_SPEEDS`): `{DSHOT300: 4_000_000, DSHOT600: 8_000_000}` - DSHOT1200
+deliberately absent per the amendment above. `DShotPIO.__init__` looks up `dshot_speed` in it
+when `bidirectional=True` and raises `ValueError` for anything absent (DSHOT150 - never
+measured; DSHOT1200 - measured working but excluded on documentation grounds). Verified:
+`tests/test_bidir_rx_raw.py`'s DSHOT300 sweep unaffected (17/17 CRC-valid, matching the prior
+baseline); `tests/test_bidir_profile_check.py` confirms the `ValueError` fires for both
+DSHOT150 and DSHOT1200, and that DSHOT600 decodes CRC-valid through the real public
+`DShotPIO` API (not the spike's hand-built bypass). This gives W13 a head start on DSHOT600
+only - its `BIDIR_PROFILES` entry is already validated and populated; DSHOT1200 stays
+unsupported, matching W13's original default.
 
 **W2 — Fix GCR table in `specification/DSHOT_PROTOCOL.md` (R11)** · `specification/DSHOT_PROTOCOL.md`
 ADR-002 established the spec's GCR symbol table is wrong (agrees with AM32's real
@@ -1273,18 +1285,21 @@ recorded in ADR-002 and no cross-motor misassociation.
 *Superseded in part 2026-08-29 by W1.* Characterization never actually needed the Phase 4
 gate or the full W4 harness — DSHOT300 itself was originally validated the same way, via bare
 `DShotPIO` in a standalone test script, not through the (still unbuilt) transaction engine.
-W1's spike did exactly this for DSHOT600 and DSHOT1200 and populated `BIDIR_PROFILES` with
-both (`8_000_000`, sharing one entry — see W1 for why): measured bit period ~1.28-1.29µs,
-small-scale CRC-valid 6/6 and 4/4 respectively, confirmed working through the real public
-`DShotPIO` API. DShot1200 turned out to have a reason to support it after all (same reply
-timing as DShot600 on this ESC) rather than staying unsupported.
+W1's spike did exactly this for DSHOT600 and populated `BIDIR_PROFILES` with a validated
+entry (`8_000_000`): measured bit period ~1.28µs, small-scale CRC-valid 6/6, confirmed working
+through the real public `DShotPIO` API. DShot1200 was also swept and measured working
+(4/4 CRC-valid, same ~1.28-1.29µs reply timing as DShot600, explained by AM32's coarse
+2-band rate detection) but was deliberately excluded from `BIDIR_PROFILES`: AM32's own
+README and wiki.am32.ca both document bidirectional support for DSHOT300/600 only, so
+DShot1200 working here is undocumented incidental behavior, not a supported feature — it
+stays unsupported (`ValueError`), matching this item's original default.
 
 **Remaining scope, now genuinely gated on Phase 4/W4/W8:** the *full* W4/W8-level acceptance
 bar (≥10,000+ frames, saturated/starvation conditions, association-rate counters) has only
-ever been run for DSHOT300 — DSHOT600/1200 have only the small-scale spike data above, not
-this larger-scale characterization. That part still needs the W4 harness to exist first.
-**Done when:** DShot600 *and* DShot1200 bidir pass the same W4/W8-level acceptance as
-DSHOT300 (not just the small-scale spike check); the speed matrix in ADR-002 updated.
+ever been run for DSHOT300 — DSHOT600 has only the small-scale spike data above, not this
+larger-scale characterization. That part still needs the W4 harness to exist first.
+**Done when:** DShot600 bidir passes the same W4/W8-level acceptance as DSHOT300 (not just
+the small-scale spike check); the speed matrix in ADR-002 updated.
 
 **W14 — Hygiene batch (R12)** · `driver/dshot_pio.py:334-337`
 The `throttle < 0` guard's message says "Throttle should be greater than 0." — zero is

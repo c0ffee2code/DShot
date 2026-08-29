@@ -2,7 +2,10 @@
 # constructor now looks up rx_speed per dshot_speed instead of the old
 # hardcoded 4MHz, by exercising DSHOT600 through the real API (not the
 # spike's hand-built StateMachine bypass), and confirm the ValueError guard
-# fires for a dshot_speed with no verified profile (DSHOT150).
+# fires for dshot_speeds with no verified profile - DSHOT150 (never
+# measured) and DSHOT1200 (measured working, but deliberately excluded:
+# AM32 only documents bidirectional support for DSHOT300/600 - see
+# BIDIR_PROFILES's comment in driver/dshot_pio.py).
 #
 # Not a permanent regression test - throwaway, matches this project's
 # convention for one-off verification scripts (see test_bidir_rx_raw.py's
@@ -18,10 +21,10 @@ SETTLE_THROTTLE = 200
 STOP_DURATION_MS = 300
 
 
-def test_dshot150_rejected():
-    print("--- DSHOT150 + bidirectional=True should raise ValueError ---")
+def test_speed_rejected(speed, label):
+    print(f"--- {label} + bidirectional=True should raise ValueError ---")
     try:
-        DShotPIO(0, Pin(2), DSHOT_SPEEDS.DSHOT150, bidirectional=True, rx_state_machine_id=1)
+        DShotPIO(0, Pin(2), speed, bidirectional=True, rx_state_machine_id=1)
     except ValueError as e:
         print(f"  OK - raised ValueError: {e}")
     else:
@@ -80,6 +83,7 @@ def test_dshot600_via_public_api():
     print()
 
 
-test_dshot150_rejected()
+test_speed_rejected(DSHOT_SPEEDS.DSHOT150, "DSHOT150")
+test_speed_rejected(DSHOT_SPEEDS.DSHOT1200, "DSHOT1200")  # unsupported - see BIDIR_PROFILES comment
 test_dshot600_via_public_api()
 print("=== Test Complete ===")
