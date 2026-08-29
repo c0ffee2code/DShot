@@ -147,6 +147,18 @@ def dshot_bidir_tx():
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=32)
 def dshot_bidir_rx():
     wrap_target()
+    # IRQ 4 is a single sticky, block-level flag, not a queue: if this SM was
+    # still busy (autopush stalled on a full RX FIFO - see rx_read()'s
+    # comment) when dshot_bidir_tx fired irq(4) for a frame we then missed,
+    # that signal would otherwise sit latched and get consumed as if it were
+    # fresh the moment we reach wait() below - re-phasing the predelay +
+    # marker search against the wrong point in time and risking a capture of
+    # TX's own waveform instead of a real reply (see R1/R2 in
+    # bidirectional_dshot_review.md). Clearing first forces the wait below to
+    # block for a genuinely new release, every time - including the very
+    # first iteration after start(), which is what also prevents a flag from
+    # a previous run surviving stop()'s restart() into this one.
+    irq(clear, 4)
     wait(1, irq, 4)                  # block for dshot_bidir_tx's per-frame release signal (auto-clears the flag)
 
     # ~4.7us fixed delay before listening - empirically confirmed correct
@@ -248,9 +260,15 @@ class DShotPIO:
                                        freq=rx_speed, in_base=pin)
 
     def start(self):
-        self.sm.active(1)
         if self.rx_sm is not None:
+            # Flush any leftover words from a previous run and start RX
+            # listening before TX can release the pin and fire its first
+            # irq(4) - see dshot_bidir_rx's irq(clear, 4) comment for the
+            # rest of this epoch-clean boundary.
+            while self.rx_sm.rx_fifo():
+                self.rx_sm.get()
             self.rx_sm.active(1)
+        self.sm.active(1)
 
     def rx_read(self):
         """

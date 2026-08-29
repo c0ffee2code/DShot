@@ -993,7 +993,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | — | **Phase 2 gate: transaction failure modes characterized with data, not argument** | — | — | — |
 | W6 | Decide the transaction model (ADR) | R1, R3 | M | BLOCKED — needs user decision (present W4/W5 data first) |
 | W7 | Implement transaction model + atomic `read_capture()` | R1, R2, R3 | L | TODO |
-| W8 | Epoch-clean `start()`/`stop()` + startup ordering | R8, R9, TC | M | TODO |
+| W8 | Epoch-clean `start()`/`stop()` + startup ordering | R8, R9, TC | M | DONE |
 | — | **Phase 3 gate: continuous transaction engine proven — integration may build on it** | — | — | — |
 | W9 | On-Pico eRPM decoder (returns eRPM, not RPM) | R10, R15 | L | TODO |
 | W10 | Telemetry health state | R16 | M | TODO |
@@ -1094,6 +1094,12 @@ pollute the post-arm statistics.
 **Done when:** the harness runs ≥10,000 frames on hardware and its counters are recorded in
 ADR-002 (new subsection), whatever they show.
 
+*Note (2026-08-29):* R1/R2's stale-IRQ-4 corruption mechanism is now fixed (see W8) and
+verified at small scale (`tests/test_bidir_rx_stall_recovery.py`). This harness's job is
+still open — it characterizes sustained/saturated throughput and association rate, which the
+small repro doesn't — but it now runs against a driver whose known corruption path is
+closed, not the one R1/R2 originally described.
+
 **W5 — RX starvation and recovery characterization (R2, TB)** · extends W4's harness
 Deliberately stop draining the RX FIFO for ~5ms mid-run, then resume, repeatedly. Record
 what actually happens: does the RX SM stall mid-capture (expected: `autopush` blocks
@@ -1103,6 +1109,12 @@ capture validity returns to 100% deterministically or requires a restart. This d
 main input.
 **Done when:** observed stall/garbage/recovery behavior is documented in ADR-002 with
 counters (captures lost, invalid captures after resume, frames until recovery).
+
+*Note (2026-08-29):* a single-shot, smaller-scale version of exactly this scenario was run
+as part of fixing W8 (`tests/test_bidir_rx_stall_recovery.py` — 10 withheld frames, one
+withhold/resume cycle, not the "repeatedly" this item calls for) and is recorded there with
+before/after CRC-valid rates. That confirmed the fix and is not a substitute for this item's
+full repeated-cycle, counter-driven characterization, which W6 still needs.
 
 **W6 — Decide the transaction model (R1, R3)** · ADR (extend ADR-002 or new ADR-005)
 **BLOCKED — needs user decision.** With W4/W5 data in hand, choose the synchronization
@@ -1131,15 +1143,39 @@ chosen model's invariant over ≥100,000 frames (target ≥99.9% association, 0 
 and the W5 starvation scenario recovers deterministically with losses counted, not silent.
 
 **W8 — Epoch-clean `start()`/`stop()` + startup ordering (R8, R9, TC)** · `driver/dshot_pio.py:250-320`
-`start()` currently activates TX before RX (`:250-253`), and `stop()`'s `restart()` clears
-SM state but not FIFOs — and not the block-level IRQ-4 flag, which survives into the next
-run. Make `start()` establish a clean epoch: flush RX FIFO, clear stale IRQ-4 (e.g.
-`PIO.irq()`-level clear or a documented equivalent), activate RX first, TX last; make
-`stop()` leave no state that poisons the next `start()`. First telemetry after a restart
-must be flagged or discarded per W10's validity model, never silently served stale.
-**Done when:** a lifecycle stress test (new `tests/test_bidir_lifecycle.py`) runs ≥1,000
-start→transmit→capture→stop cycles on hardware with zero stale-capture leaks (first capture
-each cycle either valid-and-fresh or explicitly invalid) and zero stuck SMs.
+**DONE 2026-08-29.** Re-triaging the backlog surfaced that this bug's mechanism is not
+restart-specific: IRQ 4 is a single sticky, block-level flag, so it goes stale exactly the
+same way *within a single continuous run* whenever `dshot_bidir_rx`'s `autopush` stalls on a
+full RX FIFO (R1/R2 — the same stale flag also drives R8/R9's restart-survival case; both
+findings share one fix). Fixed by adding `irq(clear, 4)` at the top of `dshot_bidir_rx`'s
+`wrap_target()`, before `wait(1, irq, 4)`, so every iteration — including the first one after
+`start()` — blocks for a genuinely fresh release signal instead of a possibly-stale one.
+Also added to `start()`: flush the RX FIFO before activating, and activate `rx_sm` before
+`sm` (was TX-first).
+
+Verified on hardware with a targeted repro (`tests/test_bidir_rx_stall_recovery.py`):
+withhold draining `rx_read()` for 10 frames at settled throttle (enough to fill the 4-word
+RX FIFO and stall the SM), then resume and decode offline.
+- **Pre-fix:** 19/22 CRC-valid, with 3 consecutive corrupted captures at the stall boundary —
+  one measured a 6.0-cycle bit period against a ~10.2-10.3 cycle baseline, i.e. a plausible-
+  looking but wrong decode, the exact silent-corruption failure mode R1/R2 describes.
+- **Post-fix:** 20/21 CRC-valid, with exactly 1 affected capture — a cleanly truncated,
+  obviously-invalid word pattern (correctly rejected, not silently misdecoded).
+- **Regression check** (`tests/test_bidir_rx_raw.py`'s standard sweep): 17/17 CRC-valid,
+  eRPM still monotonic across throttle steps 100/200/300 (~21.6k / ~48.8k / ~75.6k),
+  matching the original ADR-002 baseline exactly.
+
+The original "Done when" (a ≥1,000-cycle `start()`→`stop()` lifecycle stress test) is not
+required to close this item: per the same re-triage, no current code path cycles
+`start()`/`stop()` at all (every existing test does exactly one of each), so that stress
+scenario remains unproven-to-occur rather than a live risk — building it now would repeat
+the "build before measuring" pattern already triaged out of W1/W9. Revisit if W11 introduces
+real arm/disarm restart cycling in production use.
+
+This also gives W4/W5 a corrected baseline: their "Done when" targets (a saturated
+≥10,000/≥100,000-frame harness and repeated starvation characterization with counters) are
+still open and not satisfied by this smaller repro, but they now characterize a driver whose
+known stale-flag corruption path is closed, rather than one where R1/R2 was still live.
 
 **W9 — On-Pico eRPM decoder (R10, R15)** · new `driver/` module + `scripts/decode_bidir_capture.py`
 Port the offline run-length reconstruction decode (marker edge → period estimate →
