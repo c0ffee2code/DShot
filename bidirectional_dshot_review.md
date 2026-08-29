@@ -984,7 +984,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 
 | ID | Title | Findings | Effort | Status |
 |---|---|---|---|---|
-| W1 | Bidir speed profiles; reject uncalibrated speeds | R4, R5 | S | TODO |
+| W1 | Characterize bidir RX at faster DShot speeds; add profile/guard only if warranted | R4, R5 | M | TODO |
 | W2 | Fix GCR table in `specification/DSHOT_PROTOCOL.md` | R11 | S | TODO |
 | W3 | Add verification-status table to ADR-002 | R6 | S | TODO |
 | — | **Phase 1 gate: docs and API stop overstating what is verified — safe to pause the project here** | — | — | — |
@@ -1007,23 +1007,57 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 
 ### Work items
 
-**W1 — Bidir speed profiles; reject uncalibrated speeds (R4, R5)** · `driver/dshot_pio.py:190-248`
-Replace the hardcoded `rx_speed = 4_000_000` (line 246, comment: "Tuned for DSHOT300 only")
-and the PIO program's baked-in ~4.7µs predelay assumption with an explicit profile table
-keyed by DShot speed, e.g. `BIDIR_PROFILES = {DSHOT_SPEEDS.DSHOT300: (rx_speed, ...)}` —
-only DSHOT300 populated. `__init__` with `bidirectional=True` and a speed absent from the
-table raises `ValueError` naming the supported speeds. The predelay loop count lives in the
-profile conceptually even if the PIO program can't take it as a runtime parameter — at
-minimum, name the constants and document which profile they belong to. Profiles are keyed by
-DShot speed only — per the design constraint, values are calibrated against AM32-as-shipped
-and there is no ESC-family dimension (the review's R5 "ESC/firmware-specific parameter"
-generality is deliberately not built). Ground truth: ADR-002 "RX redesign" section
-(rx_speed rationale) — but note finding A1: the predelay's verified value is 14 RX cycles
-≈ 3.5µs at the current 4MHz clock, not the "~4.7µs" the docs currently claim; use the
-cycle count, not the stale wall-clock label, when building the profile.
-**Done when:** a deployed test shows `DShotPIO(..., DSHOT_SPEEDS.DSHOT600, bidirectional=True, ...)`
-raises `ValueError`, and the existing DSHOT300 path still arms and captures
-(`tests/test_bidir_rx_raw.py` unchanged behavior).
+**W1 — Characterize bidir RX at faster DShot speeds; add profile/guard only if warranted (R4, R5)** ·
+`driver/dshot_pio.py:190-248`, new spike test, `scripts/decode_bidir_capture.py`
+
+**Reframed 2026-08-25** (see conversation this date): the original framing — add a
+`ValueError` in `__init__` for any `dshot_speed != DSHOT300` when `bidirectional=True` —
+turned out to be validating a combination nothing in the repo can currently reach. Checked
+by grep: every existing bidir call site (`test_bidir_rx_raw.py`, `test_bidir_tx_arm.py`,
+`test_bidir_rx_sweep.py`) already hardcodes `DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300`, and
+`MotorThrottleGroup` doesn't expose `bidirectional` at all yet (W11). Per CLAUDE.md, adding
+validation for a scenario nothing can currently produce isn't warranted on its own.
+
+Reframed as: measure whether the current dense-oversampling RX design (`dshot_bidir_rx`,
+`rx_speed=4MHz`, 14-cycle/~3.5µs predelay — see finding A1) actually breaks at a faster
+DShot speed, or keeps working, *before* deciding whether a guard/profile table is needed.
+Back-of-envelope prediction (not yet a measurement): ADR-002's own pre-implementation 5/4×
+bitrate table puts DSHOT600's real GCR bit period at roughly half DSHOT300's measured
+~2.5-2.6µs, i.e. ~1.3µs. At the current `rx_speed`, the RX program's effective sample period
+is 0.5µs (2 PIO cycles @ 4MHz — see `scripts/decode_bidir_capture.py`'s module comment), so
+DSHOT600 would drop from ~5 samples/bit (the design's own stated minimum, "5-6+ samples per
+plausible real bit") to ~2.5 samples/bit — plausibly too sparse for `reconstruct_bits()`'s
+run-length method to resolve bit boundaries reliably. This item replaces that prediction
+with data.
+
+Plan:
+1. Before hardware: check AM32 firmware source (`Src/signal.c`, the reply-generation path)
+   for whether ESC turnaround-to-reply-start scales with the request DShot rate or is a
+   roughly fixed processing delay — this determines whether the 14-cycle predelay needs its
+   own retuning at a faster speed, independent of `rx_speed`.
+2. Write a standalone spike script (does not touch `driver/` or `DShotPIO`'s public shape)
+   that builds channel 1's TX/RX state-machine pair directly at `DSHOT_SPEEDS.DSHOT600`,
+   sweeping `rx_speed` across a couple of candidates (current 4MHz as a control, and ~8MHz to
+   restore the same oversampling density) while reusing the existing `dshot_bidir_rx` program
+   unchanged.
+3. Capture raw replies at each `rx_speed` candidate in the same word format
+   `test_bidir_rx_raw.py` already prints, and decode them with
+   `scripts/decode_bidir_capture.py` — note its `RX_CLOCK_HZ = 4_000_000` constant (line 101)
+   needs to vary per capture set; parameterize it for this spike rather than hand-editing.
+4. Record CRC-valid rate and measured real bit period per candidate `rx_speed`.
+
+Decision this produces: if 4MHz reliably decodes DSHOT600 too, the guard is unneeded and
+this item should close as `SKIPPED` with the data as the reason. If 4MHz garbles/fails and a
+different `rx_speed` fixes it, that's direct evidence the guard belongs (it prevents exactly
+this silent-wrong-decode failure) — and it also hands W13 a head start on its DSHOT600
+profile, so this item would instead close by populating `BIDIR_PROFILES` with both DSHOT300
+and DSHOT600 entries plus the `ValueError` for anything not in the table, rather than a bare
+guard with no second profile behind it.
+
+**Done when:** the spike's captures are decoded offline, CRC-valid rate and measured bit
+period at each tested `rx_speed` are recorded in this document (exploratory — not yet a
+verified ADR-002 finding), and the status-table row reflects the resulting decision (either
+`SKIPPED (reason)`, or `DONE` with a populated `BIDIR_PROFILES` + guard).
 
 **W2 — Fix GCR table in `specification/DSHOT_PROTOCOL.md` (R11)** · `specification/DSHOT_PROTOCOL.md`
 ADR-002 established the spec's GCR symbol table is wrong (agrees with AM32's real
