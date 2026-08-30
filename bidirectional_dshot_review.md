@@ -957,11 +957,22 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
    in the commit body.
 4. After completing an item: flip its status-table row, and note any deviations directly
    under the item.
-5. Verification: hardware tests deploy via `python scripts/deploy.py tests/<name>.py` (the
-   `/deploy` skill). The bench is live — motors bolted down, channel 1 = GPIO 2
-   (bidirectional, motor+prop, SMs 0/1 on PIO0), channels 2–4 = GPIO 3/4/5 (TX-only, SMs
-   4/5/6 on PIO1). DShot300 only. Offline decode of printed captures:
-   `scripts/decode_bidir_capture.py`. Arming needs 3000ms of back-to-back frames.
+5. Verification: hardware tests deploy via `python scripts/deploy.py <name>.py` (the
+   `/deploy` skill; filename only, resolved against `tests/` internally). The bench is live —
+   motors bolted down, channel 1 = GPIO 6 (bidirectional, motor+prop, SMs 0/1 on PIO0),
+   channels 2–4 = GPIO 7/8/9 (TX-only, SMs 4/5/6 on PIO1). Moved 2026-08-30 from the original
+   GPIO 2/3/4/5 block to free GPIO4/5 (I2C) and GPIO16-19 (SPI0) for the PicoBell Adalogger
+   SD+RTC breakout (see W17) — **any pre-2026-08-30 note or archived test in this document
+   that says GPIO2/3/4/5 reflects the old wiring, not the current bench.** DShot300 only.
+   Offline decode of printed captures: `scripts/decode_bidir_capture.py` (thin wrapper now —
+   the actual algorithm lives in `scripts/dshot_bidir_decode.py`, see W17). Arming needs
+   3000ms of back-to-back frames. Most of the diagnostic scripts referenced by name below
+   (`test_bidir_rx_raw.py`, `test_bidir_rx_sweep.py`, `test_bidir_rx_stall_recovery.py`,
+   `test_bidir_rx_speed_sweep.py`, `test_bidir_profile_check.py`, and others) were retired
+   2026-08-30 once their findings were captured here/in ADR-002 — treat every such reference
+   below as historical provenance for a finding, not as a script you can still run. App/bench
+   infrastructure (`core1_runner.py` and friends) now lives under `tests/harness/`, not
+   `tests/` directly.
 6. Ground truth: ADR-002 "Implementation Update" (authoritative); AM32 firmware source
    at https://github.com/am32-firmware/AM32
    (`Src/dshot.c` `gcr_encode_table`, `Src/signal.c` `transfercomplete()`); Betaflight
@@ -1004,6 +1015,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | W14 | Hygiene batch | R12 | S | TODO |
 | W15 | ADR-002 accuracy fixes | A1, A2, A3, A6, A7 | S | TODO |
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
+| W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
 
 ### Work items
 
@@ -1358,3 +1370,64 @@ check available on this bench.
 **Done when:** the measured ratio pins the pole count to an integer consistently across
 ≥3 throttle levels; `MOTOR_POLES` is corrected (or confirmed) with provenance in the
 script and ADR-002, and the ADR's "unverified" caveats are resolved.
+
+**W17 — Dual-core raw capture + SD/PC decode pipeline (architecture pivot)** ·
+`tests/harness/bidir_capture_runner.py`, `tests/harness/bidir_capture_sink.py`,
+`tests/harness/sdcard.py`, `tests/harness/pcf8523.py`, `tests/test_bidir_rx_capture.py`,
+`scripts/dshot_bidir_decode.py`, `scripts/set_rtc.py`, `scripts/pull_captures.py`,
+`scripts/analyze_bidir_capture_log.py`
+
+**DONE 2026-08-30.** Not an R-numbered item from the third-party review — a direct
+user-directed architecture change, run in parallel with the R-driven backlog above. Splits
+ESC communication from data logging the same way the sister test rig (Flight-Benchy) already
+does: **Core 1** owns all ESC communication (send commands, drain raw RX words via
+`BidirCaptureRunner`, a lock-free single-producer/single-consumer ring buffer using the same
+atomic-write discipline as `MotorThrottleGroup`'s shared throttle array, ADR-001); **Core 0**
+only orchestrates and writes each raw 4-word capture to a timestamped session on the
+PicoBell Adalogger's SD card (`BidirCaptureSink`). No GCR decoding happens on-device at all
+in this path — decode moved entirely to a PC-side pipeline (`scripts/dshot_bidir_decode.py`,
+extracted as the single shared implementation from what used to be 3 duplicated copies).
+
+Relationship to existing items, so a future session doesn't read this as replacing them:
+- **W9 (on-Pico eRPM decoder) is not superseded.** This pipeline is for offline
+  diagnostics/logging, where "decode later, on the PC" is fine. A future closed-loop
+  controller reading live eRPM every command cycle still needs W9's on-device decoder —
+  that's a different consumer with a different latency requirement. Both can exist.
+- **W4/W5 (saturated/starvation stress harness) are not satisfied by this.** The capture
+  loop here deliberately paces at 1kHz (matching normal steady-state operation), not
+  "no intentional application pacing" — W4/W5's specific saturation/starvation scenarios
+  are still open. This pipeline is a good foundation for running them for minutes at a time
+  with the results actually preserved, if a future session wants to build on it.
+- Retired `test_bidir_rx_soak.py`/`test_bidir_rx_soak_dual.py` (this session's own earlier,
+  now-superseded on-device live-decode soak tests) and 10 other one-off diagnostic scripts
+  whose findings are already captured in ADR-002/this document — see the updated rule 5 note
+  above. `tests/` now holds only `test_slow_spin.py` and `test_bidir_rx_capture.py`; bench
+  infrastructure moved to `tests/harness/`.
+- Channel wiring moved to a contiguous GPIO6-9 block (was GPIO2/3/4/5) to free GPIO4/5 (I2C)
+  and GPIO16-19 (SPI0) for the PicoBell. `test_slow_spin.py` updated to match — it was still
+  hardcoded to the old GPIO2-5 block, which after the rewiring would have driven DShot PIO
+  output onto the PicoBell's live I2C bus (GPIO4/5) had it been run.
+
+**Verified on hardware, single channel (channel 1, DSHOT300, throttle 300, 3-minute hold):**
+- No-SD baseline: 122,455 raw captures, 0 dropped, ~680 records/s, largest gap 8.4ms.
+- With SD writes enabled: 116,705 raw captures, 0 dropped, ~648 records/s, largest gap
+  14.5ms (SD write overhead, as expected).
+- Full round trip — pull (`scripts/pull_captures.py`) + offline decode
+  (`scripts/analyze_bidir_capture_log.py`, via `dshot_bidir_decode.py`) — reproduced
+  **116,705/116,705 CRC-valid (100%)**, eRPM averaging ~76,386 at steady state, matching the
+  existing ADR-002 baseline (~76k eRPM at throttle 300).
+- One transient hiccup surfaced and handled: the first `pull_captures.py` transfer of the
+  ~2.5MB session came back 96 bytes short (detected by the script's own size check, nothing
+  corrupted on the SD card itself); a retry transferred byte-exact. Not yet characterized
+  whether this recurs at scale — worth watching if future sessions pull much larger sessions.
+
+**Done when (met):** dual-core split holds up under a real multi-minute hold with zero
+ring-buffer drops; raw captures survive a full SD write → pull → offline-decode round trip
+with CRC-valid rate matching the established baseline.
+
+**Not done / left for a future session:** dual-channel capture (this pass is single-channel
+only, matching the confirmed-with-user scope); RTC battery-backup persistence across power
+cycles was not verified (the PCF8523's oscillator-stop flag was found set on a later run in
+the same session, requiring a re-run of `scripts/set_rtc.py` — could be a genuinely dead/
+missing coin cell, or could be normal for a brand-new RTC that had not yet held a charge;
+undetermined).

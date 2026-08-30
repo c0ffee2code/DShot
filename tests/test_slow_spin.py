@@ -10,8 +10,11 @@
 # default, even at max frame rate - needs the full DEFAULT_ARM_DURATION_MS
 # (see driver/motor_throttle_group.py and README.md "Verified Parameters").
 #
-# Hardware: 4-in-1 ESC, channel 1 -> GPIO 2 (motor + prop mounted),
-# channels 2-4 -> GPIO 3/4/5 (wired but no motor mounted - idle only).
+# Hardware: 4-in-1 ESC, channel 1 -> GPIO 6 (motor + prop mounted),
+# channels 2-4 -> GPIO 7/8/9 (wired but no motor mounted - idle only).
+# Moved from the original GPIO 2/3/4/5 block to make room for the PicoBell
+# Adalogger's RTC (I2C on GPIO4/5) and SD card (SPI0 on GPIO16-19) - see
+# tests/test_bidir_rx_capture.py.
 
 from machine import Pin
 from dshot_pio import DSHOT_SPEEDS
@@ -20,7 +23,7 @@ from core1_runner import Core1Runner
 import utime
 
 # Configuration
-MOTOR_PINS = [2, 3, 4, 5]
+MOTOR_PINS = [6, 7, 8, 9]
 DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300
 THROTTLE = 100
 RUN_DURATION_SEC = 10
