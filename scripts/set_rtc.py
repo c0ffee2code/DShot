@@ -1,7 +1,7 @@
 # set_rtc.py - set the PicoBell's PCF8523 to the current PC time via mpremote.
 #
 # Runs on the host (not on the Pico). Reads the local clock, then uses
-# mpremote exec to push the time to the PCF8523 via tests/pcf8523.py.
+# mpremote exec to push the time to the PCF8523 via tests/harness/pcf8523.py.
 # The RTC is battery-backed (CR1220 coin cell) so this is a one-time setup
 # step, not something that needs to run before every capture session -
 # BidirCaptureSink.init_session() raises OSError if the clock was never set.
@@ -10,7 +10,7 @@
 #   python scripts/set_rtc.py
 #
 # Pico must be connected on COM10. mpremote interrupts any running script on
-# connect. Assumes tests/pcf8523.py has already been uploaded (deploy.py does
+# connect. Assumes tests/harness/pcf8523.py has already been uploaded (deploy.py does
 # this as part of its normal LIBRARY_FILES upload).
 
 import datetime

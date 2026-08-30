@@ -66,7 +66,7 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
 
-**`tests/core1_runner.py`** - Example application code, deliberately *not* part of the library. A Core 1 loop that drives `update()` at 1kHz; projects copy and adapt it.
+**`tests/harness/`** - Example application code and bench infrastructure, deliberately *not* part of the library: `core1_runner.py` (a Core 1 loop that drives `update()` at 1kHz; projects copy and adapt it), `bidir_capture_runner.py`/`bidir_capture_sink.py` (dual-core raw bidir RX capture + SD logging, see `tests/test_bidir_rx_capture.py`), and the ported `sdcard.py`/`pcf8523.py` drivers for the PicoBell Adalogger SD+RTC breakout. Kept separate from the runnable `test_*.py` scripts directly under `tests/` so the two aren't mixed together.
 
 ### DShot Protocol
 

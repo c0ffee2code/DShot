@@ -1,9 +1,10 @@
 # Dual-core raw telemetry capture test - replaces the on-device live-decode
 # soak tests (test_bidir_rx_soak.py, test_bidir_rx_soak_dual.py, both
-# retired). Core 1 (via BidirCaptureRunner, see tests/bidir_capture_runner.py)
-# owns ESC communication; this script runs on Core 0 as the orchestrator,
-# draining raw 4-word captures and writing them to the PicoBell's SD card via
-# BidirCaptureSink (see tests/bidir_capture_sink.py).
+# retired). Core 1 (via BidirCaptureRunner, see
+# tests/harness/bidir_capture_runner.py) owns ESC communication; this script
+# runs on Core 0 as the orchestrator, draining raw 4-word captures and
+# writing them to the PicoBell's SD card via BidirCaptureSink (see
+# tests/harness/bidir_capture_sink.py).
 #
 # No GCR decoding happens here - that's scripts/dshot_bidir_decode.py's job,
 # run on the PC against whatever gets logged.

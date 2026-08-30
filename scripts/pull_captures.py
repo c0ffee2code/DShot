@@ -28,7 +28,7 @@ REMOTE_DIR = "/sd/dshot_captures"
 LOCAL_DIR = Path("captures")
 SESSION_FILES = ("meta.txt", "capture.bin")
 
-# PicoBell Adalogger for Pico SD pins - see tests/bidir_capture_sink.py
+# PicoBell Adalogger for Pico SD pins - see tests/harness/bidir_capture_sink.py
 _SD_MOUNT = """\
 import os, time
 from machine import SPI, Pin

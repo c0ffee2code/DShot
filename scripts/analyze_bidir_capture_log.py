@@ -21,7 +21,7 @@ from pathlib import Path
 from dshot_bidir_decode import analyze_capture
 
 # ticks_us, throttle, word0, word1, word2, word3 - must match
-# tests/bidir_capture_sink.py's _RECORD_FMT
+# tests/harness/bidir_capture_sink.py's _RECORD_FMT
 _RECORD_FMT = "<IH4I"
 _RECORD_SIZE = struct.calcsize(_RECORD_FMT)
 

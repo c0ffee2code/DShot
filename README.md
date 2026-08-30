@@ -80,7 +80,7 @@ ESCs disarm if commands stop arriving, so whatever context you choose must call
 the ESC firmware - see "Verified Parameters" below; some ESCs need
 near-back-to-back frames just to complete arming. On this test bench that
 means a dedicated Core 1 thread, keeping Core 0 free for the display and
-buttons - see `tests/core1_runner.py` for a ready-made example to copy into
+buttons - see `tests/harness/core1_runner.py` for a ready-made example to copy into
 your project.
 
 ## Quick Start
@@ -114,7 +114,7 @@ motor.stop()  # Deactivate - the ESC times out and the motor cannot spin
 from machine import Pin
 from dshot_pio import DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
-from core1_runner import Core1Runner  # your code - see tests/core1_runner.py
+from core1_runner import Core1Runner  # your code - see tests/harness/core1_runner.py
 import utime
 
 # Create group with Pin objects (DShotPIO instances created internally)

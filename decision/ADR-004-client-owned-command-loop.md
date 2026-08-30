@@ -64,7 +64,7 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 
 The library ships no `MotorRunner` interface for the application to implement. The shape of such an interface — callback versus poll, who owns the interval, restart semantics, how failures surface — is precisely what varies between projects, so defining it in `driver/` would re-create the same coupling one layer up.
 
-`tests/core1_runner.py` is a concrete Core 1 runner, and it is explicitly **application code**, kept next to the scripts that use it rather than in `driver/`. Projects copy and adapt it. If a genuinely common shape emerges across several projects, extract it then, from real usage rather than speculation.
+`tests/harness/core1_runner.py` is a concrete Core 1 runner, and it is explicitly **application code**, kept next to the scripts that use it rather than in `driver/`. Projects copy and adapt it. If a genuinely common shape emerges across several projects, extract it then, from real usage rather than speculation.
 
 ### Sub-Decision: Non-blocking arming
 
@@ -137,7 +137,7 @@ Reversed:
 
 ### Negative
 
-- **More application code.** Every consumer must supply a loop; the test bench needs `tests/core1_runner.py`. This is the cost of the inversion and is accepted deliberately.
+- **More application code.** Every consumer must supply a loop; the test bench needs `tests/harness/core1_runner.py`. This is the cost of the inversion and is accepted deliberately.
 - **The application can get it wrong.** Nothing prevents calling `update()` too slowly. `update_age_ms()` makes it detectable, but detection is now the application's job.
 - **Arming requires a poll loop** rather than a single blocking call — slightly more verbose at the call site.
 

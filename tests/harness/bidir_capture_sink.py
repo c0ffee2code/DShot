@@ -1,7 +1,7 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library.
 #
 # Writes raw bidir DShot capture records (as produced by
-# tests/bidir_capture_runner.py's BidirCaptureRunner.drain()) to a
+# tests/harness/bidir_capture_runner.py's BidirCaptureRunner.drain()) to a
 # timestamped session folder on the PicoBell Adalogger's SD card.
 #
 # PicoBell Adalogger for Pico pinout (learn.adafruit.com/
