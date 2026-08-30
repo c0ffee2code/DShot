@@ -26,6 +26,7 @@ LIBRARY_FILES = [
     ("driver/dshot_pio.py", "dshot_pio.py"),
     ("driver/motor_throttle_group.py", "motor_throttle_group.py"),
     ("tests/core1_runner.py", "core1_runner.py"),
+    ("tests/bidir_capture_runner.py", "bidir_capture_runner.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
