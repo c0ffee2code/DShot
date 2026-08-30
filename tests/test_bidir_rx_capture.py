@@ -2,24 +2,27 @@
 # soak tests (test_bidir_rx_soak.py, test_bidir_rx_soak_dual.py, both
 # retired). Core 1 (via BidirCaptureRunner, see tests/bidir_capture_runner.py)
 # owns ESC communication; this script runs on Core 0 as the orchestrator,
-# draining raw 4-word captures and reporting throughput/drop stats.
+# draining raw 4-word captures and writing them to the PicoBell's SD card via
+# BidirCaptureSink (see tests/bidir_capture_sink.py).
 #
-# No GCR decoding happens here - that's now scripts/dshot_bidir_decode.py's
-# job, run on the PC against whatever gets logged. Until the PicoBell SD+RTC
-# breakout is wired (see bidirectional_dshot_review.md), this script has
-# nowhere durable to put the raw captures, so it only reports throughput -
-# proving the dual-core split and ring buffer hold up before building the
-# SD-writing side on top.
+# No GCR decoding happens here - that's scripts/dshot_bidir_decode.py's job,
+# run on the PC against whatever gets logged.
+#
+# The two TX-only motors that used to sit on GPIO4/GPIO5 moved to GPIO6/GPIO7:
+# the PicoBell Adalogger's RTC needs GPIO4 (SDA)/GPIO5 (SCL) for I2C, and its
+# SD card needs GPIO16-19 for SPI0 - see bidir_capture_sink.py's header.
 #
 # Throwaway diagnostic, not a permanent regression test - matches this
 # project's convention (see the retired test_bidir_rx_raw.py's header).
 
 from machine import Pin
-from dshot_pio import DShotPIO, DSHOT_SPEEDS
+from dshot_pio import DShotPIO, DSHOT_SPEEDS, BIDIR_PROFILES
 from bidir_capture_runner import BidirCaptureRunner
+from bidir_capture_sink import BidirCaptureSink
 import utime
 
 DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300
+RX_CLOCK_HZ = BIDIR_PROFILES[DSHOT_SPEED]
 
 ARM_DURATION_MS = 3000
 RAMP_STEPS = [(100, 3), (200, 3)]  # (throttle, seconds) - spin up gradually before holding
@@ -33,13 +36,20 @@ POLL_MS = 10  # how often Core 0 drains the ring buffer
 def test_bidir_rx_capture():
     print("=== Dual-Core Bidirectional RX Raw Capture Test (channel 1, DSHOT300) ===")
     print(f"Hold throttle={HOLD_THROTTLE} for {HOLD_DURATION_MS / 1000:.0f}s, "
-          f"Core 1 captures raw words, Core 0 only counts/reports (no SD yet)")
+          f"Core 1 captures raw words, Core 0 writes them to SD")
+    print()
+
+    print("Mounting SD card and opening session (before arming, so a bad "
+          "card fails fast)...")
+    sink = BidirCaptureSink()
+    sink.init_session(DSHOT_SPEED, RX_CLOCK_HZ)
+    print(f"Session: {sink.path}")
     print()
 
     ch1 = DShotPIO(0, Pin(2), DSHOT_SPEED, bidirectional=True, rx_state_machine_id=1)
     others = [
         DShotPIO(sm_id, Pin(pin), DSHOT_SPEED)
-        for sm_id, pin in zip((4, 5, 6), (3, 4, 5))
+        for sm_id, pin in zip((4, 5, 6), (3, 6, 7))
     ]
     all_motors = [ch1] + others
 
@@ -81,6 +91,7 @@ def test_bidir_rx_capture():
         while utime.ticks_diff(utime.ticks_ms(), hold_start) < HOLD_DURATION_MS:
             for record in runner.drain():
                 total_records += 1
+                sink.write_record(*record)
                 ticks_us = record[0]
                 if last_record_us is not None:
                     gap = utime.ticks_diff(ticks_us, last_record_us)
@@ -111,16 +122,21 @@ def test_bidir_rx_capture():
         runner.set_throttle(0)
         stop_start = utime.ticks_ms()
         while utime.ticks_diff(utime.ticks_ms(), stop_start) < STOP_DURATION_MS:
-            runner.drain()
+            for record in runner.drain():
+                total_records += 1
+                sink.write_record(*record)
             utime.sleep_ms(POLL_MS)
         runner.stop()
         for motor in all_motors:
             motor.drain()
             motor.stop()
         print("Motors stopped and deactivated.")
+        sink.close()
+        print("SD card flushed and unmounted.")
 
     print()
     print("=== Summary ===")
+    print(f"Session: {sink.path}")
     print(f"Total records captured: {total_records}")
     print(f"Records dropped (ring buffer full): {runner.dropped}")
     print(f"Largest gap between records: {largest_gap_us / 1000:.1f}ms")

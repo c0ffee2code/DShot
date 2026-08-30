@@ -18,3 +18,6 @@ Thumbs.db
 
 # MicroPython compiled files
 *.mpy
+
+# Pulled raw capture sessions (see scripts/pull_captures.py)
+captures/

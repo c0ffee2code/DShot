@@ -27,6 +27,9 @@ LIBRARY_FILES = [
     ("driver/motor_throttle_group.py", "motor_throttle_group.py"),
     ("tests/core1_runner.py", "core1_runner.py"),
     ("tests/bidir_capture_runner.py", "bidir_capture_runner.py"),
+    ("tests/sdcard.py", "sdcard.py"),
+    ("tests/pcf8523.py", "pcf8523.py"),
+    ("tests/bidir_capture_sink.py", "bidir_capture_sink.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
