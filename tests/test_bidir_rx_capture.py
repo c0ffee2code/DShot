@@ -9,9 +9,10 @@
 # No GCR decoding happens here - that's scripts/dshot_bidir_decode.py's job,
 # run on the PC against whatever gets logged.
 #
-# The two TX-only motors that used to sit on GPIO4/GPIO5 moved to GPIO6/GPIO7:
-# the PicoBell Adalogger's RTC needs GPIO4 (SDA)/GPIO5 (SCL) for I2C, and its
-# SD card needs GPIO16-19 for SPI0 - see bidir_capture_sink.py's header.
+# All four motor channels moved to a contiguous GPIO6-9 block (was
+# GPIO2/3/4/5) so the signal wiring bundle stays together: the PicoBell
+# Adalogger's RTC needs GPIO4 (SDA)/GPIO5 (SCL) for I2C, and its SD card
+# needs GPIO16-19 for SPI0 - see bidir_capture_sink.py's header.
 #
 # Throwaway diagnostic, not a permanent regression test - matches this
 # project's convention (see the retired test_bidir_rx_raw.py's header).
@@ -47,10 +48,10 @@ def test_bidir_rx_capture():
     print(f"Session: {sink.path}")
     print()
 
-    ch1 = DShotPIO(0, Pin(2), DSHOT_SPEED, bidirectional=True, rx_state_machine_id=1)
+    ch1 = DShotPIO(0, Pin(6), DSHOT_SPEED, bidirectional=True, rx_state_machine_id=1)
     others = [
         DShotPIO(sm_id, Pin(pin), DSHOT_SPEED)
-        for sm_id, pin in zip((4, 5, 6), (3, 6, 7))
+        for sm_id, pin in zip((4, 5, 6), (7, 8, 9))
     ]
     all_motors = [ch1] + others
 

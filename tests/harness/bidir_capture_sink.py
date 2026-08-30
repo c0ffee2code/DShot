@@ -7,9 +7,9 @@
 # PicoBell Adalogger for Pico pinout (learn.adafruit.com/
 # adafruit-picowbell-adalogger-for-pico/pinouts): SD card on SPI0
 # (MISO=GPIO16, CS=GPIO17, SCK=GPIO18, MOSI=GPIO19), PCF8523 RTC on I2C
-# (SDA=GPIO4, SCL=GPIO5, address 0x68). GPIO4/5 previously carried two
-# TX-only DShot channels in test_bidir_rx_capture.py - those moved to
-# GPIO6/7 to free the I2C bus for this board.
+# (SDA=GPIO4, SCL=GPIO5, address 0x68). All four DShot channels in
+# test_bidir_rx_capture.py sit on a contiguous GPIO6-9 block, clear of
+# both this board's I2C pins and its SD card's GPIO16-19.
 #
 # Mirrors the SdSink lifecycle proven on the sister test rig (Flight-Benchy,
 # src/telemetry/recorder.py: mount early/fail-fast, open a session directory
