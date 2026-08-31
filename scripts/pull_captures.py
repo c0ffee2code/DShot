@@ -26,7 +26,7 @@ PYTHON = sys.executable
 COM_PORT = "COM10"
 REMOTE_DIR = "/sd/dshot_captures"
 LOCAL_DIR = Path("captures")
-SESSION_FILES = ("meta.txt", "capture.bin")
+SESSION_FILES = ("meta.txt", "capture.bin", "scenario.json")
 
 # PicoBell Adalogger for Pico SD pins - see tests/harness/bidir_capture_sink.py
 _SD_MOUNT = """\
@@ -175,7 +175,13 @@ def main():
     for sid in new_ids:
         print(f"  {sid}")
 
-    transfer_timeout = max(120, len(new_ids) * 30)
+    # 30s/session was sized for the old ~2.5MB single-channel captures.
+    # W18's wider 76-byte record format (vs 22 bytes) makes a full 3-minute
+    # capture ~8MB+ - base64-over-serial at that size can take several
+    # minutes on its own, so this needs real headroom, not a per-session
+    # count-based guess. Generous on purpose: this is a one-off pull, not a
+    # hot path, so waiting longer costs nothing but time.
+    transfer_timeout = max(120, len(new_ids) * 240)
     ok_ids, failed_ids = fetch(new_ids, transfer_timeout=transfer_timeout)
 
     print(f"\nDone: {len(ok_ids)} pulled, {len(failed_ids)} failed.")

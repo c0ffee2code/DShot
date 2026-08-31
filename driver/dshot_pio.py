@@ -53,13 +53,43 @@ def dshot():
 # cycles on out()+jmp(not_x)+jmp(y_dec) before falling into their own tail on
 # the last bit only.
 #
-# irq(4) (Option A' - see ADR-002) fires once per frame, right after the pin
-# is released, to tell dshot_bidir_rx on the paired state machine that it is
-# safe to start its own fixed post-release delay before listening. This is a
-# non-blocking set (no "block" argument) - it does not wait for RX to be
+# irq(rel(1)) (Option A' - see ADR-002) fires once per frame, right after the
+# pin is released, to tell dshot_bidir_rx on the paired state machine that it
+# is safe to start its own fixed post-release delay before listening. This is
+# a non-blocking set (no "block" argument) - it does not wait for RX to be
 # listening, so it costs nothing if RX is inactive or still busy with a
-# previous capture. IRQ 4 is one of the four (4-7) that never reach the CPU,
-# used here purely for this SM-to-SM handshake.
+# previous capture.
+#
+# BACKGROUND: this used to be the literal irq(4) - a real bug, found
+# 2026-08-30 while building a multi-bidir-channel test harness (W18,
+# bidirectional_dshot_review.md), not caught by ADR-002's original
+# single-pair verification. IRQ flags 4-7 never reach the CPU, but they ARE
+# shared across every state machine on the same PIO block - literal irq(4)
+# is not a private TX-to-its-own-RX channel, it is one block-wide flag. With
+# only one bidir pair per block this was invisible; with two or more pairs
+# sharing a block, both RX state machines would wait on the SAME flag, and
+# either could consume the pulse meant for the other - silent cross-talk.
+#
+# The fix uses RP2040/2350's relative-IRQ addressing instead: `rel(k)`
+# resolves at runtime to a flag based on the EXECUTING state machine's own
+# id, so a TX and its paired RX land on the same flag as each other but a
+# DIFFERENT flag than any other pair on the same block - as long as every
+# pair uses the same TX-to-RX id offset, which is why DShotPIO.__init__
+# hard-enforces rx_state_machine_id == state_machine_id + 1 below (TX always
+# fires irq(rel(1)), RX always waits on irq(rel(0)) - see dshot_bidir_rx).
+#
+# STATUS: CONFIRMED WORKING on hardware 2026-08-30, second attempt. A first
+# attempt earlier the same day was reverted after channel 1 (sm0/rx1) got
+# 0/0 completed telemetry groups both alone and paired with channel 3 on
+# the same PIO0 block - but that revert was made on confounded evidence
+# (channel 1's ESC power turned out to be off), not a real driver failure:
+# channel 3, using this identical mechanism in that same run, got 100%
+# CRC-valid telemetry. With channel 1's power confirmed on and a clean
+# retest, two bidirectional pairs sharing PIO0 (channel 1 sm0/rx1 at
+# throttle 150, channel 3 sm2/rx3 at throttle 300) both produced 100%
+# CRC-valid telemetry with distinct, plausible, throttle-proportional eRPM
+# (~61.5k vs ~143.5k steady-state) - captures/2026-08-30_21-09-16. See
+# bidirectional_dshot_review.md's W18 entry for the full history.
 @asm_pio(sideset_init=PIO.OUT_HIGH, set_init=PIO.OUT_HIGH, out_shiftdir=PIO.SHIFT_LEFT, autopull=False)
 def dshot_bidir_tx():
     label("frame_start")
@@ -71,12 +101,12 @@ def dshot_bidir_tx():
     jmp(not_x, "zero")         .side(0)   [2] # 3 cycles, LOW, always executed regardless of bit value
     jmp(y_dec, "bitloop")      .side(0)   [2] # "one" path: 3 cycles LOW, loop unless this was bit 16 - mostly LOW (25% high) same as dshot_bidir's original bit=1
     set(pindirs, 0)            .side(0)   [1] # bit 16 only ("one" path): release the pin
-    irq(4)                     .side(0)   [0] # tell RX the pin was just released
+    irq(rel(1))                .side(0)   [0] # tell paired RX (id = this SM's id + 1) the pin was just released
     jmp("frame_start")         .side(0)   [0]
     label("zero")
     jmp(y_dec, "bitloop")      .side(1)   [2] # "zero" path: 3 cycles HIGH, loop unless this was bit 16 - mostly HIGH (62.5% high)
     set(pindirs, 0)            .side(1)   [1] # bit 16 only ("zero" path): release the pin
-    irq(4)                     .side(1)   [0] # tell RX the pin was just released
+    irq(rel(1))                .side(1)   [0] # tell paired RX (id = this SM's id + 1) the pin was just released
     jmp("frame_start")         .side(1)   [0]
 
 # GCR capture for a bidirectional DShot ESC's eRPM reply (Option A' - see
@@ -147,19 +177,24 @@ def dshot_bidir_tx():
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=32)
 def dshot_bidir_rx():
     wrap_target()
-    # IRQ 4 is a single sticky, block-level flag, not a queue: if this SM was
-    # still busy (autopush stalled on a full RX FIFO - see rx_read()'s
-    # comment) when dshot_bidir_tx fired irq(4) for a frame we then missed,
+    # irq(rel(0)): this RX's own id resolves to the SAME flag its paired TX
+    # targets with irq(rel(1)) - see dshot_bidir_tx's module comment for the
+    # full explanation, the cross-talk bug this replaces, and hardware
+    # confirmation that it works.
+    #
+    # That resolved flag is a single sticky flag, not a queue: if this SM
+    # was still busy (autopush stalled on a full RX FIFO - see rx_read()'s
+    # comment) when its paired TX fired its irq for a frame we then missed,
     # that signal would otherwise sit latched and get consumed as if it were
     # fresh the moment we reach wait() below - re-phasing the predelay +
-    # marker search against the wrong point in time and risking a capture of
-    # TX's own waveform instead of a real reply (see R1/R2 in
+    # marker search against the wrong point in time and risking a capture
+    # of TX's own waveform instead of a real reply (see R1/R2 in
     # bidirectional_dshot_review.md). Clearing first forces the wait below to
     # block for a genuinely new release, every time - including the very
     # first iteration after start(), which is what also prevents a flag from
     # a previous run surviving stop()'s restart() into this one.
-    irq(clear, 4)
-    wait(1, irq, 4)                  # block for dshot_bidir_tx's per-frame release signal (auto-clears the flag)
+    irq(clear, rel(0))
+    wait(1, irq, rel(0))             # block for the paired TX's per-frame release signal (auto-clears the flag)
 
     # ~4.7us fixed delay before listening - empirically confirmed correct
     # (see ADR-002): AM32's actual reply turnaround on this ESC sits here,
@@ -232,14 +267,33 @@ class DShotPIO:
                 to arm with a normal signal and switch afterward.
             rx_state_machine_id: Required when bidirectional=True. Creates a
                 second state machine that listens on the same pin for the
-                ESC's GCR telemetry reply (see dshot_bidir_rx). Must be on the
-                same PIO block as state_machine_id - a GPIO's function select
-                routes to one PIO block at a time (ids 0-3 -> PIO0, 4-7 ->
-                PIO1, 8-11 -> PIO2 on RP2350), so a TX/RX pair sharing a pin
-                must share a block, and IRQ 4 (see dshot_bidir_tx's irq(4))
-                must reach both, which inter-SM IRQs only do within one
-                block. start() activates both state machines; from then on
-                RX synchronises itself to each TX frame via that IRQ with no
+                ESC's GCR telemetry reply (see dshot_bidir_rx). Two
+                constraints, both enforced here:
+                (1) Must be on the same PIO block as state_machine_id - a
+                    GPIO's function select routes to one PIO block at a time
+                    (ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2 on RP2350),
+                    so a TX/RX pair sharing a pin must share a block, since
+                    inter-SM IRQs only reach state machines on the same
+                    block.
+                (2) Must be exactly state_machine_id + 1 - dshot_bidir_tx and
+                    dshot_bidir_rx synchronise via RP2040/2350's relative IRQ
+                    addressing (irq(rel(1)) / irq(rel(0)), not a literal
+                    flag number - see dshot_bidir_tx's comment), which
+                    resolves to a flag based on the EXECUTING state
+                    machine's own id. That only gives each pair on a shared
+                    block its own private flag if every pair uses the same
+                    TX-to-RX id offset - this implementation fixes that
+                    offset at +1. CONFIRMED on hardware 2026-08-30: two
+                    bidirectional pairs sharing one PIO block (channel 1
+                    sm0/rx1, channel 3 sm2/rx3, both on PIO0) each produced
+                    100% CRC-valid, independent telemetry with distinct,
+                    plausible eRPM values - see dshot_bidir_tx's comment and
+                    bidirectional_dshot_review.md's W18 entry for the full
+                    history, including an earlier reverted attempt whose
+                    failure turned out to be an unrelated ESC power issue,
+                    not a driver bug.
+                start() activates both state machines; from then on RX
+                synchronises itself to each TX frame via that IRQ with no
                 further calls needed - just drain rx_read() periodically.
         """
         # Validate before claiming any hardware: a constructor that raises
@@ -248,6 +302,16 @@ class DShotPIO:
         if bidirectional:
             if rx_state_machine_id is None:
                 raise ValueError("rx_state_machine_id is required when bidirectional=True")
+
+            if rx_state_machine_id != state_machine_id + 1:
+                raise ValueError(
+                    "rx_state_machine_id must be state_machine_id + 1 (got "
+                    "state_machine_id=" + str(state_machine_id) +
+                    ", rx_state_machine_id=" + str(rx_state_machine_id) +
+                    ") - the TX/RX pair's relative-IRQ synchronization "
+                    "depends on this fixed offset, see this constructor's "
+                    "own docstring"
+                )
 
             rx_speed = BIDIR_PROFILES.get(dshot_speed)
             if rx_speed is None:
@@ -287,8 +351,8 @@ class DShotPIO:
         if self.rx_sm is not None:
             # Flush any leftover words from a previous run and start RX
             # listening before TX can release the pin and fire its first
-            # irq(4) - see dshot_bidir_rx's irq(clear, 4) comment for the
-            # rest of this epoch-clean boundary.
+            # irq(rel(1)) - see dshot_bidir_rx's irq(clear, rel(0)) comment
+            # for the rest of this epoch-clean boundary.
             while self.rx_sm.rx_fifo():
                 self.rx_sm.get()
             self.rx_sm.active(1)

@@ -958,21 +958,51 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 4. After completing an item: flip its status-table row, and note any deviations directly
    under the item.
 5. Verification: hardware tests deploy via `python scripts/deploy.py <name>.py` (the
-   `/deploy` skill; filename only, resolved against `tests/` internally). The bench is live —
-   motors bolted down, channel 1 = GPIO 6 (bidirectional, motor+prop, SMs 0/1 on PIO0),
-   channels 2–4 = GPIO 7/8/9 (TX-only, SMs 4/5/6 on PIO1). Moved 2026-08-30 from the original
+   `/deploy` skill; filename only, resolved against `tests/` internally). Scenario-driven
+   tests (see W18) additionally need `--scenario <path>`, e.g.
+   `python scripts/deploy.py test_scenario_capture.py --scenario tests/harness/scenarios/two_channel_divergent.json`.
+   The bench is live, motors bolted down, GPIO 6-9 (moved 2026-08-30 from the original
    GPIO 2/3/4/5 block to free GPIO4/5 (I2C) and GPIO16-19 (SPI0) for the PicoBell Adalogger
-   SD+RTC breakout (see W17) — **any pre-2026-08-30 note or archived test in this document
-   that says GPIO2/3/4/5 reflects the old wiring, not the current bench.** DShot300 only.
-   Offline decode of printed captures: `scripts/decode_bidir_capture.py` (thin wrapper now —
-   the actual algorithm lives in `scripts/dshot_bidir_decode.py`, see W17). Arming needs
-   3000ms of back-to-back frames. Most of the diagnostic scripts referenced by name below
-   (`test_bidir_rx_raw.py`, `test_bidir_rx_sweep.py`, `test_bidir_rx_stall_recovery.py`,
-   `test_bidir_rx_speed_sweep.py`, `test_bidir_profile_check.py`, and others) were retired
-   2026-08-30 once their findings were captured here/in ADR-002 — treat every such reference
-   below as historical provenance for a finding, not as a script you can still run. App/bench
-   infrastructure (`core1_runner.py` and friends) now lives under `tests/harness/`, not
-   `tests/` directly.
+   SD+RTC breakout, see W17) — **any pre-2026-08-30 note or archived test in this document
+   that says GPIO2/3/4/5 reflects the old wiring, not the current bench.**
+   **Current scope (as of 2026-08-31): only channels 1 and 3 have motors mounted on this ESC
+   instance, and are the only channels in active scope.** `tests/harness/scenarios/` was
+   cleaned up to hold just the two canonical regression scenarios: `single_channel_baseline.json`
+   (channel 1 alone, 186s) and `two_channel_divergent.json` (channels 1+3 with opposing
+   accelerate/decelerate throttle, 60s — see "Combined channel 1+3 divergent-throttle run"
+   below). Rerun both after any driver/scenario-runner change touching bidirectional DShot.
+   The various channel-2/3/4 bring-up files and the all-4-channel `dual_motor_divergent.json`
+   that were used to establish this were deleted once their findings were captured here and in
+   memory — their results still stand (see below), just not as live scenario files.
+   **Two bidirectional pairs sharing one PIO block is confirmed safe** (from before this
+   cleanup, still true): `driver/dshot_pio.py`'s TX/RX handshake uses RP2040/2350's
+   relative-IRQ addressing (`irq(rel(1))`/`irq(rel(0))`, not a literal flag), giving each pair
+   on a shared block its own private synchronization flag, confirmed on hardware 2026-08-30
+   (channel 1 sm0/rx1 + channel 3 sm2/rx3 both sharing PIO0, both 100% CRC-valid with distinct
+   throttle-proportional eRPM — captures/2026-08-30_21-09-16). An earlier same-day attempt at
+   this exact mechanism was reverted after appearing to fail, but that failure turned out to be
+   an unrelated ESC power issue on channel 1, not a driver bug — see `driver/dshot_pio.py`'s
+   `dshot_bidir_tx` comment for the full history.
+   **Channel 2 was confirmed bidir-capable** (its ESC had no motor mounted, but an unmotored
+   ESC still replies to bidir DShot telemetry): 100% CRC-valid (34884/34884),
+   2026-08-30_21-22-07. **Channel 4 is PARKED** — reproducibly failed (record rate ~322/s vs a
+   500/s floor, and corrupted telemetry down to 61.1% CRC-valid) even with its bidir pair
+   isolated alone on its PIO block, ruling out block-sharing as the cause. Root cause unknown
+   and not pursued — channel 4 has no motor on this ESC instance. **A second 4-in-1 ESC
+   instance exists with all 4 channels motor-mounted** — deliberately out of scope until
+   confidence is established on this 2-motor bench; that is when channel 4 and full 4-channel
+   bidir would be revisited. DShot300 only. Offline decode of printed captures: `scripts/decode_bidir_capture.py` (thin wrapper
+   now — the actual algorithm lives in `scripts/dshot_bidir_decode.py`, see W17). Arming
+   needs 3000ms of back-to-back frames. Most of the diagnostic scripts referenced by name
+   below (`test_bidir_rx_raw.py`, `test_bidir_rx_sweep.py`, `test_bidir_rx_stall_recovery.py`,
+   `test_bidir_rx_speed_sweep.py`, `test_bidir_profile_check.py`, `test_bidir_rx_capture.py`,
+   and others) were retired once their findings were captured here/in ADR-002 (most on
+   2026-08-30; `test_bidir_rx_capture.py` and its `bidir_capture_runner.py` runner superseded
+   by W18's JSON-scenario engine) — treat every such reference below as historical
+   provenance for a finding, not as a script you can still run. App/bench infrastructure
+   (`core1_runner.py`, `scenario.py`, `scenario_runner.py`, and friends) lives under
+   `tests/harness/`, not `tests/` directly; scenario JSON files live under
+   `tests/harness/scenarios/`.
 6. Ground truth: ADR-002 "Implementation Update" (authoritative); AM32 firmware source
    at https://github.com/am32-firmware/AM32
    (`Src/dshot.c` `gcr_encode_table`, `Src/signal.c` `transfercomplete()`); Betaflight
@@ -1016,6 +1046,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | W15 | ADR-002 accuracy fixes | A1, A2, A3, A6, A7 | S | TODO |
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
+| W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | IN PROGRESS |
 
 ### Work items
 
@@ -1431,3 +1462,172 @@ cycles was not verified (the PCF8523's oscillator-stop flag was found set on a l
 the same session, requiring a re-run of `scripts/set_rtc.py` — could be a genuinely dead/
 missing coin cell, or could be normal for a brand-new RTC that had not yet held a charge;
 undetermined).
+
+**W18 — JSON-scenario engine + all 4 channels bidirectional (architecture pivot)** ·
+`tests/harness/scenario.py`, `tests/harness/throttle_profile.py`,
+`tests/harness/scenario_runner.py`, `tests/harness/bidir_capture_sink.py`,
+`tests/harness/scenarios/*.json`, `tests/test_scenario_capture.py`,
+`scripts/deploy.py`, `scripts/pull_captures.py`, `scripts/analyze_bidir_capture_log.py`,
+`scripts/check_scenario.py`
+
+**IN PROGRESS 2026-08-30.** Also not R-numbered — a direct user-directed pivot on top of
+W17's pipeline, motivated by wanting a real QA harness: independent throttle-vs-time
+profiles per motor (ramps with a step size and duration, holds, repeating cycles) defined
+as data, so a new test scenario is authored as JSON rather than a new Python script.
+Modeled loosely on Flight-Benchy's `config.json`/session-provenance pattern (see that
+project's `src/telemetry/recorder.py`), though Flight-Benchy itself turned out to have no
+generic ramp/hold scenario engine of its own to copy — the segment grammar here is new.
+
+What changed from W17:
+- **All 4 channels are now wired bidirectional-capable**, not just channel 1. No physical
+  rewiring was needed — bidir DShot is single-wire, so RX just needs a free state machine on
+  the TX's own PIO block, not a new pin. New allocation: PIO0 holds channel 1 (TX=sm0/RX=sm1)
+  and channel 2 (TX=sm2/RX=sm3); PIO1 holds channel 3 (TX=sm4/RX=sm5) and channel 4
+  (TX=sm6/RX=sm7). **Only channel 1 has actually been verified bidir-capable in hardware** —
+  see "Not done" below for the staged bring-up this still needs before it's trusted.
+- `tests/harness/bidir_capture_runner.py`'s `BidirCaptureRunner` (one fixed bidir channel +
+  3 hardcoded-to-zero TX-only motors) is replaced by `scenario_runner.py`'s `ScenarioRunner`:
+  a real per-motor throttle array (`array('H')`, 4 elements) instead of one scalar, and RX
+  draining generalized to any subset of the 4 motors being bidirectional. Ring buffer record
+  grew from 6 fields (`ticks_us, throttle, w0..w3`) to 21
+  (`ticks_us, throttle0..3, motor0_w0..w3, motor1_w0..w3, motor2_w0..w3, motor3_w0..w3`) —
+  `bidir_capture_sink.py`'s `_RECORD_FMT` grew from `"<IH4I"` (22 bytes) to `"<I4H16I"`
+  (76 bytes) to match.
+- New `scenario.py`/`throttle_profile.py`: load a scenario JSON, compile each motor's
+  `hold`/`ramp`/`repeat` segment list into a flat waypoint schedule, and validate fail-fast
+  (`ValueError`, before any hardware is touched) that every motor's profile sums to *exactly*
+  the scenario's own top-level `duration_ms`, every `ramp` step divides its throttle delta
+  and duration evenly, every `repeat` duration is an exact multiple of its inner segments'
+  duration, and every bidirectional motor's `rx_sm_id` shares a PIO block with its `sm_id`
+  (`DShotPIO` itself does not check this — confirmed by reading its constructor — so this
+  check is not redundant). No clamping, padding, or truncation anywhere in this path —
+  confirmed working via `scripts/check_scenario.py`'s load-only smoke test against all 5
+  scenario files, including deliberately-broken ones for each failure mode.
+- A scenario's top-level `expect` block (`max_dropped`, `max_gap_ms`, `min_record_rate_hz`,
+  `min_crc_valid_pct` per bidirectional motor index) is checked **both on-device** (the run
+  loop aborts immediately, raising rather than deferring to the final summary) **and by the
+  PC-side analyzer** (belt-and-suspenders, exits non-zero on a miss). `runner.error` is now
+  actually fatal: W17's `test_bidir_rx_capture.py` only ever printed it in the summary, so a
+  Core 1 death mid-run still exited 0 with a plausible-looking `capture.bin` — fixed by
+  polling `runner.error` every tick and raising. `meta.txt` gains an `outcome` field
+  (`running` -> `completed`/`failed`) plus final `total_records`/`dropped`/`largest_gap_us`,
+  so a truncated capture from an aborted run is unambiguous rather than merely inferable from
+  record count; the analyzer refuses to compute anything beyond outcome/record count on
+  anything but `outcome=completed`.
+- `bidir_capture_sink.py`'s `init_session()` now copies the scenario JSON itself into the
+  session folder as `scenario.json` (Flight-Benchy's `SdSink.init_session()` does the same
+  with `config.json`) — full provenance, and what lets the PC-side analyzer re-derive which
+  motors are bidirectional and re-check the scenario's own `expect` block without a second
+  source of truth to keep in sync.
+- `scripts/deploy.py` gains `--scenario <path>`, uploading the chosen scenario file to a
+  fixed device-side name (`scenario.json`) alongside the usual library files — `mpremote run`
+  has no way to pass an extra file into the running script otherwise.
+- `scripts/pull_captures.py`'s `SESSION_FILES` gained `"scenario.json"` (an enumerated tuple,
+  not a directory listing — would otherwise have failed the analyzer's read only *after* a
+  run and pull had both already finished).
+- Retired (superseded, not just moved): `tests/test_bidir_rx_capture.py` and
+  `tests/harness/bidir_capture_runner.py` — W17's "keeper" test script and its runner. Its
+  exact behavior is preserved as `tests/harness/scenarios/single_channel_baseline.json`, the
+  regression reference for this pivot.
+
+**Real bug found building this, since fixed and confirmed on hardware: shared IRQ4 was
+block-wide, not private per TX/RX pair.** `dshot_bidir_tx`/`dshot_bidir_rx`'s synchronization
+originally used a literal `irq(4)` / `wait(1,irq,4)`. IRQ flags 4-7 never reach the CPU, but
+they ARE shared by every state machine on the same PIO block — one flag per block, not a
+private channel per pair. With only one bidir pair per block (the only configuration ever
+verified before W18) this was invisible; putting a second pair on the same block (required by
+"all 4 channels bidirectional") means both RX state machines would wait on the same flag, and
+either could silently consume the pulse meant for the other. This was flagged by an external
+review the user relayed (not found independently), then confirmed real by rereading the PIO
+assembly.
+
+The fix uses RP2040/2350's relative-IRQ addressing (`irq(rel(1))` on TX,
+`wait(1,irq,rel(0))`/`irq(clear,rel(0))` on RX, plus a hard `rx_sm_id == sm_id + 1` constraint
+so every pair resolves to a flag based on its own state machine ids) instead of the literal
+flag. **This took two attempts to land cleanly, both this same day (2026-08-30):**
+
+1. First attempt: tried, then reverted after channel 1 (sm0/rx1) got 0/0 completed telemetry
+   groups both alone (2026-08-30_19-42-02) and paired with channel 3 on the same PIO0 block
+   (2026-08-30_19-53-34, channel 1 also never spun — matching the user's own physical
+   observation), while channel 3 (sm2/rx3, the identical mechanism, same PIO block) got 100%
+   CRC-valid telemetry in that same paired run. The revert was premature: the same-run success
+   on channel 3 already ruled out "the mechanism can't work at all" as an explanation, but this
+   wasn't recognized until the user separately reported that channel 1's ESC/power state had
+   been off for an unknown span of that session. A channel-1-specific power issue explains
+   "fails whether alone or paired, channel 3 fine" far better than a driver bug does — this was
+   a real diagnostic mistake, not a genuine driver failure (see [[feedback_hardware_debugging_style]]
+   for the general lesson recorded from it).
+2. Second attempt, same code, with ESC power independently confirmed on for every channel under
+   test: single-pair gate (`single_channel_smoke.json`, channel 1 alone) passed clean at
+   17624/17624 (100%) CRC-valid (2026-08-30_21-06-28). The decisive two-pair test
+   (`two_channel_bidir_smoke.json`, channel 1 sm0/rx1 + channel 3 sm2/rx3, both sharing PIO0)
+   then passed clean too: **both channels 100% CRC-valid (15437/15437 each)**, with distinct,
+   physically sane, throttle-proportional steady-state eRPM — channel 1 (throttle 150)
+   ≈61,475 eRPM (range 60,976-62,500), channel 3 (throttle 300) ≈143,541 eRPM (range
+   141,509-145,985, matching that channel's own earlier single-channel measurement almost
+   exactly) — 2026-08-30_21-09-16. No cross-talk, no aliasing between channels.
+
+**Conclusion: the rel()-based per-pair IRQ fix works.** Two bidirectional pairs sharing one
+PIO block is confirmed safe. `driver/dshot_pio.py` keeps the `rel()` mechanism;
+`scenario.py`'s earlier same-block-bidir loader check (added defensively after the first,
+confounded revert) has been removed since the hazard it guarded against no longer applies to
+the current mechanism. `two_channel_bidir_smoke.json` and `dual_motor_divergent.json` both
+load and are no longer blocked, though the latter (all 4 channels at once) has not itself been
+run.
+
+**Also flagged, not fully resolved:** an earlier, separate "stale PIO/IRQ state after a forced
+`mpremote exec pass` interruption" finding (used to explain an earlier all-zero-words symptom
+on channel 1, "fixed" by a full `mpremote reset`) was reached before the ESC-power confound was
+known about. A channel-1 power issue is at least as plausible an explanation for that earlier
+symptom as stale PIO state is. Not re-investigated here — flagged as suspect for a future
+session; the *habit* of a full reset after a forced interruption is still good practice
+regardless.
+
+**Scope redefined 2026-08-31 (user direction): DONE is gated on channels 1 and 3 only** — the
+only two channels with motors physically mounted on this ESC instance, and the actual bench
+requirement. A second 4-in-1 ESC instance exists with all 4 channels motor-mounted, but work on
+it is deliberately deferred until confidence is established on this 2-motor bench.
+
+**Channel 4 — PARKED, not pursued further.** Channels 1, 2, and 3 are all established (channel
+2's ESC has no motor mounted but confirmed replying correctly to bidir DShot telemetry, 100%
+CRC-valid over 34884 records, 2026-08-30_21-22-07). Channel 4 (`channel4_bidir_bringup.json`,
+bidir pair sm6/rx7 on PIO1) failed three times, reproducibly:
+- Runs 1-2 (2026-08-30_21-33-02, 2026-08-30_21-34-08): idle motor at pin8/sm_id=4 shared PIO1
+  with the bidir pair. Record rate ~322/s (vs a 500/s floor), aborted.
+- Run 3 (2026-08-31_20-38-10): idle motor moved to pin8/sm_id=1 on PIO0, so the bidir pair was
+  ALONE on PIO1. Same ~322/s rate, and this time also checked telemetry quality directly (the
+  on-device abort normally hides this): motor 3 CRC-valid only 3996/6545 (**61.1%**) vs ~100%
+  on channels 1/2/3, longest_fail_streak=16, largest_gap=55ms.
+Run 3 **rules out the block-sharing hypothesis** — isolating the pair on its own PIO block
+changed nothing, ruling out both the "idle motor touches the IRQ" theory and the
+three-PIO-programs-sharing-instruction-memory theory. The problem is specific to channel 4
+itself — its sm6/rx7 pairing, GPIO9, or that channel's ESC/wiring — not the `rel()` addressing
+mechanism, which channels 1, 2, and 3 all confirm works correctly. Root cause unknown and
+**parked per explicit user direction 2026-08-31** — channel 4 has no motor requirement on this
+ESC instance. If picked up later: probe GPIO9's bidir line with a scope/logic analyzer, or swap
+channel 4's ESC with a known-good one to separate ESC vs. wiring vs. pin.
+
+**Combined channel 1+3 divergent-throttle run: DONE, 2026-08-31.**
+`two_channel_divergent.json` (new file) — natural production layout (channel 1 on PIO0
+sm0/rx1, channel 3 on PIO1 sm4/rx5, separate blocks, not the artificially-shared-PIO0 config
+from the earlier decisive cross-talk test), 60s: both hold at throttle 60 for 5s, ramp together
+to 200 over 5s, then diverge for 50s — motor 1 (channel 1) accelerates 200→300, motor 3
+(channel 3) decelerates 200→100. Result (2026-08-31_20-56-27): **100% CRC-valid on both**
+(motor 0: 30221/30221; motor 2: 30220/30221, one isolated frame, not a streak), 0 dropped,
+largest gap 10.6ms, ~504/s sustained (well above the 450/s floor), all `expect` thresholds met.
+5s-windowed eRPM trend confirms the divergence itself is clean: both channels track together
+through the shared ramp (~8.3k → ~27.2k eRPM), then split monotonically from t=10s — motor 0
+climbs 49k→74k as it accelerates, motor 2 falls 48k→24k as it decelerates, no crossing or
+aliasing between them at any point. This is the strongest evidence yet against cross-talk: two
+channels running genuinely different, diverging throttle profiles simultaneously, both clean.
+- Regression run of `single_channel_baseline.json` (the longer, byte-for-byte-W17 scenario) to
+  confirm byte-for-byte equivalent behavior to W17's verified 116,705-record/0-dropped run —
+  not yet rerun against the current driver, though the shorter `single_channel_smoke.json` has
+  (100% CRC-valid, 2026-08-30_21-06-28).
+- Deliberately trigger one on-device failure end-to-end (e.g. an artificially slowed poll
+  loop against a `max_dropped: 0` scenario) to confirm the harness actually aborts, exits
+  non-zero, and marks `outcome=failed` — a QA harness whose own failure path has never been
+  exercised isn't trustworthy.
+- Flip this item's status-table row to DONE only once the above all pass.
+- `dual_motor_divergent.json` (all 4 channels) stays deferred indefinitely — not needed until
+  the second, all-4-motors ESC instance is brought into scope.

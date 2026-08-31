@@ -1,10 +1,12 @@
 """
-deploy.py - upload the DShot driver + Core1Runner to the Pico, then run a
+deploy.py - upload the DShot driver + test harness to the Pico, then run a
 test script live (streams output for the duration of the test).
 
 Run from project root:
   python scripts/deploy.py                       # runs tests/test_slow_spin.py
   python scripts/deploy.py test_bidir_tx_arm.py   # runs a different test under tests/
+  python scripts/deploy.py test_scenario_capture.py --scenario tests/harness/scenarios/dual_motor_divergent.json
+                                                   # also uploads the scenario file as scenario.json
 
 Pico must be connected on COM10. mpremote interrupts any running script on connect.
 """
@@ -26,13 +28,20 @@ LIBRARY_FILES = [
     ("driver/dshot_pio.py", "dshot_pio.py"),
     ("driver/motor_throttle_group.py", "motor_throttle_group.py"),
     ("tests/harness/core1_runner.py", "core1_runner.py"),
-    ("tests/harness/bidir_capture_runner.py", "bidir_capture_runner.py"),
+    ("tests/harness/throttle_profile.py", "throttle_profile.py"),
+    ("tests/harness/scenario.py", "scenario.py"),
+    ("tests/harness/scenario_runner.py", "scenario_runner.py"),
     ("tests/harness/sdcard.py", "sdcard.py"),
     ("tests/harness/pcf8523.py", "pcf8523.py"),
     ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
+
+# Fixed device-side name test_scenario_capture.py opens - mpremote's `run`
+# has no mechanism to pass an extra file/argument into the running script,
+# so a chosen scenario file has to land at this fixed name instead.
+SCENARIO_REMOTE_NAME = "scenario.json"
 
 
 def _upload(local_rel, remote_name):
@@ -52,7 +61,18 @@ def _upload(local_rel, remote_name):
 
 
 def main():
-    test_script = ROOT / "tests" / (sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TEST_SCRIPT)
+    args = sys.argv[1:]
+
+    scenario_path = None
+    if "--scenario" in args:
+        idx = args.index("--scenario")
+        if idx + 1 >= len(args):
+            print("--scenario requires a path argument")
+            sys.exit(1)
+        scenario_path = args[idx + 1]
+        del args[idx:idx + 2]
+
+    test_script = ROOT / "tests" / (args[0] if args else DEFAULT_TEST_SCRIPT)
     if not test_script.exists():
         print(f"MISSING test script: {test_script}")
         sys.exit(1)
@@ -60,6 +80,13 @@ def main():
     print(f"Deploying to Pico on {COM_PORT}...")
     ok = sum(_upload(loc, rem) for loc, rem in LIBRARY_FILES)
     failed = len(LIBRARY_FILES) - ok
+
+    if scenario_path is not None:
+        if _upload(scenario_path, SCENARIO_REMOTE_NAME):
+            ok += 1
+        else:
+            failed += 1
+
     print(f"\nUploaded {ok}, failed {failed}.")
     if failed:
         sys.exit(1)

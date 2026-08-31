@@ -14,7 +14,7 @@
 # channels 2-4 -> GPIO 7/8/9 (wired but no motor mounted - idle only).
 # Moved from the original GPIO 2/3/4/5 block to make room for the PicoBell
 # Adalogger's RTC (I2C on GPIO4/5) and SD card (SPI0 on GPIO16-19) - see
-# tests/test_bidir_rx_capture.py.
+# tests/test_scenario_capture.py.
 
 from machine import Pin
 from dshot_pio import DSHOT_SPEEDS

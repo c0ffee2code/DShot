@@ -66,7 +66,7 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
 
-**`tests/harness/`** - Example application code and bench infrastructure, deliberately *not* part of the library: `core1_runner.py` (a Core 1 loop that drives `update()` at 1kHz; projects copy and adapt it), `bidir_capture_runner.py`/`bidir_capture_sink.py` (dual-core raw bidir RX capture + SD logging, see `tests/test_bidir_rx_capture.py`), and the ported `sdcard.py`/`pcf8523.py` drivers for the PicoBell Adalogger SD+RTC breakout. Kept separate from the runnable `test_*.py` scripts directly under `tests/` so the two aren't mixed together.
+**`tests/harness/`** - Example application code and bench infrastructure, deliberately *not* part of the library: `core1_runner.py` (a Core 1 loop that drives `update()` at 1kHz; projects copy and adapt it), `scenario.py`/`throttle_profile.py` (load and validate a JSON scenario file - see `scenarios/*.json` - into a compiled per-motor throttle-vs-time schedule), `scenario_runner.py`/`bidir_capture_sink.py` (dual-core scenario execution + raw bidir RX capture + SD logging, see `tests/test_scenario_capture.py`), the ported `sdcard.py`/`pcf8523.py` drivers for the PicoBell Adalogger SD+RTC breakout, and `scenarios/*.json` (the scenario library itself - each file declares all 4 motors' wiring and an independent throttle profile per motor, validated fail-fast at load time before anything is armed). Kept separate from the runnable `test_*.py` scripts directly under `tests/` so the two aren't mixed together.
 
 ### DShot Protocol
 
