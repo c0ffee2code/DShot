@@ -1029,8 +1029,8 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | W2 | Fix GCR table in `specification/DSHOT_PROTOCOL.md` | R11 | S | TODO |
 | W3 | Add verification-status table to ADR-002 | R6 | S | TODO |
 | — | **Phase 1 gate: docs and API stop overstating what is verified — safe to pause the project here** | — | — | — |
-| W4 | Saturated continuous-capture stress harness | R1, R2, R3, TA | M | TODO |
-| W5 | RX starvation and recovery characterization | R2, TB | M | TODO |
+| W4 | Saturated continuous-capture stress harness | R1, R2, R3, TA | M | DONE |
+| W5 | RX starvation and recovery characterization | R2, TB | M | DONE |
 | — | **Phase 2 gate: transaction failure modes characterized with data, not argument** | — | — | — |
 | W6 | Decide the transaction model (ADR) | R1, R3 | M | BLOCKED — needs user decision (present W4/W5 data first) |
 | W7 | Implement transaction model + atomic `read_capture()` | R1, R2, R3 | L | TODO |
@@ -1209,6 +1209,21 @@ still open — it characterizes sustained/saturated throughput and association r
 small repro doesn't — but it now runs against a driver whose known corruption path is
 closed, not the one R1/R2 originally described.
 
+*Note (2026-09-06):* built as `tests/test_bidir_rx_stress.py` (see also
+`tests/harness/stress_capture_sink.py`, `scripts/analyze_bidir_stress_log.py`). Run on
+hardware, channel 1, 10,000 frames: structural association was 100% (0 misaligned, 0
+partial, RX FIFO never stalled) at an achieved rate of ~2,000 frames/s — well under
+DSHOT300's ~18.75kHz wire ceiling, so this was an unpaced loop, not a true saturation test;
+the harness's own Python-side per-word draining is the limiting factor. A 298-capture
+offline-decoded sample came back only 80.5% CRC-valid despite every one passing the
+structural check — see ADR-002's "Unpaced continuous send/drain characterization" section
+for the full data, including that the failures cluster into two short windows rather than
+spreading evenly (see ADR-002 for detail; one window is explained by a settling transient,
+the other is not). Headline finding: structural completeness is not evidence of a valid
+reply — this drives the new recommendation in ADR-002's "Implications for the
+RX-synchronization decision" section that whatever W6 decides must be paired with a real
+on-device CRC gate, not just the marker-bit check this run relied on.
+
 **W5 — RX starvation and recovery characterization (R2, TB)** · extends W4's harness
 Deliberately stop draining the RX FIFO for ~5ms mid-run, then resume, repeatedly. Record
 what actually happens: does the RX SM stall mid-capture (expected: `autopush` blocks
@@ -1225,6 +1240,20 @@ withhold/resume cycle, not the "repeatedly" this item calls for) and is recorded
 before/after CRC-valid rates. That confirmed the fix and is not a substitute for this item's
 full repeated-cycle, counter-driven characterization, which W6 still needs.
 
+*Note (2026-09-06):* run on hardware via `tests/test_bidir_rx_stress.py`
+(`STARVATION_ENABLED=True`), channel 1, 22 stall/resume cycles (5ms undrained every 200ms).
+The state machine never needed a restart, and its own recovery detector (three consecutive
+structurally valid captures) reported success on every single cycle, always in exactly 4
+frames — zero variance. But a sample of the first captures taken right after each of the 22
+resumes (88 total) decoded 0/88 CRC-valid. Every one had real signal transitions, not a dead
+line, so a reply is coming back — it's just wrong, every time, right after a resume, despite
+the driver's own detector calling it recovered. Captures provably lost while undrained
+totalled 1,269 across the 22 cycles (~58/cycle), implying ~11-12kHz once the receiving
+side's Python-level polling overhead is removed from the loop — see ADR-002's
+"RX-starvation and recovery characterization" section for the full data. This is W6's
+sharpest input: the driver's structural recovery signal is not a reliable proxy for real
+recovery.
+
 **W6 — Decide the transaction model (R1, R3)** · ADR (extend ADR-002 or new ADR-005)
 **BLOCKED — needs user decision.** With W4/W5 data in hand, choose the synchronization
 design. Options to present:
@@ -1240,6 +1269,16 @@ specific risk. Fallback only.
 The arm sequence's back-to-back framing requirement is a hard constraint on all options.
 **Done when:** the user has picked, and the ADR records the decision, the W4/W5 evidence,
 and the rejected options.
+
+*Note (2026-09-06):* W4/W5 data is now in hand (see ADR-002's two new characterization
+sections). It changes the picture options (a)/(b)/(c) above were written against: frame-level
+association between a command and its reply is not, on this data, the primary risk anymore
+(100% structural association held even under an unpaced loop and repeated 5ms starvation).
+The risk this data actually surfaces — a structurally complete, correctly-paired capture
+that still fails CRC, reliably right after any timing disruption — isn't directly solved by
+any of (a)/(b)/(c) as written; see ADR-002's "Implications for the RX-synchronization
+decision" section. Still blocked on the user's decision, but that decision should now also
+weigh pairing whichever option is chosen with an on-device CRC validity gate.
 
 **W7 — Implement transaction model + atomic `read_capture()` (R1, R2, R3)** · `driver/dshot_pio.py`
 Implement W6's decision. Regardless of option chosen: replace the public single-word

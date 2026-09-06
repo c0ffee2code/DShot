@@ -861,6 +861,128 @@ and separate days, not a one-off result. Base throttle 60 spun smoothly
 (no more roughness complaint), replacing 50 as the recommended post-arm
 settle value for future test scripts.
 
+### Unpaced continuous send/drain characterization (2026-09-06)
+
+A new characterization harness drives one bidirectional channel (channel 1,
+DShot300) directly, bypassing every layer above the raw driver: after the
+usual 3-second back-to-back arm, it holds throttle 60 (this document's
+confirmed smooth post-arm value) and sends commands with no
+application-level pacing between them - each `send_throttle_command()` call
+blocks only when the 4-word TX FIFO itself is full, and the RX FIFO is
+drained completely after every send.
+
+10,000 frames were sent this way over about 4.9 seconds, an achieved rate of
+roughly 2,000 frames/second - well under DShot300's own ~18.75kHz wire-rate
+ceiling (53.3us/frame). This run's own per-word RX draining in Python is
+what limits it to 2kHz, not FIFO backpressure or PIO timing; a genuinely
+close-to-wire-rate figure comes from the starvation run below instead. Every
+one of the 10,000 frames produced a structurally well-formed 4-word capture
+(the reply's leading marker bit correctly read as 0): zero misaligned or
+partial groups, and the RX FIFO's occupancy never stalled.
+
+A 298-capture sample of these was decoded offline with the full GCR/CRC
+pipeline: 240/298 (80.5%) were CRC-valid - markedly lower than every
+previous measurement in this document, all of which held a settled throttle
+at a much slower, application-paced rate (on the order of 500 records/second
+or less). The 58 failures in that sample were not spread evenly across the
+run: 40 of them fall in the first ~60ms immediately after the transition
+from arming to held throttle, consistent with the kind of brief
+motor-settling transient this document has already seen at other throttle
+transitions. A second, separate cluster of about 18 failures appears later,
+around the 3.5-4.3 second mark of an otherwise clean run, with no
+corresponding throttle change and no unusual decoded eRPM (still
+7,570-7,620, consistent with the surrounding, fully valid windows). Every
+other sampled window in the run was 100% CRC-valid. This second cluster's
+cause was not identified by this run.
+
+The headline result: passing every structural check this driver currently
+performs on a capture is not the same as that capture carrying a real,
+correctly-decodable reply. Around a fifth of the captures in this run looked
+complete and correctly marked and still failed CRC, concentrated in short
+windows rather than spread uniformly through the run.
+
+### RX-starvation and recovery characterization (2026-09-06)
+
+The same harness, same physical setup, but with the RX FIFO deliberately
+left undrained for 5ms every 200ms while throttle commands kept sending the
+whole time (only the receiving side paused) - 22 such cycles over one run.
+
+Every one of the 22 cycles reached this driver's own recovery signal (three
+consecutive structurally well-formed captures after resuming draining), and
+did so in exactly 4 frames every single time - zero variance, and no
+state-machine restart was ever required. But a sample of the first captures
+taken immediately after each of the 22 resumes (88 captures total) was
+decoded offline: 0/88 (0%) were CRC-valid. Every one had real signal
+transitions, not a dead line, so this is not simply "no reply arrived" - the
+reply that comes back right after a stall reliably fails CRC in this sample,
+despite this driver's own recovery detector reporting success on every
+single cycle. The fact that the recovery time was exactly 4 frames on all 22
+cycles regardless of where in the frame cycle the stall happened to land is
+itself telling: an invariant like that says the detector is measuring
+something mechanical about how quickly the receiving state machine
+resynchronizes structurally, not whether the content it captures can be
+trusted.
+
+Frames provably lost while undrained - bounded by the 4-word FIFO's
+capacity to hold at most one capture's worth during a stall - totalled
+1,269 across the 22 cycles, an average of roughly 58 per 5ms window. That
+implies the driver and ESC together reach on the order of 11-12kHz once the
+receiving side's own Python-level polling overhead is taken out of the
+loop, well above the ~2,000 frames/second the unpaced run above otherwise
+achieved. The overall CRC-valid rate sampled during this run's held-throttle
+phase (31.0% on 271 samples) was markedly worse than the undisturbed run
+above (80.5%), but the two aren't a clean comparison: this run's samples
+were taken throughout a period carrying 22 separate 5ms interruptions
+spaced every 200ms, not one undisturbed hold.
+
+Taken together with the run above, the conclusion for this driver is the
+same either way: any telemetry-validity signal exposed upward from this
+layer needs to be gated on a real CRC check, not a structural one. A
+capture that is complete, correctly marked, and even repeatedly "recovered"
+by the driver's own detector is not, on its own, sufficient evidence that
+the reply it carries is genuine.
+
+### Implications for the RX-synchronization decision (2026-09-06)
+
+The two characterization runs above change what the open synchronization
+decision actually needs to solve.
+
+The "Design candidates for RX synchronization" section above was written
+against a specific failure model: TX racing ahead of RX and the driver
+losing track of which reply belongs to which command. Both runs above show
+that, at least on this ESC and at the rates exercised, that specific
+failure mode is largely absent already - the unpaced run produced a
+structurally correct, correctly-paired capture for all 10,000 frames sent,
+and even deliberately starving the RX side for 5ms at a time never produced
+a misaligned or partial capture once draining resumed. The relative-IRQ
+addressing and clear-before-wait behavior already in this driver appear to
+be doing their job: association between a command and its reply's capture
+is not, on this evidence, the primary open risk any more.
+
+What both runs show instead is a *content* problem that neither of the
+listed design candidates was written to address: a capture can be complete,
+correctly framed, and paired with the right command, and still carry a
+reply that fails CRC - reliably so in the frames immediately following any
+disruption to steady-state timing (a throttle transition, or a resumed
+RX drain after a stall), and occasionally elsewhere for reasons this data
+doesn't explain. Keeping TX from getting ahead of RX (the lockstep
+candidate) or stamping captures with a sequence number (the epoch-tracking
+candidate) would not, by itself, fix a capture that is already correctly
+identified but wrong in its content - both of those approaches solve a
+bookkeeping problem this driver does not currently appear to have. Even
+replacing the whole handshake with a single-SM design would not obviously
+avoid this: the observed corruption windows follow timing disruptions, not
+handshake identity confusion.
+
+The practical implication, independent of which synchronization approach is
+eventually chosen: nothing in this driver can currently tell a good capture
+from a bad one without the full offline GCR/CRC decode this project still
+only runs on a PC. Whatever design is chosen for the open decision above
+should be paired with an on-device validity check against the real CRC, not
+just the structural marker-bit check this characterization work used - a
+capture that merely looks well-formed is demonstrably not enough evidence
+that its content can be trusted.
+
 ## References
 
 - [Brushless Whoop - Bidirectional DShot](https://brushlesswhoop.com/dshot-and-bidirectional-dshot/)

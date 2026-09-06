@@ -34,6 +34,7 @@ LIBRARY_FILES = [
     ("tests/harness/sdcard.py", "sdcard.py"),
     ("tests/harness/pcf8523.py", "pcf8523.py"),
     ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
+    ("tests/harness/stress_capture_sink.py", "stress_capture_sink.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
