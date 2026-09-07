@@ -32,6 +32,8 @@
 # CRC check, and full GCR decode stays off-device per the existing
 # pipeline (see scripts/analyze_bidir_stress_log.py).
 
+import gc
+
 from machine import Pin
 from dshot_pio import DShotPIO, DSHOT_SPEEDS
 from stress_capture_sink import StressCaptureSink
@@ -49,19 +51,35 @@ DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300
 ARM_DURATION_MS = 3000
 ARM_THROTTLE = 0
 RUN_THROTTLE = 60  # confirmed smooth post-arm value - see ADR-002's confirmation sweeps
-TARGET_FRAMES = 10_000
+# 20,000 (2026-09-07, down from a 60,000/1600-sample attempt that hit a MicroPython
+# MemoryError partway through - the Pico's heap couldn't sustain that long a run plus that
+# large a sample buffer at once). ~10s at this harness's ~2000 frames/s, giving 3 starvation
+# cycles at the 3s spacing below.
+TARGET_FRAMES = 20_000
 
 STARVATION_ENABLED = True  # set True for the W5 run
 STARVATION_WINDOW_MS = 5
-STARVATION_INTERVAL_MS = 200
+# Widened from 200ms to 3000ms (2026-09-07 rerun): the original 200ms spacing left every
+# resume without an undisturbed local baseline to compare against - captures within +-100ms
+# of a resume were themselves inside another stall's disturbance. 3s apart gives each resume
+# a clean neighborhood on both sides.
+STARVATION_INTERVAL_MS = 3000
 RECOVERY_K = 3               # consecutive good groups required to call a cycle recovered
 RECOVERY_TIMEOUT_FRAMES = 200
 
 SAMPLE_CAP = 500
 SAMPLE_ARM_FIRST_N = 20
 SAMPLE_SATURATION_FIRST_N = 100
-SAMPLE_SATURATION_EVERY = 50
+# Widened from 50 to 100 (2026-09-07) alongside TARGET_FRAMES's cut - keeps total saturation
+# sample volume down (~300 over 20,000 frames) while still giving a handful of local samples
+# within +-100ms of each of the 3 widely-spaced starvation cycles.
+SAMPLE_SATURATION_EVERY = 100
 SAMPLE_RESUME_FIRST_N = 10
+
+# How often (in saturation-loop iterations) to force a GC pass - cheap insurance against the
+# heap fragmentation that caused the MemoryError above, on a run now long enough (thousands
+# of small per-iteration allocations) for fragmentation to matter.
+GC_INTERVAL_FRAMES = 2000
 
 PHASE_ARM = 0
 PHASE_SATURATION = 1
@@ -177,6 +195,7 @@ def arm(states, counters):
 def run_saturation(states, counters):
     print("Saturation run: target {} frames/channel...".format(TARGET_FRAMES))
     next_starve_ms = utime.ticks_add(utime.ticks_ms(), STARVATION_INTERVAL_MS)
+    any_state = next(iter(states.values()))
     while not all(s.frames_queued >= TARGET_FRAMES for s in states.values()):
         for state in states.values():
             state.motor.send_throttle_command(RUN_THROTTLE)
@@ -184,6 +203,9 @@ def run_saturation(states, counters):
             occ = state.motor.rx_sm.rx_fifo()
             state.fifo_hist[occ] += 1
             drain_channel(state, PHASE_SATURATION, counters)
+
+        if any_state.frames_queued % GC_INTERVAL_FRAMES == 0:
+            gc.collect()
 
         if STARVATION_ENABLED and utime.ticks_diff(utime.ticks_ms(), next_starve_ms) >= 0:
             run_starvation_cycle(states, counters)
@@ -386,6 +408,7 @@ def test_bidir_rx_stress():
             state.motor.stop()
         print("Motors stopped and deactivated.")
 
+        gc.collect()
         all_records = []
         for state in states.values():
             for ticks_us, phase, word_count, w0, w1, w2, w3 in state.samples:

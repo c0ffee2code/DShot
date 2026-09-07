@@ -1224,6 +1224,10 @@ reply — this drives the new recommendation in ADR-002's "Implications for the
 RX-synchronization decision" section that whatever W6 decides must be paired with a real
 on-device CRC gate, not just the marker-bit check this run relied on.
 
+*Note (2026-09-07):* rerun unchanged to check the two-part failure pattern wasn't a fluke —
+it reproduced almost exactly (same shape, same ~3.5s-onward timing window in a ~5s run).
+See W5's 2026-09-07 note below and ADR-002's "Confirmation reruns" section.
+
 **W5 — RX starvation and recovery characterization (R2, TB)** · extends W4's harness
 Deliberately stop draining the RX FIFO for ~5ms mid-run, then resume, repeatedly. Record
 what actually happens: does the RX SM stall mid-capture (expected: `autopush` blocks
@@ -1262,6 +1266,23 @@ removed from the loop — see ADR-002's "RX-starvation and recovery characteriza
 for the full data. Still a real input for W6: the driver's structural recovery signal isn't
 a reliable proxy for real recovery, though which specific mechanism causes that isn't
 isolated yet.
+
+*Note (2026-09-07):* both open threads from the note above resolved with two follow-up
+hardware runs (see ADR-002's "Confirmation reruns" section). First, the clean run's odd
+two-part failure pattern (a burst right after the throttle transition, then a separate
+unexplained cluster later on) reproduced almost exactly in a second, independent run — same
+shape, same rough timing window (~3.5s onward in a ~5s run) — so it's real, not a fluke; a
+plausible but unconfirmed cause is MicroPython's own background garbage collection falling
+in that window. Second, rerunning the starvation scenario with cycles spaced 3s apart
+instead of 200ms (3 cycles instead of 22, scaled down after an initial attempt at a longer,
+more heavily-sampled version hit a MicroPython `MemoryError` mid-run) removed the earlier
+confound entirely: the surrounding baseline recovered to a healthy ~80% CRC-valid (in line
+with the clean run, confirming the previous run's poor 31% baseline was specific to
+stalling every 200ms, not starvation in general), each resume's local neighborhood came
+back 100% valid on both sides, and every one of the 3 resumes still produced 0/4 CRC-valid
+right after. The resume-specific corruption effect is now confirmed clean, independent of
+the separate general-degradation effect. Both are real; only the general-degradation
+effect's mechanism remains unexplained.
 
 **W6 — Decide the transaction model (R1, R3)** · ADR (extend ADR-002 or new ADR-005)
 **BLOCKED — needs user decision.** With W4/W5 data in hand, choose the synchronization

@@ -1011,6 +1011,58 @@ just the structural marker-bit check this characterization work used - a
 capture that merely looks well-formed is demonstrably not enough evidence
 that its content can be trusted.
 
+### Confirmation reruns (2026-09-07)
+
+Two follow-up runs, aimed at the two open questions the sections above left
+unanswered.
+
+**Repeating the clean, undisturbed run unchanged** reproduced both the
+overall result and its odd shape: 78.5% CRC-valid this time (298 samples,
+close to the earlier 80.5%), with the same two-part failure pattern -
+44 of the run's 64 failures land in the first half-second after the
+throttle transition (consistent with a settling transient), then a clean
+stretch with zero failures from 0.5s to 3.5s, then a second cluster of 20
+failures from 3.5s to the run's end around 5s. That second cluster now
+showing up in the same few-second window in two independent runs of
+identical code makes chance a poor explanation. One plausible mechanism,
+not yet confirmed: this window is late enough in a several-thousand-frame
+run that MicroPython's own automatic garbage collection - not the harness's
+own accounting, which does zero file I/O during this phase, but the
+interpreter reclaiming memory from the small objects this loop allocates
+every iteration - could plausibly fall in this window and briefly stall the
+CPU long enough to disturb the receiving state machine's timing-sensitive
+listen window. This is a hypothesis worth testing directly (forcing a
+collection on a schedule and seeing whether the failure window moves with
+it), not yet something this data confirms on its own.
+
+**Rerunning the starvation scenario with cycles spaced 3 seconds apart
+instead of 200 milliseconds** (3 cycles instead of 22, to keep the run
+short enough for the Pico's memory - the first attempt at a much longer,
+more heavily sampled version of this rerun ran out of memory partway
+through and had to be scaled back) removes the confound the original run
+left open. This time the surrounding baseline recovered to a healthy 80.8%
+CRC-valid overall - in line with the clean run above, not the previous
+run's depressed 31% - confirming that the earlier run's poor baseline was
+specific to stalling every 200ms, not something starvation does in
+general. Within that healthy baseline, each of the 3 resumes still has a
+fully clean, 100%-valid local neighborhood on both sides (10/10 sampled
+captures within 300ms) - and every one of the 3 resumes still produced
+0/4 CRC-valid immediately after. With the confound removed, this is now a
+clean, unambiguous result: resuming the RX side after a drain stall
+reliably corrupts the next several captures, on a baseline that is
+otherwise perfectly healthy.
+
+Put together, both open questions from the sections above are answered:
+the two-part failure pattern in the clean run reproduces and is not a
+one-off ("done" for that half of the earlier open item), and the
+starvation run's core finding survives with the confound removed - a
+resume-adjacent corruption effect exists independent of, and in addition
+to, whatever caused the earlier run's general degradation. The
+implication drawn above stands on firmer ground now: any validity signal
+this driver exposes needs to gate on a real CRC check, because a
+structurally perfect capture taken right after a stall is, reliably, not
+a valid one.
+
 ## References
 
 - [Brushless Whoop - Bidirectional DShot](https://brushlesswhoop.com/dshot-and-bidirectional-dshot/)
