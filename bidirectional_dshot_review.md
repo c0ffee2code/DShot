@@ -1244,15 +1244,24 @@ full repeated-cycle, counter-driven characterization, which W6 still needs.
 (`STARVATION_ENABLED=True`), channel 1, 22 stall/resume cycles (5ms undrained every 200ms).
 The state machine never needed a restart, and its own recovery detector (three consecutive
 structurally valid captures) reported success on every single cycle, always in exactly 4
-frames — zero variance. But a sample of the first captures taken right after each of the 22
-resumes (88 total) decoded 0/88 CRC-valid. Every one had real signal transitions, not a dead
-line, so a reply is coming back — it's just wrong, every time, right after a resume, despite
-the driver's own detector calling it recovered. Captures provably lost while undrained
-totalled 1,269 across the 22 cycles (~58/cycle), implying ~11-12kHz once the receiving
-side's Python-level polling overhead is removed from the loop — see ADR-002's
-"RX-starvation and recovery characterization" section for the full data. This is W6's
-sharpest input: the driver's structural recovery signal is not a reliable proxy for real
-recovery.
+frames — zero variance. A first look at the first captures taken right after each of the 22
+resumes (88 total) decoded 0/88 CRC-valid — but this run's held-throttle phase was already
+running unusually poorly overall (31.0% CRC-valid), so a follow-up check compared each
+resume's post-resume samples against the surrounding saturation-phase samples within ±100ms
+of that same resume: the local neighborhoods averaged 19.2% CRC-valid (16/22 nonzero), yet
+every single resume still came back 0/4 — too consistent to be an unlucky draw from an
+already-poor baseline. So there are two effects, not one: something about repeated 5ms
+stalls depresses this run's decode quality generally (cause unknown), and post-resume
+captures are reliably worse still than their own already-degraded neighborhood. This run's
+200ms-spaced stalls don't give any resume a clean, undisturbed baseline to compare against,
+so it can't yet separate "resuming specifically corrupts the next captures" from "repeated
+stalls degrade everything, resuming included" — that needs a rerun with stalls spaced
+seconds apart. Captures provably lost while undrained totalled 1,269 across the 22 cycles
+(~58/cycle), implying ~11-12kHz once the receiving side's Python-level polling overhead is
+removed from the loop — see ADR-002's "RX-starvation and recovery characterization" section
+for the full data. Still a real input for W6: the driver's structural recovery signal isn't
+a reliable proxy for real recovery, though which specific mechanism causes that isn't
+isolated yet.
 
 **W6 — Decide the transaction model (R1, R3)** · ADR (extend ADR-002 or new ADR-005)
 **BLOCKED — needs user decision.** With W4/W5 data in hand, choose the synchronization

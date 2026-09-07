@@ -910,18 +910,37 @@ whole time (only the receiving side paused) - 22 such cycles over one run.
 Every one of the 22 cycles reached this driver's own recovery signal (three
 consecutive structurally well-formed captures after resuming draining), and
 did so in exactly 4 frames every single time - zero variance, and no
-state-machine restart was ever required. But a sample of the first captures
-taken immediately after each of the 22 resumes (88 captures total) was
-decoded offline: 0/88 (0%) were CRC-valid. Every one had real signal
-transitions, not a dead line, so this is not simply "no reply arrived" - the
-reply that comes back right after a stall reliably fails CRC in this sample,
-despite this driver's own recovery detector reporting success on every
-single cycle. The fact that the recovery time was exactly 4 frames on all 22
-cycles regardless of where in the frame cycle the stall happened to land is
-itself telling: an invariant like that says the detector is measuring
-something mechanical about how quickly the receiving state machine
-resynchronizes structurally, not whether the content it captures can be
-trusted.
+state-machine restart was ever required. A first look at a sample of the
+captures taken immediately after each of the 22 resumes (88 total, decoded
+offline) found 0/88 (0%) CRC-valid - but this run's held-throttle phase as a
+whole was already unusually poor (31.0% CRC-valid on 271 samples, well
+below the undisturbed run above's 80.5%), so the first question is whether
+"right after a resume" is actually worse than the rest of this same run, or
+just as bad as everything else in it.
+
+It is measurably worse. For each of the 22 resumes, comparing the four
+post-resume samples against the surrounding saturation-phase samples taken
+within 100ms of that same resume (7-8 samples each, drawn from the same
+run, same nearby stretch of time) shows those local neighborhoods averaging
+19.2% CRC-valid, ranging from 0% up to 57.1% depending on the cycle - so
+this run's baseline quality varied a lot from moment to moment, but was
+rarely all bad. 16 of the 22 neighborhoods had a nonzero local rate. Against
+that backdrop, all 22 post-resume samples still coming back 0/4 is far too
+consistent to be explained as an unlucky draw from an already-poor
+baseline - if post-resume captures decoded the same way their immediate
+neighbors did, getting exactly zero across all 16 of the nonzero-baseline
+cycles would be a roughly one-in-a-billion coincidence. So there are two
+separate effects in this data, not one: something about running repeated
+5ms drain stalls depresses this driver's overall decode quality for the
+whole session (the 19.2% local average and the 31.0% run-wide average are
+both far below the clean run's 80.5%, and neither is explained by this
+data), and on top of that, the captures landing immediately after a resume
+are reliably worse still than their own already-degraded neighborhood. The
+exactly-4-frames recovery timing, with zero variance across all 22 cycles,
+doesn't help distinguish between these - it says the driver's structural
+detector is timing something mechanical about how fast the state machine
+resynchronizes, not that a real recovery happened, but it's neutral on
+which of the two effects is at play.
 
 Frames provably lost while undrained - bounded by the 4-word FIFO's
 capacity to hold at most one capture's worth during a stall - totalled
@@ -929,18 +948,21 @@ capacity to hold at most one capture's worth during a stall - totalled
 implies the driver and ESC together reach on the order of 11-12kHz once the
 receiving side's own Python-level polling overhead is taken out of the
 loop, well above the ~2,000 frames/second the unpaced run above otherwise
-achieved. The overall CRC-valid rate sampled during this run's held-throttle
-phase (31.0% on 271 samples) was markedly worse than the undisturbed run
-above (80.5%), but the two aren't a clean comparison: this run's samples
-were taken throughout a period carrying 22 separate 5ms interruptions
-spaced every 200ms, not one undisturbed hold.
+achieved.
 
-Taken together with the run above, the conclusion for this driver is the
-same either way: any telemetry-validity signal exposed upward from this
-layer needs to be gated on a real CRC check, not a structural one. A
-capture that is complete, correctly marked, and even repeatedly "recovered"
-by the driver's own detector is not, on its own, sufficient evidence that
-the reply it carries is genuine.
+Taken together with the run above, the standing conclusion is unchanged:
+any telemetry-validity signal exposed upward from this layer needs to be
+gated on a real CRC check, not a structural one - a capture that is
+complete, correctly marked, and even repeatedly "recovered" by the driver's
+own detector is not, on its own, sufficient evidence that the reply it
+carries is genuine. But this run's own repeated-stall design left every
+resume without a clean, undisturbed local baseline to compare against, so
+it cannot separate "resuming a stall corrupts the next few captures" from
+"repeated stalls degrade this run's decode quality generally, and resuming
+is no different from any other moment in it." Isolating that needs a rerun
+with stalls spaced far enough apart (seconds, not 200ms) that each resume
+has an undisturbed neighborhood on both sides to compare against - not yet
+done.
 
 ### Implications for the RX-synchronization decision (2026-09-06)
 
@@ -962,13 +984,19 @@ is not, on this evidence, the primary open risk any more.
 What both runs show instead is a *content* problem that neither of the
 listed design candidates was written to address: a capture can be complete,
 correctly framed, and paired with the right command, and still carry a
-reply that fails CRC - reliably so in the frames immediately following any
-disruption to steady-state timing (a throttle transition, or a resumed
-RX drain after a stall), and occasionally elsewhere for reasons this data
-doesn't explain. Keeping TX from getting ahead of RX (the lockstep
-candidate) or stamping captures with a sequence number (the epoch-tracking
-candidate) would not, by itself, fix a capture that is already correctly
-identified but wrong in its content - both of those approaches solve a
+reply that fails CRC. The clean unpaced run above ties this to short,
+disruption-adjacent windows (a settling transient right after the throttle
+transition, and one unexplained mid-run window) rather than a steady rate
+effect. The starvation run's own repeated-stall design couldn't cleanly
+separate "a resume specifically corrupts the next few captures" from
+"repeated stalls degrade this run's decode quality generally" (see that
+section above) - so right now only the *first* run's disruption-adjacent
+pattern is solid evidence that timing disruptions specifically matter, not
+the second run's post-resume number on its own. Either way, keeping TX from
+getting ahead of RX (the lockstep candidate) or stamping captures with a
+sequence number (the epoch-tracking candidate) would not, by itself, fix a
+capture that is already correctly identified but wrong in its content -
+both of those approaches solve a
 bookkeeping problem this driver does not currently appear to have. Even
 replacing the whole handshake with a single-SM design would not obviously
 avoid this: the observed corruption windows follow timing disruptions, not
