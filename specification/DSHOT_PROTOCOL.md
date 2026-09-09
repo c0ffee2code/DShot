@@ -5,6 +5,8 @@ Compiled from:
 - https://www.betaflight.com/docs/development/API/Dshot
 - https://ardupilot.org/copter/docs/common-dshot-escs.html
 - https://github.com/betaflight/betaflight/files/2704888/Digital_Cmd_Spec.txt
+- https://github.com/am32-firmware/AM32 - `Src/dshot.c` (`make_dshot_package()`)
+  cross-checked directly against the CRC and GCR sections below (see notes there)
 
 ## Overview
 
@@ -136,6 +138,16 @@ crc = (value ^ (value >> 4) ^ (value >> 8)) & 0x0F;
 crc = (~(value ^ (value >> 4) ^ (value >> 8))) & 0x0F;
 ```
 
+Verified 2026-09-09 byte-for-byte against AM32's actual firmware source
+(`Src/dshot.c`, `make_dshot_package()`) - AM32 XORs the payload's three
+4-bit nibbles, inverts, masks to 4 bits, matching this formula exactly.
+AM32's `gcr_encode_table[16]` is likewise identical to this project's own
+GCR encode table (`driver/gcr_decode.py`/`scripts/dshot_bidir_decode.py`).
+The specific 5/4 response-bitrate figure below, by contrast, was NOT
+independently confirmed at this level - AM32's response timing comes from
+per-target timer/DMA setup that wasn't traced this far; that number
+remains sourced from brushlesswhoop.com only.
+
 ## Packet Assembly
 
 1. Take 11-bit throttle value (0-2047)
@@ -226,7 +238,17 @@ The inverted CRC signals to the ESC that bidirectional mode is active.
 
 - FC transmits 16-bit command
 - ~30µs gap for line turnaround
-- ESC responds with 21-bit GCR-encoded eRPM frame
+- ESC responds with 21-bit GCR-encoded eRPM frame, sent at **5/4 × the
+  command bitrate** (e.g. DShot300's 300 kbit/s command rate implies a
+  375 kbit/s / 2.67µs-bit-period response; DShot600 → 750 kbit/s)
+
+This is the nominal, firmware-design bit rate - actual ESCs commonly run
+their MCU off an internal RC oscillator rather than a crystal, so the
+real bit period on a given unit can sit a few percent off this number
+and drifts with temperature. A receiver can't assume the nominal value
+holds exactly; see `driver/gcr_decode.py`'s `estimate_bit_period` for how
+this driver measures the real period from the response itself instead of
+trusting this nominal figure.
 
 ### eRPM Response Frame
 
@@ -235,6 +257,8 @@ The ESC returns a 16-bit value encoded using GCR (Group Code Recording):
 - **4-bit CRC**
 
 GCR encoding expands 16 bits to 21 bits for improved noise immunity.
+The encode table itself matches AM32's `gcr_encode_table[16]` in
+`Src/dshot.c` exactly (verified 2026-09-09) - see the CRC section above.
 
 #### GCR Decoding
 ```c
