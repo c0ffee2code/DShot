@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 LIBRARY_FILES = [
     ("driver/dshot_pio.py", "dshot_pio.py"),
+    ("driver/gcr_decode.py", "gcr_decode.py"),
     ("driver/motor_throttle_group.py", "motor_throttle_group.py"),
     ("tests/harness/core1_runner.py", "core1_runner.py"),
     ("tests/harness/throttle_profile.py", "throttle_profile.py"),

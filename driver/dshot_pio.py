@@ -7,6 +7,8 @@ import utime
 from machine import Pin
 from rp2 import PIO, StateMachine, asm_pio
 
+import gcr_decode
+
 class InvalidThrottleException(Exception):
     def __init__(self,message):
         self.message=message
@@ -343,18 +345,26 @@ class DShotPIO:
         self.frame_us = (16 * 8 * 1_000_000 + dshot_speed - 1) // dshot_speed
 
         self.rx_sm = None
+        self.rx_clock_hz = None
+        self.telemetry_pending = []
+        self.telemetry_desync_count = 0
+        self.telemetry_consecutive_fail_count = 0
         if bidirectional:
             self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx,
                                        freq=rx_speed, in_base=pin)
+            self.rx_clock_hz = rx_speed
 
     def start(self):
         if self.rx_sm is not None:
             # Flush any leftover words from a previous run and start RX
             # listening before TX can release the pin and fire its first
             # irq(rel(1)) - see dshot_bidir_rx's irq(clear, rel(0)) comment
-            # for the rest of this epoch-clean boundary.
+            # for the rest of this epoch-clean boundary. A leftover partial
+            # telemetry group from a prior run would otherwise misalign the
+            # first post-restart poll_telemetry() group.
             while self.rx_sm.rx_fifo():
                 self.rx_sm.get()
+            self.telemetry_pending = []
             self.rx_sm.active(1)
         self.sm.active(1)
 
@@ -373,6 +383,62 @@ class DShotPIO:
         if not self.rx_sm.rx_fifo():
             return None
         return self.rx_sm.get()
+
+    def poll_telemetry(self):
+        """
+        Drain up to one complete 4-word capture via rx_read() and, if a
+        group just completed, run it through the real GCR/CRC decode
+        (gcr_decode.analyze_capture) and return the result verbatim.
+
+        Returns None if no group completed this call (nothing queued, or
+        still mid-group) - the same meaning rx_read() and analyze_capture()
+        already use for "nothing here," not a distinct sentinel. Returns
+        analyze_capture()'s dict otherwise: crc_ok is the real validity
+        signal, not the structural "does this look like a capture" check
+        rx_read() alone allows - see decision/ADR-002-bidirectional-dshot.md's
+        2026-09-06/07 characterization entries for why the structural check
+        alone was proven unreliable.
+
+        Never reads more than 4 words per call: the RX FIFO's depth is
+        exactly 4, and dshot_bidir_rx stalls on autopush before a 5th word
+        can ever land, so no call can see more than one group's remainder.
+        """
+        if self.rx_sm is None:
+            raise ValueError("poll_telemetry() needs bidirectional=True")
+
+        for _ in range(4):
+            word = self.rx_read()
+            if word is None:
+                return None
+            self.telemetry_pending.append(word)
+            if len(self.telemetry_pending) < 4:
+                continue
+
+            group = self.telemetry_pending
+            self.telemetry_pending = []
+
+            if (group[0] >> 31) != 0:
+                # The marker bit is always 0 on a real reply - this is
+                # structurally impossible otherwise. In practice this
+                # almost never fires (5 times in ~48,500 groups across
+                # this project's hardware sessions so far, including runs
+                # where real CRC-valid rate was 0%) - a zero reading here
+                # is not evidence of phase alignment, see
+                # telemetry_consecutive_fail_count below for the signal
+                # that actually is discriminating.
+                self.telemetry_desync_count += 1
+
+            result = gcr_decode.analyze_capture(group, self.rx_clock_hz)
+            if result is not None and result["crc_ok"]:
+                self.telemetry_consecutive_fail_count = 0
+            elif result is not None and result["full"] is not None:
+                # Symbols decoded, CRC simply didn't match - a genuinely
+                # bad individual reply fails sporadically; a run of these
+                # is what a phase slip in telemetry_pending's grouping
+                # looks like (see poll_telemetry()'s docstring).
+                self.telemetry_consecutive_fail_count += 1
+            return result
+        return None
 
     def drain(self):
         """

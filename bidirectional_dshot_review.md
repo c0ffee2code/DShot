@@ -1036,7 +1036,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | W7 | Implement transaction model + atomic `read_capture()` | R1, R2, R3 | L | TODO |
 | W8 | Epoch-clean `start()`/`stop()` + startup ordering | R8, R9, TC | M | DONE |
 | — | **Phase 3 gate: continuous transaction engine proven — integration may build on it** | — | — | — |
-| W9 | On-Pico eRPM decoder (returns eRPM, not RPM) | R10, R15 | L | TODO |
+| W9 | On-Pico eRPM decoder (returns eRPM, not RPM) | R10, R15 | L | IN PROGRESS — port + offline verification + on-device timing done (2026-09-08/09, see note below and ADR-002); live hardware comparison round still outstanding |
 | W10 | Telemetry health state | R16 | M | TODO |
 | W11 | `MotorThrottleGroup` bidir integration + PIO allocator | R7, R13 | L | TODO |
 | W12 | Multi-motor simultaneous telemetry test | TD, R7 | M | TODO |
@@ -1374,6 +1374,19 @@ script as the reference implementation; add a cross-check mode.
 offline decoder on the same run (100% at settled throttle per ADR-002 baselines), on-Pico
 results agree with the offline decode of the same printed captures, and per-capture decode
 time is measured and recorded.
+
+**Status (2026-09-08/09):** the algorithm itself is ported, verified, and optimized — this
+is the part described in plain language in the ADR-002 entry "On-device telemetry validity
+check: real GCR/CRC decode replaces the structural check" (the entry this W9 note points to,
+not a summary repeated here). CRC polarity is pinned from real data (798/798 inverted).
+Per-capture decode time is measured and recorded: 42-103ms worst-case after two rounds of
+optimization, with the dominant remaining cost (a bit-period search) deliberately left with
+margin rather than squeezed to the bare ~10ms floor a fixed constant would allow, since no
+telemetry consumer exists yet that would notice the difference. Still outstanding: the live
+hardware comparison round (on-Pico verdicts vs. an offline re-decode of the same logged
+words from a real bidirectional channel) — needs the full bench/motor go-ahead, not yet run.
+The stopped-motor/max-period sentinel and EDT frame-type discrimination noted above remain
+explicitly deferred, unchanged from this row's original scope.
 
 **W10 — Telemetry health state (R16)** · driver module from W9
 Wrap decoded telemetry in explicit health state: `valid`, `erpm`, `timestamp` (ticks),

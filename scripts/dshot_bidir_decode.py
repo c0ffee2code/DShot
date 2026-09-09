@@ -1,6 +1,13 @@
 """
 Shared bidirectional DShot GCR telemetry decoder - PC-side (plain CPython).
 
+Counterpart: driver/gcr_decode.py is the on-device (MicroPython) port of
+this same algorithm, kept in sync by scripts/verify_gcr_decode_port.py - a
+permanent regression check, not a one-off. That port's check_crc() accepts
+only the inverted CRC polarity (real hardware data shows this ESC only ever
+produces inverted); this script deliberately keeps accepting both, since
+seeing a stray "plain" hit here would itself be diagnostic for exploration.
+
 Decodes the densely, uniformly-oversampled raw captures produced by
 dshot_bidir_rx (see decision/ADR-002-bidirectional-dshot.md's "RX redesign:
 unslotted dense oversampling" section for the full history - including a

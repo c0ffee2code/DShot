@@ -1063,6 +1063,93 @@ this driver exposes needs to gate on a real CRC check, because a
 structurally perfect capture taken right after a stall is, reliably, not
 a valid one.
 
+### On-device telemetry validity check: real GCR/CRC decode replaces the structural check (2026-09-08/09)
+
+The two characterization sections above ("Unpaced continuous send/drain
+characterization" and "RX-starvation and recovery characterization")
+proved this driver's cheap structural check ("does the capture's first
+sample bit read 0") is not a trustworthy validity signal - it passed
+every capture in a starvation-recovery run while the real, decoded
+CRC-valid rate in the same window was 0%. The fix: port the real GCR
+decode + 4-bit CRC check (`scripts/dshot_bidir_decode.py`, the PC-side
+reference tool this project already had) onto the Pico itself, as a new
+module `driver/gcr_decode.py`, and wire it into `DShotPIO` via a new
+`poll_telemetry()` method that drains a completed 4-word capture and
+returns the decoded result (`crc_ok` is the real signal now, not the old
+structural check).
+
+The port is kept honest by a permanent offline regression check,
+`scripts/verify_gcr_decode_port.py`, which diffs the on-device port
+against the PC reference on every real capture ever pulled in this
+project (2,040 groups across all sessions) - 0 real mismatches. Two
+deliberate differences from the reference are pinned from that same
+data rather than guessed: CRC polarity (the port accepts only
+`inverted` - 714/714, later 798/798, real CRC-valid captures pulled from
+hardware have been inverted, 0 plain, matching AM32's own firmware
+source) and the bit-period search range (below).
+
+**On-device timing was measured, not assumed, and drove two rounds of
+real optimization:**
+
+1. First port, unoptimized, measured at **174-430ms per decode**
+   on-device (MicroPython on RP2350), an order of magnitude
+   worse than a first guess from the algorithm's raw operation count
+   would suggest, and confirming that interpreter overhead - not the
+   RP2350's genuine hardware FPU, which is real and ~6x faster than the
+   RP2040's software float emulation - dominates this loop's cost.
+2. Stage-by-stage timing (bracketing each of `raw_samples`,
+   `find_edges`, `estimate_bit_period`, `reconstruct_bits` separately)
+   isolated `estimate_bit_period`'s 250-candidate brute-force sweep as
+   90-96% of total cost, dwarfing everything else.
+3. Two safe, verified optimizations were kept: `find_edges` now carries
+   each edge's sample index so `reconstruct_bits` reads the transitioned
+   value directly (O(1)) instead of `value_at_cycle`'s old O(128) linear
+   scan per bit; and the sweep's inner loop reuses one division
+   (`q = g/p`) for both the rounded multiple and the residual instead of
+   computing a second, redundant division. Net: 174-430ms -> 115-288ms.
+4. A two-phase coarse (0.5-step) then fine (0.04-step, +-0.5 window)
+   version of the sweep was tried next, aiming at the sweep's O(250)
+   candidate count directly. **Reverted**: checked against
+   `verify_gcr_decode_port.py`'s full 2,040-group diff, it gave the
+   wrong period for 511/2,040 real captures - the residual-vs-period
+   surface isn't well-behaved enough at 0.5-step granularity for the
+   coarse pass to reliably land in the right neighborhood, and the fine
+   pass then has no way to recover from a wrong neighborhood.
+5. Rather than guess a better search strategy, the real data was
+   tallied directly: `period_cycles` across all 798 CRC-valid captures
+   pulled from hardware so far clusters in [9.64, 10.52] (mean 10.30,
+   std 0.13) - nowhere near the original algorithm's full 6-16 cycle
+   search range. A bare fixed constant at the center of that band
+   reproduces the full sweep's answer exactly on all 798 valid captures
+   (0 disagreements) - the true period on this rig is effectively
+   constant, not something that needs discovering fresh on every reply.
+   Shipped a middle ground instead of the bare constant: a narrowed
+   search range (8.5-12.0 cycles, grid-aligned to the reference sweep's
+   own float sequence so `verify_gcr_decode_port.py`'s float-tolerance
+   check compares like with like) that keeps real margin against period
+   drift on different hardware or thermal conditions, while cutting the
+   candidate count from 250 to ~35.
+6. Final, deployed, on-device numbers: **42-103ms per decode**, roughly
+   a 4x improvement over the initial port, with
+   `estimate_bit_period` still 79-88% of the total (down from 90-96%,
+   but still dominant - a bare constant would remove nearly all of the
+   remaining cost, at the price of the drift margin above).
+
+**Where this leaves the scoping question, decided rather than left
+open:** the pipeline's unavoidable floor (`raw_samples` + `find_edges`,
+independent of any period-search strategy) is roughly 10ms, so ~100
+decodes/sec is the ceiling for this pipeline shape no matter how far the
+sweep itself is optimized. This project's own regressions produce
+500-2,000 replies/sec, so per-reply decode was never on the table -
+every viable option lands in the same regime: a periodically sampled
+validity signal somewhere between the ~10-24/sec now shipped and a
+theoretical ~100/sec. With no telemetry consumer built yet
+(`MotorThrottleGroup` integration remains deferred, as before), nothing
+currently needs more than what's shipped now, so this is where the
+optimization work stops - not because a faster version isn't possible
+(the bare-constant measurement proves one is, exactly), but because
+nothing yet exists that would notice the difference.
+
 ## References
 
 - [Brushless Whoop - Bidirectional DShot](https://brushlesswhoop.com/dshot-and-bidirectional-dshot/)
