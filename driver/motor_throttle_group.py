@@ -69,11 +69,18 @@ class MotorThrottleGroup:
     # Parameters" table in README.md.
     UPDATE_INTERVAL_US = 0
 
-    # Default arming duration in milliseconds. An AM32-firmware ESC never
-    # completed its own arm confirmation at 500ms, even at max frame rate -
-    # 3000ms is what proved reliable. A longer hold is always safe for ESCs
-    # that need less (see README.md "Verified Parameters").
-    DEFAULT_ARM_DURATION_MS = 3000
+    # Default arming duration in milliseconds. An earlier finding claimed an
+    # AM32-firmware ESC never completed its own arm confirmation at 500ms,
+    # even at max frame rate, and set this to 3000ms - that finding was
+    # re-tested on 2026-09-12 after discovering the original test run(s)
+    # predated a fix for a board-state corruption bug (`mpremote run` not
+    # resetting the board between invocations - see scripts/deploy.py). Under
+    # the corrected reset-before-run workflow, 500ms (and even 300ms) armed
+    # cleanly, confirmed via genuine non-zero eRPM telemetry replies, not
+    # just elapsed time - see bidirectional_dshot_review.md's W18 notes.
+    # A longer hold is always safe for ESCs that need more (see README.md
+    # "Verified Parameters").
+    DEFAULT_ARM_DURATION_MS = 500
 
     # A gap longer than this between update() calls restarts the arming window,
     # because the ESC resets its own arming counter when commands stop arriving

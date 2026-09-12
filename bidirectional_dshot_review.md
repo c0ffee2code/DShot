@@ -1162,6 +1162,17 @@ pre-existing inconsistency between the two. `CLAUDE.md` and `README.md` updated 
 DSHOT300/600 only, and `specification/DSHOT_PROTOCOL.md`'s ESC compatibility table's AM32 row
 corrected (see W2's note above) as part of the same pass.
 
+*Note (2026-09-12):* this item's own conditional promise ("if 4MHz garbles/fails... this
+item would instead close by populating `BIDIR_PROFILES` with both DSHOT300 and DSHOT600
+entries") is now superseded by far more thorough work: a dedicated fixed-ratio RX sampling
+effort ran a full K∈{8,9,10,11} hardware sweep for BOTH speeds and committed measured,
+verified `rx_speed`/`expected_ratio` pairs for each (DSHOT300 K=9, `rx_speed=3_375_000`;
+DSHOT600 K=9, `rx_speed=6_750_000`) - see decision/ADR-002-bidirectional-dshot.md's
+"Fixed-ratio RX sampling retune" section. This W1 entry's own small-scale spike data (the
+table above) is superseded as the source of truth for the live profile values, though its
+qualitative finding (both speeds decode correctly with adequate oversampling) still stands
+as the original evidence that motivated pursuing this further. See also W13's note below.
+
 **W2 — Fix GCR table in `specification/DSHOT_PROTOCOL.md` (R11)** · `specification/DSHOT_PROTOCOL.md`
 ADR-002 established the spec's GCR symbol table is wrong (agrees with AM32's real
 `gcr_encode_table[16]` on only 6 of 16 entries) and records the corrected table, which also
@@ -1179,6 +1190,26 @@ other firmwares rather than checked) — already corrected while investigating W
 result, independent of this item's GCR table fix. Nothing left to do there; check the
 surrounding bidir sections this item calls for as originally scoped.
 
+*Note (2026-09-12), re-audited against the current spec doc:* the GCR table's wrongness is
+resolved, but not by literally reproducing a corrected table - the doc now points to
+`driver/gcr_decode.py`/`scripts/dshot_bidir_decode.py` as the single source of truth with a
+provenance note ("verified 2026-09-09"), avoiding the drift risk of a second copy. That's a
+reasonable design choice, not a gap. Two things this item explicitly called out remain
+genuinely open, though:
+1. The "surrounding bidir sections" check this item asked for was never done: the Timing
+   section's diagram still states "~30µs" as a flat, universal turnaround figure, with no
+   caveat that real measured turnaround on this hardware is much shorter - exactly the "30µs
+   turnaround as universal" stale assumption this item named.
+2. New staleness, introduced by today's own fixed-ratio RX sampling work: the same section's
+   caveat paragraph tells the reader "this driver measures the real period from the response
+   itself... see `driver/gcr_decode.py`'s `estimate_bit_period`" - but `estimate_bit_period`
+   was deleted from the driver today (see W9/W13 notes below); the driver now uses a fixed
+   per-profile constant (`estimate_bit_period_fixed`), not a live per-capture measurement.
+   This reference is now broken, not just imprecise.
+
+Both are spec-doc edits, out of scope for the doc-only pass that found them. Status stays
+TODO - do not mark this item DONE.
+
 **W3 — Add verification-status table to ADR-002 (R6)** · `decision/ADR-002-bidirectional-dshot.md`
 Adopt the review's layer table (§6) into ADR-002 near the status header: inverted TX /
 detection / capture / GCR / CRC / eRPM = Verified; continuous sync / FIFO management /
@@ -1187,6 +1218,11 @@ Not implemented. Future sessions update this table as gates pass; the ADR's Acce
 (Phase 4 gate) requires every row resolved.
 **Done when:** the table is in ADR-002, the status header points to it, and each row's
 claim is consistent with the ADR body.
+
+*Note (2026-09-12):* checked - no literal "| Layer | Status |"-shaped table (or equivalent)
+exists anywhere in `decision/ADR-002-bidirectional-dshot.md`, despite the ADR having grown
+substantially since this item was written (multiple new dated sections through
+2026-09-12). Confirmed still genuinely open, not stale. Status stays TODO.
 
 **W4 — Saturated continuous-capture stress harness (R1, R2, R3, TA)** · new `tests/test_bidir_rx_stress.py`
 The harness that makes the P0 findings observable instead of theoretical. After arming, run
@@ -1388,6 +1424,18 @@ words from a real bidirectional channel) — needs the full bench/motor go-ahead
 The stopped-motor/max-period sentinel and EDT frame-type discrimination noted above remain
 explicitly deferred, unchanged from this row's original scope.
 
+*Note (2026-09-12):* confirmed still accurate - `poll_telemetry()` still has zero call sites
+anywhere outside `driver/dshot_pio.py` itself (grepped `tests/`, `scripts/`). Today's
+fixed-ratio RX sampling work (see ADR-002) measured and improved this same decode path's
+on-device cost further (~6.5x faster, the brute-force sweep retired entirely) and
+re-verified correctness against real hardware captures for both speeds - but that exercised
+`analyze_capture()` directly via test/verification tooling, not `poll_telemetry()` in a live
+consumer loop. This item's "live hardware comparison round" (on-Pico `poll_telemetry()`
+verdicts vs. an offline re-decode of the same logged words, from a real bidirectional
+channel actually driving a motor) remains genuinely outstanding, unchanged in substance -
+if anything, W11 (which would give `poll_telemetry()` its first real caller) is now the more
+natural path to finally exercising it live, rather than a standalone comparison harness.
+
 **W10 — Telemetry health state (R16)** · driver module from W9
 Wrap decoded telemetry in explicit health state: `valid`, `erpm`, `timestamp` (ticks),
 `age_us`-style accessor, and counters — `frames_received`, `crc_errors`, `frames_missed`,
@@ -1442,6 +1490,19 @@ larger-scale characterization. That part still needs the W4 harness to exist fir
 **Done when:** DShot600 bidir passes the same W4/W8-level acceptance as DSHOT300 (not just
 the small-scale spike check); the speed matrix in ADR-002 updated.
 
+*Note (2026-09-12):* the `BIDIR_PROFILES` value cited above (`8_000_000`) is now stale -
+today's fixed-ratio RX sampling effort replaced BOTH speeds' entries with hardware-measured,
+verified values from a real K∈{8,9,10,11} sweep (not the earlier small-scale spike):
+DSHOT300 K=9 (`rx_speed=3_375_000`), DSHOT600 K=9 (`rx_speed=6_750_000`) - see ADR-002's
+"Fixed-ratio RX sampling: DSHOT600 retune, sweep retirement, close-out" section for the
+full table and decision. This is a rate/ratio retune plus a decode-path optimization
+(brute-force sweep retired, ~6.5x faster on-device decode), not the saturation/starvation-
+scale characterization this item's "Remaining scope"/"Done when" ask for - DSHOT600 still
+has only short, settled-throttle captures (~2,400-2,500 records each at two throttle
+levels), never a W4/W8-level ≥10,000-frame saturated or starvation run. **Status stays
+TODO - do not read today's work as closing this item**, though the speed matrix values it
+references should be treated as superseded by the ADR section above.
+
 **W14 — Hygiene batch (R12)** · `driver/dshot_pio.py:334-337`
 The `throttle < 0` guard's message says "Throttle should be greater than 0." — zero is
 legal; change to "Throttle must be >= 0." Sweep for other comment/message drift introduced
@@ -1449,6 +1510,11 @@ by the bidir work (e.g. comments still describing `rx_read()` if W7 renamed it).
 functional changes in this diff.
 **Done when:** messages match behavior; grep for the old message returns nothing; no
 functional diff.
+
+*Note (2026-09-12):* re-checked - `driver/dshot_pio.py`'s throttle guard still reads
+"Throttle should be greater than 0." (currently `send_throttle_command`'s `throttle < 0`
+branch), unchanged since this item was written. Still open, still a one-line fix; out of
+scope for this doc-only cleanup pass (touching `driver/` was explicitly excluded).
 
 **W15 — ADR-002 accuracy fixes (A1, A2, A3, A6, A7)** · `decision/ADR-002-bidirectional-dshot.md`, `driver/dshot_pio.py` comments, `tests/test_bidir_rx_raw.py` header
 Doc-only; no dependencies — may be taken at any point, and fits naturally alongside
@@ -1469,6 +1535,25 @@ everything needed to restate in place).
 **Done when:** each claim is corrected or flagged in place; a grep for "4.7" across
 `driver/`, `tests/`, and `decision/` finds only historical mentions that name the 3MHz
 context; the recorded CRC polarity matches the decoder's actual output.
+
+*Note (2026-09-12), re-checked each sub-finding against current files:*
+- **A1** is now even more stale than previously noted: `driver/dshot_pio.py`'s
+  `dshot_bidir_rx` comment still says "~4.7us fixed delay" for the 14-PIO-cycle predelay,
+  but today's fixed-ratio work changed `rx_speed` for both speeds, so the real wall-clock
+  time is now speed-dependent and different from either the original ~4.7us (3MHz-era) or
+  the previously-corrected ~3.5us (old 4MHz) figures: ~4.15us at DSHOT300's new
+  3,375,000Hz, ~2.07us at DSHOT600's new 6,750,000Hz.
+- **A6** - ADR-002 currently states "7 of 16" (its GCR-symbol-table section); not
+  cross-checked here against a "6 of 16" claim elsewhere in the ADR - still needs
+  reconciling per this item's original scope.
+- **A7** - the "### Recommendation: Bluejay" heading (ADR-002) still has no inline
+  supersession flag of its own; the ADR's top-level Status line marks the whole document
+  superseded/deferred, but this item asks for the specific claim to be flagged in place,
+  which hasn't happened.
+
+All sub-parts remain genuinely open; status stays TODO. None of this is fixable in this
+doc-only pass (every sub-part touches `driver/dshot_pio.py` or
+`decision/ADR-002-bidirectional-dshot.md`, both out of scope here).
 
 **W16 — Verify MOTOR_POLES against the bench magnetic encoder (R15, A4)** · `scripts/decode_bidir_capture.py:100`, ADR-002 "eRPM Decoding"
 No backlog dependencies (usable with the existing offline pipeline before W9). The bench
@@ -1711,5 +1796,37 @@ channels running genuinely different, diverging throttle profiles simultaneously
   non-zero, and marks `outcome=failed` — a QA harness whose own failure path has never been
   exercised isn't trustworthy.
 - Flip this item's status-table row to DONE only once the above all pass.
+
+*Note (2026-09-12):* the outstanding `single_channel_baseline.json` regression rerun above
+is now even more necessary than before, not just still open - today's fixed-ratio RX
+sampling work changed DSHOT300's `rx_speed` (was 4,000,000, now 3,375,000/K=9), so the
+existing W17 baseline (116,705/116,705 CRC-valid) was measured at a rate this project no
+longer runs. Both W18 checklist items above still need bench/motor time; neither is
+touched by this doc-only cleanup pass.
 - `dual_motor_divergent.json` (all 4 channels) stays deferred indefinitely — not needed until
   the second, all-4-motors ESC instance is brought into scope.
+
+*Note (2026-09-12, added later same day):* the arming-duration finding this ADR's RX-design
+section cites (ADR-002 line ~495: "500ms arm duration wasn't enough, needed 3000ms; anything
+less than back-to-back framing failed to arm at all") predates the mpremote-reset-corruption
+discovery from today's fixed-ratio RX sampling work (`scripts/deploy.py`'s fix). That testing
+used `mpremote run` across repeated attempts at different durations; if the board wasn't hard-
+reset between attempts, a "500ms failed to arm" result could reflect stale VM state from the
+previous run rather than a genuine arming-timing requirement. `MotorThrottleGroup.
+DEFAULT_ARM_DURATION_MS = 3000` and `specification/DSHOT_PROTOCOL.md`'s arming-sequence
+section both currently rest on this unconfirmed finding. Needs re-verification on the bench
+using the corrected reset-before-run workflow before being cited as fact anywhere - not done
+here, since it needs a real arm/spin hardware test (motor spins).
+
+**Re-verified on the bench (2026-09-12, same day, channel 1):** ran
+`tests/harness/scenarios/arm_duration_probe_{300,500,1000,3000}.json` via `scripts/deploy.py`
+(so each got its own hard reset first), one candidate per fully separate invocation. All four
+armed cleanly - 300ms: 1902/1902 non-zero replies, 0 dropped; 500ms: 1901/1901, 0 dropped;
+1000ms: 1913/1913, 0 dropped; 3000ms (control): 1814/1814, 0 dropped. The original "500ms
+failed to arm" finding does not reproduce under the corrected reset-before-run workflow - this
+confirms it was a stale-VM artifact from the pre-fix `mpremote run` corruption, not a genuine
+ESC arming-timing requirement. `MotorThrottleGroup.DEFAULT_ARM_DURATION_MS = 3000` is no longer
+supported by any known hardware finding. Decision: reduced to 500ms (`driver/
+motor_throttle_group.py`, `README.md`'s "Verified Parameters" table, `tests/
+test_slow_spin.py`'s docstring, `decision/ADR-002-bidirectional-dshot.md`'s Option A' pro/con
+all updated to match).

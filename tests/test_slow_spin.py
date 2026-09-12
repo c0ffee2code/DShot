@@ -6,9 +6,10 @@
 # valid DShot signal, not just one - so all 4 get armed together via
 # MotorThrottleGroup; only channel 1 (motor index 0) gets nonzero throttle.
 #
-# This ESC also would not complete arming at the library's old 500ms
-# default, even at max frame rate - needs the full DEFAULT_ARM_DURATION_MS
-# (see driver/motor_throttle_group.py and README.md "Verified Parameters").
+# An earlier finding claimed this ESC would not complete arming at 500ms
+# even at max frame rate, needing a full 3000ms - that finding didn't
+# reproduce on re-test (see driver/motor_throttle_group.py's
+# DEFAULT_ARM_DURATION_MS and README.md "Verified Parameters").
 #
 # Hardware: 4-in-1 ESC, channel 1 -> GPIO 6 (motor + prop mounted),
 # channels 2-4 -> GPIO 7/8/9 (wired but no motor mounted - idle only).

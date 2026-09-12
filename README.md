@@ -95,10 +95,10 @@ import utime
 motor = DShotPIO(0, Pin(4), DSHOT_SPEEDS.DSHOT600)  # SM 0, GPIO 4
 motor.start()  # Activate PIO state machine
 
-# Arm ESC (send throttle=0 back-to-back for ~3s). Some ESC firmware needs
+# Arm ESC (send throttle=0 back-to-back for ~500ms). Some ESC firmware needs
 # near-continuous frames to arm at all - see "Verified Parameters" below.
 arm_start = utime.ticks_ms()
-while utime.ticks_diff(utime.ticks_ms(), arm_start) < 3000:
+while utime.ticks_diff(utime.ticks_ms(), arm_start) < 500:
     motor.send_throttle_command(0)
 
 # Run motor
@@ -168,7 +168,7 @@ faster/longer hold is always safe for the less demanding one too.
 | Protocol | DShot600 | DShot300 |
 | Minimum throttle | 70 (50-69 unreliable) | 100 confirmed working |
 | Command interval | 1ms (1kHz) tolerant | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
-| Arming duration | 500ms | 3000ms - 500ms never completed the ESC's own arm confirmation, even at max frame rate |
+| Arming duration | 500ms | 500ms - an earlier finding claimed 500ms never completed the ESC's own arm confirmation and set this to 3000ms, but that test predated a board-reset bug fix (see `driver/motor_throttle_group.py`'s `DEFAULT_ARM_DURATION_MS`); re-tested 2026-09-12 with the corrected workflow and 500ms (down to 300ms) armed cleanly, confirmed via genuine telemetry replies |
 
 The AM32 ESC gave no indication via its beep pattern alone that arming was
 failing - it decodes individual commands correctly (confirmed via the DShot

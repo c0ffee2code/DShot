@@ -237,18 +237,33 @@ The inverted CRC signals to the ESC that bidirectional mode is active.
 ```
 
 - FC transmits 16-bit command
-- ~30µs gap for line turnaround
+- ~30µs gap for line turnaround (a generic figure from community
+  documentation, not confirmed at the AM32 source level - actual hardware
+  measurement on this project's bench found AM32's real reply turnaround
+  to be much shorter, ~4.7µs fixed delay before a reply begins, not 30µs;
+  see decision/ADR-002-bidirectional-dshot.md's RX redesign section. Don't
+  treat 30µs as a value to design a receiver's timing around.)
 - ESC responds with 21-bit GCR-encoded eRPM frame, sent at **5/4 × the
   command bitrate** (e.g. DShot300's 300 kbit/s command rate implies a
   375 kbit/s / 2.67µs-bit-period response; DShot600 → 750 kbit/s)
 
 This is the nominal, firmware-design bit rate - actual ESCs commonly run
 their MCU off an internal RC oscillator rather than a crystal, so the
-real bit period on a given unit can sit a few percent off this number
-and drifts with temperature. A receiver can't assume the nominal value
-holds exactly; see `driver/gcr_decode.py`'s `estimate_bit_period` for how
-this driver measures the real period from the response itself instead of
-trusting this nominal figure.
+real bit period on a given unit can sit a few percent off this number.
+Measured and confirmed on this project's bench: DSHOT300's real reply
+bitrate sits consistently at ~388,000 bps, not the nominal 375,000 -
+confirmed independently across four different sampling rates taken in one
+session (see decision/ADR-002-bidirectional-dshot.md's fixed-ratio RX
+sampling section), which rules out sampling-rate-dependent measurement
+error. A receiver can't assume the nominal value holds exactly. This
+driver measures the real period once per DShot speed
+on real hardware and uses that fixed, verified value
+(`driver/dshot_profiles.py`'s `BIDIR_PROFILES`, consumed by
+`driver/gcr_decode.py`'s `estimate_bit_period_fixed`) rather than
+searching for it fresh on every reply - `scripts/dshot_bidir_decode.py`
+(the PC-side reference tool) keeps a brute-force search
+(`estimate_bit_period`) available for analyzing a capture from an
+unfamiliar or historical rate.
 
 ### eRPM Response Frame
 

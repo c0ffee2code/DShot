@@ -171,7 +171,7 @@ def _build_scenario(data):
     return Scenario(
         dshot_speed=dshot_speed,
         duration_ms=duration_ms,
-        arm_duration_ms=data.get("arm_duration_ms", 3000),
+        arm_duration_ms=data.get("arm_duration_ms", 500),
         stop_duration_ms=data.get("stop_duration_ms", 300),
         status_interval_ms=data.get("status_interval_ms", 15000),
         poll_ms=data.get("poll_ms", 10),

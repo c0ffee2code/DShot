@@ -41,7 +41,7 @@ class ScenarioRunner:
     Usage:
         runner = ScenarioRunner(motors)  # motors: 4 DShotPIO instances
         runner.start()                   # begins sending throttle=0 immediately
-        utime.sleep_ms(3000)             # arm window - continuous zero commands
+        utime.sleep_ms(500)               # arm window - continuous zero commands
         runner.set_throttle(0, 300)
         while ...:
             for record in runner.drain():

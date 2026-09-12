@@ -491,9 +491,15 @@ releasing the pin each frame; RX program waits on that IRQ, then a fixed
 machines already sit on the same PIO block (required since they share a
 GPIO), which PIO IRQ signalling needs anyway.
 - Pro: the exact TX waveform already arm-verified on this ESC never
-  changes - zero new risk to the one thing repeatedly proven fragile here
-  (500ms arm duration wasn't enough, needed 3000ms; anything less than
-  back-to-back framing failed to arm at all).
+  changes - zero new risk to arming, which was thought fragile at the time
+  this option was weighed (500ms arm duration was believed not enough,
+  requiring 3000ms). That finding was later re-tested (2026-09-12) after a
+  board-reset bug in the test tooling was found and fixed, and did not
+  reproduce - 500ms (down to 300ms) armed cleanly under the corrected
+  workflow, confirmed via genuine telemetry replies. Arming is less fragile
+  than this section assumed when it was written; the option's pro still
+  held for the actual reason argued (an unchanged, already-verified TX
+  waveform carries zero new risk), just not for this specific timing claim.
 - Con: PIO inter-SM IRQ handshaking is new ground for this codebase; two
   programs to keep in sync; not a direct port of a working reference.
 

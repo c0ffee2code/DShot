@@ -489,7 +489,7 @@ class DShotPIO:
         firmware source - see ADR-002), so leaving it 0 does not suppress telemetry.
         """
         if throttle < 0:
-            raise InvalidThrottleException("Throttle should be greater than 0.")
+            raise InvalidThrottleException("Throttle cannot be negative.")
         if throttle > 2047:
             raise InvalidThrottleException("Throttle value is too high. Maximum value is 2047.")
 
