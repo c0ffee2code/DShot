@@ -260,6 +260,22 @@ GCR encoding expands 16 bits to 21 bits for improved noise immunity.
 The encode table itself matches AM32's `gcr_encode_table[16]` in
 `Src/dshot.c` exactly (verified 2026-09-09) - see the CRC section above.
 
+**Response CRC polarity - AM32 deviates from generic community
+documentation here, confirmed at the source level (2026-09-09).**
+brushlesswhoop.com describes this response CRC as "calculated exactly as
+it is with uninverted DSHOT... sent back... uninverted" - i.e. the plain,
+non-complemented nibble-XOR formula. AM32's actual firmware does the
+opposite: `Src/dshot.c`'s `make_dshot_package()` (the function that
+builds this exact eRPM response frame) explicitly inverts it -
+`csum = ~csum; // invert it`. This matches this project's own hardware
+data exactly: every real CRC-valid capture pulled from this bench so far
+(798/798) used the inverted polarity, 0 the plain one - `driver/
+gcr_decode.py`'s `check_crc()` accepts only inverted for this reason.
+Generic DShot write-ups describe BLHeli_S/Bluejay-era convention; AM32
+does not follow it here. Consistent with this project's own rule (see
+CLAUDE.md): when a generic spec and AM32's source disagree, the source
+wins.
+
 #### GCR Decoding
 ```c
 gcr_decoded = value ^ (value >> 1);
