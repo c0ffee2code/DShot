@@ -35,7 +35,7 @@
 import gc
 
 from machine import Pin
-from dshot_pio import DShotPIO, DSHOT_SPEEDS
+from dshot_pio import DShotPIO, DSHOT_SPEEDS, BIDIR_PROFILES
 from stress_capture_sink import StressCaptureSink
 import utime
 
@@ -365,6 +365,7 @@ def test_bidir_rx_stress():
     provenance = {
         "channels": list(CHANNELS),
         "dshot_speed": DSHOT_SPEED,
+        "rx_clock_hz": BIDIR_PROFILES[DSHOT_SPEED]["rx_speed"],
         "run_throttle": RUN_THROTTLE,
         "target_frames": TARGET_FRAMES,
         "starvation_enabled": STARVATION_ENABLED,

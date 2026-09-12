@@ -1,20 +1,26 @@
 """
 On-device bidirectional DShot GCR telemetry decoder - MicroPython, mirrors
-scripts/dshot_bidir_decode.py (the PC-side reference) function-for-function.
-The two are kept in sync by scripts/verify_gcr_decode_port.py, a permanent
-regression check, not a one-off port verification - re-run it whenever
-either file changes.
+scripts/dshot_bidir_decode.py (the PC-side reference) function-for-function
+for the fixed-ratio decode path (the two intentionally diverge on the
+brute-force sweep - see estimate_bit_period_fixed's docstring below and
+decision/ADR-002-bidirectional-dshot.md's "Fixed-ratio RX sampling retune"
+section). scripts/verify_gcr_decode_port.py is the permanent regression
+check keeping the shared path in sync - re-run it whenever either file
+changes.
 
 Decodes the densely, uniformly-oversampled raw captures produced by
 dshot_bidir_rx (see decision/ADR-002-bidirectional-dshot.md's "RX redesign:
 unslotted dense oversampling" section for the full history).
 
-dshot_bidir_rx makes NO assumption about the real GCR bit period. It just
-samples the pin every 2 PIO cycles (0.5us at the 4MHz rx_speed),
-continuously, for 128 samples - covering the marker bit, the 20 real GCR
-data bits, and idle tail, all in one flat un-slotted stream. This module's
-job is to figure out where the real bit boundaries are and what the real
-bit period is, from the raw waveform itself.
+dshot_bidir_rx makes NO assumption about the real GCR bit period at the PIO
+level - it just samples the pin every 2 PIO cycles, continuously, for 128
+samples, covering the marker bit, the 20 real GCR data bits, and idle tail,
+all in one flat un-slotted stream. What real bit period those cycles work
+out to is a per-profile tuned constant (driver/dshot_profiles.py's
+BIDIR_PROFILES, one per DShot speed, each measured and verified on real
+hardware - see the ADR section above), not searched for at decode time -
+this module's job is turning that raw waveform into bits using the tuned
+constant, not discovering the period fresh from every capture.
 
 Each real reply produces FOUR 32-bit words (in_shiftdir=SHIFT_LEFT,
 push_thresh=32): the OLDEST sample in each word is at bit31, the NEWEST at
@@ -40,9 +46,9 @@ validity gate, so it doesn't get that latitude.
 Method:
 1. Reconstruct the 128-sample time series with exact per-sample cycle
    positions.
-2. Find the marker's rising edge and estimate the real bit period (in
-   cycles) from edge-to-edge gaps (sweeping candidate periods, since the
-   true period is generally NOT an integer number of cycles).
+2. Find the marker's rising edge and use the calling profile's tuned bit
+   period (a fixed constant in cycles, generally NOT an integer -
+   estimate_bit_period_fixed, see its own docstring).
 3. Reconstruct the actual bit sequence via RUN-LENGTH decoding (each run of
    N cycles between edges contributes round(N/period) bits of that run's
    value) - NOT by resampling at fixed offsets, which would accumulate
@@ -119,84 +125,67 @@ def find_edges(samples):
     return edges
 
 
-# Measured band (see estimate_bit_period's docstring): 798 CRC-valid
-# captures across 3 real sessions gave period_cycles in [9.64, 10.52],
-# mean 10.30, std 0.13. Margin here is generous relative to that spread,
-# not the bare observed min/max.
-#
-# These are NOT bare 8.5/12.0: the reference script's sweep starts at 6.0
-# and repeatedly adds 0.04, and float addition doesn't associate cleanly
-# with multiplication - 6.0 + 62*0.04 is not bit-identical to what 62
-# real += 0.04 steps from 6.0 produce. Picking values off that reference
-# sequence itself (its values at steps 63 and 150) keeps this sweep's
-# grid points bit-for-bit aligned with the reference's, so
-# scripts/verify_gcr_decode_port.py's float-tolerance period_cycles check
-# isn't comparing two subtly different grids.
-SEARCH_RANGE_START = 8.51999999999999
-SEARCH_RANGE_END = 11.999999999999917
-
-
-def estimate_bit_period(edges):
+def _period_score(gaps, p):
     """
-    Estimate the real (possibly fractional) bit period in cycles from
-    edge-to-edge gaps. Sweeps fractional candidates and picks the one that
-    best explains all observed gaps as integer multiples of itself (least
-    total squared residual after rounding each gap/period to the nearest
-    integer multiple) - an integer-only estimate would reintroduce the
-    accumulating error this run-length approach exists to avoid.
+    Shared residual-scoring math for estimate_bit_period and
+    estimate_bit_period_fixed: how well would rounding every gap to the
+    nearest integer multiple of candidate period p explain the observed
+    gaps, as a total relative (residual/period)^2 score - see
+    estimate_bit_period's docstring for why relative, not absolute, and
+    for the q=g/p reuse that avoids a redundant division.
+    """
+    score = 0.0
+    for g in gaps:
+        q = g / p
+        n = max(1, round(q))
+        residual = q - n
+        score += residual * residual
+    return score
 
-    Inner loop computes q = g/p once and reuses it for both the rounded
-    multiple and the residual (residual = (g - n*p)/p is algebraically
-    g/p - n = q - n) - one division instead of a division, a multiply, and
-    a second division.
 
-    SEARCH_RANGE below is a measured band, not a guess: tallying
-    period_cycles across every CRC-valid capture ever pulled on this rig
-    (798 groups across 3 sessions, 2026-09-06/07) gives min=9.64,
-    max=10.52, mean=10.30, std=0.13 - the true period sits in a narrow
-    pocket, not anywhere in the original 6-16 range that pocket was
-    carved from. Narrowing the sweep to that pocket (with real margin
-    either side, not the bare min/max) cuts the candidate count from 250
-    to ~35 while still finding the same answer: replaying the full
-    original 6-16 sweep against the narrowed one on all 798 CRC-valid
-    groups gives 0 disagreements (offline, no MicroPython involved -
-    see scripts/verify_gcr_decode_port.py, which now treats disagreement
-    confined to already-CRC-invalid groups as expected rather than a
-    porting bug, since garbage input has no "right" period to recover).
+def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
+    """
+    Betaflight-style fixed-ratio period estimate: when rx_speed has been
+    tuned so the nominal samples-per-bit ratio is a known constant, there
+    is no need to search for the real period at all - see decision/
+    ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section for
+    the density/margin tradeoff this depends on, and for why the tuned
+    ratio is measured on real hardware before being trusted, not derived
+    from the nominal protocol bitrate alone (real ESC oscillators drift a
+    few percent off nominal).
 
-    A two-phase coarse-then-fine version of this sweep was tried and
-    reverted (2026-09-07): a 0.5-step coarse pass followed by a 0.04-step
-    fine pass within +-0.5 of the coarse winner gave the wrong period for
-    511/2040 real captures - the residual-vs-period surface isn't
-    well-behaved enough at 0.5-step granularity for a coarse pass to
-    reliably land in the right neighborhood. The narrowed-range sweep
-    below is a different kind of change - it doesn't search worse, it
-    just searches less territory, all of which is grounded in measured
-    data rather than picked by a two-stage search - so it doesn't carry
-    the same failure mode.
+    tolerance=0.0 (default): returns expected_ratio directly - a bare
+    fixed divisor, no search, the fastest possible path (this is
+    Betaflight's own technique: `(run_length + 1) / K` in `dshot_bitbang_
+    decode.c`, just written as a function here instead of inline).
 
-    This band is specific to this rig's hardware (this ESC, this DSHOT
-    speed, whatever thermal state it was in across these sessions) - if
-    the ESC, wiring, or DSHOT variant changes, re-tally period_cycles
-    against fresh captures before trusting SEARCH_RANGE still covers it,
-    and re-run scripts/verify_gcr_decode_port.py either way.
+    tolerance>0.0: sweeps a narrow band [expected_ratio-tolerance,
+    expected_ratio+tolerance] in 0.04 steps via _period_score, for when
+    real hardware data shows the tuned rate still needs some margin
+    against drift rather than being trusted as a bare constant. Every
+    live DShot speed's profile so far (see driver/dshot_profiles.py) uses
+    tolerance=0.0 - both DSHOT300 and DSHOT600 measured tight enough
+    (std well under the 0.5-cycle rounding boundary) that a bare divisor
+    reproduces the old brute-force sweep's answer exactly on every
+    CRC-valid capture checked (see decision/ADR-002-bidirectional-
+    dshot.md's fixed-ratio RX sampling section) - the tolerance>0.0 path
+    exists for a future profile whose measured spread doesn't clear that
+    bar as cleanly.
+
+    len(edges) < 2 returns None - analyze_capture treats that as a
+    dead-line signal, not something to paper over.
     """
     if len(edges) < 2:
         return None
+    if tolerance <= 0.0:
+        return expected_ratio
     gaps = [edges[i + 1][0] - edges[i][0] for i in range(len(edges) - 1)]
-    # Relative residual (residual/period)^2, NOT absolute - an absolute
-    # metric is unboundedly biased toward small periods (any gap is
-    # trivially "close" to some multiple of a tiny period).
     best_period = None
     best_score = None
-    p = SEARCH_RANGE_START
-    while p <= SEARCH_RANGE_END:
-        score = 0.0
-        for g in gaps:
-            q = g / p
-            n = max(1, round(q))
-            residual = q - n
-            score += residual * residual
+    p = expected_ratio - tolerance
+    end = expected_ratio + tolerance
+    while p <= end:
+        score = _period_score(gaps, p)
         if best_score is None or score < best_score:
             best_score = score
             best_period = p
@@ -272,9 +261,20 @@ def check_crc(dshot_full_number):
     return None, data12
 
 
-def analyze_capture(words, rx_clock_hz):
+def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
     """
     Full pipeline from 4 raw 32-bit capture words to a decoded result.
+
+    expected_ratio/ratio_tolerance feed estimate_bit_period_fixed - every
+    DShot speed this driver supports has a tuned profile in
+    driver/dshot_profiles.py's BIDIR_PROFILES with a real, measured
+    expected_ratio, so this is a required argument, not optional: there is
+    no brute-force sweep fallback any more (retired 2026-09-12 once both
+    DSHOT300 and DSHOT600 had a verified fixed ratio - see decision/
+    ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section).
+    scripts/dshot_bidir_decode.py, the PC-side reference, deliberately
+    keeps its own brute-force sweep permanently for analyzing captures
+    from any era/rate - only this on-device module dropped it.
 
     Returns None if no edges were found at all (dead line). Otherwise
     returns a dict with:
@@ -290,7 +290,7 @@ def analyze_capture(words, rx_clock_hz):
     edges = find_edges(samples)
     if not edges:
         return None
-    period = estimate_bit_period(edges)
+    period = estimate_bit_period_fixed(edges, expected_ratio, ratio_tolerance)
     if period is None:
         return None
     bits = reconstruct_bits(samples, edges, period)

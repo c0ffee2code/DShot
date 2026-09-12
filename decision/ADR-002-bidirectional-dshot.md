@@ -135,6 +135,15 @@ way: `scripts/decode_bidir_capture.py`'s decoder estimates the real bit
 period from each individual capture's edge timing and hardcodes neither
 this nor any other fixed value.
 
+**Precision update (2026-09-12):** across four independent `rx_speed`
+settings tested for the fixed-ratio retune (see "Fixed-ratio RX sampling
+retune" below), the measured real reply bitrate is consistently ~388,000
+bps (bit period ~2.58µs) - about 3.4% above the 375kbit/s nominal 5/4
+figure, confirmed independently at each setting rather than being one
+measurement's rounding artifact. `driver/gcr_decode.py`'s
+`estimate_bit_period_fixed` (see below) is tuned against this measured
+value, not the nominal 375kbit/s figure.
+
 ### eRPM Decoding
 
 **Corrected/completed 2026-08-23** - the original version of this pseudocode
@@ -1088,6 +1097,21 @@ data rather than guessed: CRC polarity (the port accepts only
 hardware have been inverted, 0 plain, matching AM32's own firmware
 source) and the bit-period search range (below).
 
+**Correction (2026-09-12):** the "2,040 groups" figure above was wrong.
+`verify_gcr_decode_port.py` hardcoded the older stress-harness record
+format (`<IBBB4I`); every session recorded via the newer main-scenario-
+capture format (`<I4H16I`, `tests/harness/bidir_capture_sink.py`) was
+silently misparsed into garbage records that happened to never satisfy
+`crc_kind=="inverted"`, so they were bucketed as harmless "expected
+divergences" rather than flagged - the check never failed, but for those
+sessions it was also not actually checking anything, for the entire time
+this section describes. Fixed via a shared, format-aware loader
+(`scripts/capture_session.py`) that reads each session's own
+`record_fmt`/`bidir_motor_indices` from `meta.txt`. Re-run against the
+same historical sessions this section originally covered: 377,721 real
+groups checked, 0 real mismatches - the underlying decode algorithm was
+never wrong, only this regression check's coverage of it was.
+
 **On-device timing was measured, not assumed, and drove two rounds of
 real optimization:**
 
@@ -1149,6 +1173,183 @@ currently needs more than what's shipped now, so this is where the
 optimization work stops - not because a faster version isn't possible
 (the bare-constant measurement proves one is, exactly), but because
 nothing yet exists that would notice the difference.
+
+### Fixed-ratio RX sampling retune; mpremote board-reset corruption discovered (2026-09-12)
+
+Following up on the previous section's finding that a bare fixed constant
+reproduces the brute-force sweep exactly (0 disagreements on 798 valid
+captures at the old, non-integer ~10.3-cycle rate), a plan was made to
+retune `rx_speed` itself to a clean value and verify a genuine
+Betaflight-style bare divisor (no search at all) on real hardware, testing
+candidate integer ratios K in {8, 9, 10, 11} (`rx_speed = K * 375_000`,
+the nominal 5/4 DSHOT300 reply rate) against two constraints that trade
+off in opposite directions as K rises: raw sample density (`dshot_bidir_rx`
+samples every fixed 2 PIO cycles, so density = period_cycles/2, against an
+established "5-6+ samples/bit" comfort floor) and capture-window margin
+(the fixed 128-sample/~262-cycle window must exceed the real ~21-bit frame
+duration with room to spare - DSHOT1200@16MHz previously failed this
+margin completely, 0/8 CRC-valid via truncation).
+
+**A serious false lead, root-caused and fixed.** The first hardware round
+(2026-09-10) produced deeply confusing results: one candidate worked once
+then failed identically on rerun, every other candidate failed outright,
+and even the untouched, historically-proven original rate failed on two
+fresh reruns - pointing initially at a hardware/bench fault. Extensive
+investigation (channel-swap tests, a controlled `git stash`-based A/B test
+against the exact last-committed code, physical bench inspection)
+eventually isolated the real cause: **`mpremote run` does not reset the
+board between invocations** - it execs a script into the same live
+MicroPython VM the previous invocation left behind, and a hardware test
+run immediately following another one (same or different channel, clean
+completion or an uncaught exception - none of it mattered) reliably
+corrupted the next run's RX capture: TX still went out and the ESC still
+armed normally, but every captured word came back zero, perfectly
+mimicking a dead ESC or wiring fault. A hard reset before the run made it
+succeed every time observed; skipping the reset reliably failed.
+`scripts/deploy.py` now resets the board (with a ~3s settle for USB
+re-enumeration) before every run - see its own docstring for the
+confirming sequence of back-to-back test results. **This retroactively
+voids the entire 2026-09-10 K-candidate dataset** (collected as a rapid,
+unreset sequence of `mpremote run` invocations - exactly the corrupting
+condition) and the "channel 1 might be uniquely faulty" conclusion briefly
+drawn from it: a clean rerun on 2026-09-12 confirmed both channel 1 and
+channel 3 are fully healthy hardware (100% real replies each, motor
+visibly spinning), with no wiring or ESC fault ever actually present. This
+is a general `mpremote`/RP2 MicroPython gotcha worth carrying to any
+project using `mpremote run` for iterative hardware testing, not something
+specific to this codebase.
+
+**Clean K-candidate retest (2026-09-12, channel 1, with the reset fix in
+place):**
+
+| K | rx_speed | CRC-valid | mean period_cycles | std | samples/bit |
+|---|---|---|---|---|---|
+| 8  | 3,000,000 | 97.8% (4601/4705) | 7.7406  | 0.0684 | 3.87 |
+| 9  | 3,375,000 | 100% (4743/4743)  | 8.7069  | 0.0477 | 4.35 |
+| 10 | 3,750,000 | 100% (4738/4738)  | 9.6061  | 0.0960 | 4.80 |
+| 11 | 4,125,000 | 100% (4656/4656)  | 10.6530 | 0.0561 | 5.33 |
+
+K=8's measurably lower validity (vs. 100% for the other three) is
+consistent with it being genuinely too thin on samples/bit, below the
+design's stated floor. The other three all cleared 100% - a more forgiving
+real result than the "5-6+ samples/bit" floor assumed, since only K=11
+actually reaches it. All four measurements agree the real reply bit period
+is ~2.56-2.58µs regardless of K (a useful cross-check - see the bitrate
+correction above for the ~388,000bps figure this implies).
+
+**Decision: K=9** (`rx_speed=3_375_000`), bare fixed divisor
+(`expected_ratio=8.7069`, `ratio_tolerance=0.0`) - tightest spread of the
+three fully-valid candidates (std=0.0477, comfortably under the 0.5-cycle
+rounding boundary a bare divisor needs) and better capture-window margin
+than K=10/K=11 (K=11's margin, while still positive, sits closest of the
+three to the kind of truncation risk that sank DSHOT1200@16MHz). DSHOT600
+has not yet been retested against this same K range - do not assume it
+inherits DSHOT300's K=9 result; that retest is still open (see below).
+
+**Wired and verified on hardware, 2026-09-12:** `driver/dshot_profiles.py`'s
+DSHOT300 entry now carries this K=9 tuple live, and `poll_telemetry()`
+passes `expected_ratio`/`ratio_tolerance` through to `analyze_capture()` for
+every profile (DSHOT600 still resolves to the brute-force sweep via its own
+`expected_ratio=None`, unaffected). `scripts/verify_gcr_decode_port.py`
+confirms both bars: the brute-force path is byte-for-byte unchanged
+(359,448 groups checked, 9,381 pre-existing real mismatches - both from the
+already-documented stale-`SEARCH_RANGE` K=8 sessions, not new - 7,309
+expected polarity divergences), and the new fixed path is clean (4,743
+groups checked against `captures/2026-09-12_13-04-36`, 0 real mismatches).
+
+**On-device timing, measured, not projected:** `tests/test_gcr_decode_timing.py`
+now benchmarks both paths side by side. Sweep (DSHOT300@4MHz, the old path):
+min=45,020µs mean=70,331µs max=108,063µs. Fixed (DSHOT300@3.375MHz, K=9):
+min=9,737µs mean=10,852µs max=21,064µs - a **6.5x mean speedup**, and the
+worst-case implied sustainable rate rose from 9 to 47 decodes/sec,
+approaching the ~10ms `raw_samples`+`find_edges` floor this ADR's previous
+section already identified as the pipeline's true bare-minimum cost. Every
+group still decodes correctly on both paths (7/7 OK, no mismatches).
+
+**Two smaller hardening fixes landed alongside this work:**
+- `scripts/verify_gcr_decode_port.py` (see correction above) and a new
+  `scripts/tally_period_cycles.py` now share format-aware session loading
+  (`scripts/capture_session.py`) and both distinguish a session that
+  legitimately has no bidir groups from one that declares a bidir motor
+  but never got a real reply (an anomaly, not a silent pass).
+- `tests/test_scenario_capture.py` gained a runtime reply failsafe
+  (`_check_reply_failsafe`): any scenario with a bidirectional motor now
+  fails fast (~2s grace) if not one single captured record carries a
+  real, non-all-zero reply, rather than running to completion and only
+  revealing a dead ESC/bench in a post-hoc tally. This is what caught the
+  `mpremote`-reset corruption above quickly once added, instead of
+  requiring another multi-session investigation.
+
+### Fixed-ratio RX sampling: DSHOT600 retune, sweep retirement, close-out (2026-09-12, continued)
+
+**DSHOT600 retested on real hardware, same K range, same method as DSHOT300:**
+
+| K | rx_speed | CRC-valid | mean period_cycles | std | samples/bit |
+|---|---|---|---|---|---|
+| 8  | 6,000,000 | 99.3% (2422/2439) | 7.7411  | 0.0780 | 3.87 |
+| 9  | 6,750,000 | 100% (2463/2463)  | 8.7129  | 0.0576 | 4.36 |
+| 10 | 7,500,000 | 100% (2455/2455)  | 9.6128  | 0.0957 | 4.81 |
+| 11 | 8,250,000 | 100% (2458/2458)  | 10.6602 | 0.0587 | 5.33 |
+
+A near-perfect mirror of DSHOT300's result: the 262-cycle capture window
+and `period_cycles/2` samples-per-bit math are expressed in PIO cycles,
+not time, so the margin/density reasoning transfers unchanged across
+speeds - K=9's margin ratio computes to ~1.43x here too, matching DSHOT300
+K=9's almost exactly. **Decision: K=9 for DSHOT600 too**
+(`rx_speed=6_750_000`, `expected_ratio=8.7129`, `ratio_tolerance=0.0`) -
+same reasoning as DSHOT300 (tightest spread among the fully-valid
+candidates, better margin than K=10/K=11, K=8 again shows the one
+measurable validity dip from under-sampling). Wired into
+`driver/dshot_profiles.py` and verified: `scripts/verify_gcr_decode_port.py`
+shows 2,463 groups checked against `captures/2026-09-12_16-01-39`, 0 real
+mismatches.
+
+**Sweep retirement scope, decided:** once both speeds had a verified fixed
+ratio, `estimate_bit_period`/`SEARCH_RANGE_START`/`SEARCH_RANGE_END` were
+deleted from `driver/gcr_decode.py` entirely - `analyze_capture()` now
+requires `expected_ratio` (no more `None` fallback to a sweep that no
+longer exists). This left one real question: what happens to
+`scripts/verify_gcr_decode_port.py`'s brute-force-vs-port comparison for
+every historical (pre-retune) session, since the on-device port side of
+that comparison no longer exists? Decided: **drop historical coverage**.
+`verify_gcr_decode_port.py`'s `check_one` (brute-force arm) was deleted
+along with it - the tool now only ever checks sessions recorded at a rate
+a live `BIDIR_PROFILES` entry is currently tuned for, reporting everything
+else as `SKIPPED (no tuned profile for this session's recorded rate)`
+rather than silently ignoring it or crashing. `scripts/dshot_bidir_decode.py`
+(the PC-side reference) deliberately kept its own full sweep permanently -
+its job is analyzing any capture from any era on demand, which the
+historical sessions remain fully available for via direct use of that
+script, just no longer through the automated regression check. Final,
+full-corpus run after both retunes and the retirement: **11,928 groups
+checked (all three sessions with a currently-tuned rate: 4,743 at DSHOT300
+K=9, 4,722 at DSHOT300 K=9's real-hardware confirmation run, 2,463 at
+DSHOT600 K=9), 0 real mismatches, 0 expected polarity divergences, 0
+anomalies** - 24 sessions correctly skipped as self-diagnosed failures
+(`outcome=failed`), 25 correctly skipped as recorded at a now-untuned rate.
+
+**On-device timing, both speeds, post-retirement:** `tests/test_gcr_decode_timing.py`
+was rewritten to drop the sweep arm entirely (there is nothing left to
+benchmark it against) and now benchmarks both speeds' fixed-ratio paths
+side by side. Period search (`estimate_bit_period_fixed`) costs ~55-56µs
+either way - about 1% of total decode cost - down from the sweep's 79-88%
+dominance documented in the previous section. Full pipeline: DSHOT300
+(K=9) min=9,693µs mean=10,799µs max=22,660µs; DSHOT600 (K=9)
+min=9,704µs mean=10,914µs max=20,700µs - both essentially identical, both
+close to the ~10ms `raw_samples`+`find_edges` floor identified earlier as
+this pipeline's true bare-minimum cost, confirming period search is now
+effectively free for both speeds.
+
+**Status: this effort is closed.** Both DSHOT300 and DSHOT600 have a
+verified, hardware-confirmed fixed-ratio RX sampling configuration; the
+brute-force sweep is fully retired from the on-device driver; the
+PC-side reference and regression check are both updated and passing
+clean. Adding bidirectional support for any DShot speed beyond these two
+would need the same measure-K-candidates-on-hardware method repeated from
+scratch - the tooling built for it (`tests/harness/scenarios/
+period_tally_short*.json`, `scripts/tally_period_cycles.py`,
+`scripts/capture_session.py`, `scripts/deploy.py`'s reset-before-run) is
+all reusable as-is.
 
 ## References
 

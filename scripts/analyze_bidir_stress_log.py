@@ -30,11 +30,6 @@ _RECORD_SIZE = struct.calcsize(_RECORD_FMT)
 
 PHASE_NAMES = {0: "arm", 1: "saturation", 2: "post_resume", 3: "boundary_partial"}
 
-# Mirrors driver/dshot_pio.py's BIDIR_PROFILES - kept as a small local
-# constant rather than importing the MicroPython driver module into this
-# plain-CPython script.
-BIDIR_PROFILES = {2_400_000: 4_000_000, 4_800_000: 8_000_000}
-
 
 def load_meta(session_dir):
     meta = {}
@@ -71,9 +66,16 @@ def main():
 
     provenance = json.loads((session_dir / "scenario.json").read_text())
     dshot_speed = provenance.get("dshot_speed")
-    rx_clock_hz = BIDIR_PROFILES.get(dshot_speed)
+    rx_clock_hz = provenance.get("rx_clock_hz")
     if rx_clock_hz is None:
-        sys.exit(f"No known rx_clock_hz for dshot_speed={dshot_speed}")
+        # Sessions predating this harness recording its own rx_clock_hz
+        # (see tests/test_bidir_rx_stress.py's provenance dict) - all such
+        # sessions on disk today are DSHOT300 runs at that era's rx_speed.
+        if dshot_speed == 2_400_000:
+            rx_clock_hz = 4_000_000
+        else:
+            sys.exit(f"No known rx_clock_hz for dshot_speed={dshot_speed} "
+                      "(session predates rx_clock_hz provenance and isn't DSHOT300)")
     print(f"dshot_speed={dshot_speed} rx_clock_hz={rx_clock_hz} "
           f"channels={provenance.get('channels')} "
           f"starvation_enabled={provenance.get('starvation_enabled')}")

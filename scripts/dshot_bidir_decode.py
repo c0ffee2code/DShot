@@ -8,18 +8,31 @@ only the inverted CRC polarity (real hardware data shows this ESC only ever
 produces inverted); this script deliberately keeps accepting both, since
 seeing a stray "plain" hit here would itself be diagnostic for exploration.
 
+**Deliberate divergence from the driver, since 2026-09-12:** this module
+keeps its full brute-force bit-period sweep (estimate_bit_period)
+permanently, even though driver/gcr_decode.py deleted its own copy once
+every live DShot speed had a verified fixed ratio (see decision/
+ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section). This
+script's job is analyzing any capture from any era or rate on demand - the
+sweep is what makes that possible for historical/pre-retune sessions that
+scripts/verify_gcr_decode_port.py no longer regression-checks
+automatically. Both estimate_bit_period (this file's own sweep) and
+estimate_bit_period_fixed (the shared fixed-ratio path) stay here; only
+the driver dropped the former.
+
 Decodes the densely, uniformly-oversampled raw captures produced by
 dshot_bidir_rx (see decision/ADR-002-bidirectional-dshot.md's "RX redesign:
 unslotted dense oversampling" section for the full history - including a
 first, disproven frame-length hypothesis this module used to assume).
 
-dshot_bidir_rx makes NO assumption about the real GCR bit period. It just
-samples the pin every 2 PIO cycles (0.5us at the 4MHz rx_speed),
-continuously, for 128 samples - covering the marker bit, the 20 real GCR
-data bits, and idle tail, all in one flat un-slotted stream. This module's
-job is exactly what the PIO program deliberately no longer does: figure out
-where the real bit boundaries are and what the real bit period is, from the
-raw waveform itself.
+dshot_bidir_rx makes NO assumption about the real GCR bit period at the PIO
+level - it just samples the pin every 2 PIO cycles, continuously, for 128
+samples, covering the marker bit, the 20 real GCR data bits, and idle tail,
+all in one flat un-slotted stream. What real bit period those cycles work
+out to varies by DShot speed and rx_speed (see driver/dshot_profiles.py's
+BIDIR_PROFILES) - this module's job is figuring out where the real bit
+boundaries are and what the real bit period is from the raw waveform
+itself, for whatever era/rate a given capture happens to be from.
 
 Each real reply produces FOUR 32-bit words (in_shiftdir=SHIFT_LEFT,
 push_thresh=32): the OLDEST sample in each word is at bit31, the NEWEST at
@@ -139,6 +152,55 @@ def find_edges(samples):
     return edges
 
 
+def _period_score(gaps, p):
+    """
+    Shared residual-scoring math for estimate_bit_period and
+    estimate_bit_period_fixed. Relative residual (residual/period)^2, NOT
+    absolute - an absolute metric is unboundedly biased toward small
+    periods (any gap is trivially "close" to some multiple of a tiny
+    period). This bug was made and caught earlier against the old slotted
+    design's data - see ADR-002 - and is worth guarding against here too.
+    """
+    score = 0.0
+    for g in gaps:
+        n = max(1, round(g / p))
+        residual = (g - n * p) / p
+        score += residual * residual
+    return score
+
+
+def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
+    """
+    Betaflight-style fixed-ratio period estimate - PC-side counterpart to
+    driver/gcr_decode.py's estimate_bit_period_fixed(). See that module's
+    docstring and decision/ADR-002-bidirectional-dshot.md's fixed-ratio RX
+    sampling section for the full rationale. This copy exists so
+    scripts/verify_gcr_decode_port.py can diff the driver's fixed-ratio
+    path against a reference implementation, the same role this file
+    already plays for the brute-force sweep below.
+
+    tolerance=0.0 (default): returns expected_ratio directly, no search.
+    tolerance>0.0: sweeps [expected_ratio-tolerance, expected_ratio+tolerance]
+    in 0.04 steps, using the same scoring as estimate_bit_period.
+    """
+    if len(edges) < 2:
+        return None
+    if tolerance <= 0.0:
+        return expected_ratio
+    gaps = [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
+    best_period = None
+    best_score = None
+    p = expected_ratio - tolerance
+    end = expected_ratio + tolerance
+    while p <= end:
+        score = _period_score(gaps, p)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_period = p
+        p += 0.04
+    return best_period
+
+
 def estimate_bit_period(edges):
     """
     Estimate the real (possibly fractional) bit period in cycles from
@@ -151,25 +213,17 @@ def estimate_bit_period(edges):
     redesign exists to avoid. So this sweeps fractional candidates and picks
     the one that best explains all observed gaps as integer multiples of
     itself (least total squared residual after rounding each gap/period to
-    the nearest integer multiple).
+    the nearest integer multiple) - scoring shared with
+    estimate_bit_period_fixed via _period_score.
     """
     if len(edges) < 2:
         return None
     gaps = [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
-    # Relative residual (residual/period)^2, NOT absolute - an absolute
-    # metric is unboundedly biased toward small periods (any gap is
-    # trivially "close" to some multiple of a tiny period). This bug was
-    # made and caught earlier against the old slotted design's data - see
-    # ADR-002 - and is worth guarding against here too.
     best_period = None
     best_score = None
     p = 6.0
     while p <= 16.0:
-        score = 0.0
-        for g in gaps:
-            n = max(1, round(g / p))
-            residual = (g - n * p) / p
-            score += residual * residual
+        score = _period_score(gaps, p)
         if best_score is None or score < best_score:
             best_score = score
             best_period = p
@@ -248,9 +302,16 @@ def check_crc(dshot_full_number):
     return None, data12
 
 
-def analyze_capture(words, rx_clock_hz):
+def analyze_capture(words, rx_clock_hz, expected_ratio=None, ratio_tolerance=0.0):
     """
     Full pipeline from 4 raw 32-bit capture words to a decoded result.
+
+    expected_ratio/ratio_tolerance: optional fixed-ratio fast path (see
+    estimate_bit_period_fixed) - PC-side counterpart to driver/
+    gcr_decode.py's analyze_capture(), so scripts/verify_gcr_decode_port.py
+    can diff the driver's fixed-ratio path against this reference too.
+    Default (expected_ratio=None) keeps using the brute-force sweep
+    exactly as before.
 
     Returns None if no edges were found at all (dead line). Otherwise
     returns a dict with:
@@ -266,7 +327,10 @@ def analyze_capture(words, rx_clock_hz):
     edges = find_edges(samples)
     if not edges:
         return None
-    period = estimate_bit_period(edges)
+    if expected_ratio is None:
+        period = estimate_bit_period(edges)
+    else:
+        period = estimate_bit_period_fixed(edges, expected_ratio, ratio_tolerance)
     if period is None:
         return None
     bits = reconstruct_bits(samples, edges, period)

@@ -93,7 +93,8 @@ class BidirCaptureSink:
         os.mkdir(self._run_dir)
 
         bidir_indices = ",".join(str(i) for i in scenario.bidir_indices)
-        rx_clock_hz = BIDIR_PROFILES.get(scenario.dshot_speed) if scenario.bidir_indices else 0
+        rx_clock_hz = ((BIDIR_PROFILES.get(scenario.dshot_speed) or {}).get("rx_speed")
+                       if scenario.bidir_indices else 0)
 
         self._meta = {
             "dshot_speed": str(scenario.dshot_speed),

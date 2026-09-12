@@ -12,11 +12,17 @@
 # extra file/argument into the running script.
 #
 # Fail-fast, deliberately: a Core 1 error, a dropped-record/gap/rate
-# violation of the scenario's own "expect" thresholds, or Ctrl-C all still
-# run the stop/disarm/close sequence in `finally`, then propagate - this
-# never swallows a failure into a "Test Complete" banner. A run that fails
-# exits non-zero and marks outcome=failed in meta.txt, so a truncated
-# capture.bin is never mistaken for a complete one by the PC-side analyzer.
+# violation of the scenario's own "expect" thresholds, a tripped reply
+# failsafe (see _check_reply_failsafe - a record is written on the RX
+# FIFO's own fixed capture cadence, NOT only when the ESC actually replies,
+# so record *count* alone cannot catch a non-replying ESC; bidirectional
+# DShot's contract is a continuous eRPM reply, so a sustained run of
+# all-zero records is itself the anomaly - this checks for at least one
+# non-all-zero reply within a grace window), or Ctrl-C all still run the
+# stop/disarm/close sequence in `finally`, then propagate - this never
+# swallows a failure into a "Test Complete" banner. A run that fails exits
+# non-zero and marks outcome=failed in meta.txt, so a truncated capture.bin
+# is never mistaken for a complete one by the PC-side analyzer.
 #
 # No GCR decoding happens here - that's scripts/dshot_bidir_decode.py's job,
 # run on the PC against whatever gets logged.
@@ -29,6 +35,52 @@ from bidir_capture_sink import BidirCaptureSink
 import utime
 
 SCENARIO_PATH = "scenario.json"
+
+
+
+# Grace window before the reply failsafe is armed. Deliberately short (not
+# the 20s settling window _check_expect's min_record_rate_hz needs, which
+# is a CUMULATIVE-average threshold and genuinely needs one) - this checks
+# for the mere existence of one real reply, and arming already finished
+# scenario.arm_duration_ms before this function is ever called, so a
+# healthy ESC's first real reply lands within milliseconds of run_start. A
+# short window also matters practically: short scenarios like
+# period_tally_short.json (duration_ms=8000) need the failsafe to be able
+# to trip at all before the run just ends on its own.
+_REPLY_FAILSAFE_GRACE_MS = 2000
+
+
+def _check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
+    # Bidirectional DShot's contract is a continuous eRPM reply every
+    # command - unlike a rate/gap threshold, "the ESC has never once
+    # replied" is not a tunable performance bar, it's a protocol violation,
+    # so this fires unconditionally once armed rather than via the
+    # scenario's own "expect" block.
+    #
+    # A record is written whenever a bidir motor's RX FIFO delivers a full
+    # 4-word group - that happens on the PIO program's own fixed capture
+    # cadence regardless of whether the ESC is actually replying, so
+    # `records` alone can't distinguish "replying" from "silent" (confirmed
+    # 2026-09-10: three different rx_speed candidates plus two reruns of
+    # the previously-always-reliable rate all produced ~600/s of records
+    # that were literally all-zero words - a dead bench/ESC, invisible
+    # until a post-hoc tally caught it well after the fact, by which point
+    # it wasn't clear whether the motors had even been spinning). Checking
+    # for at least one non-all-zero record catches that within one short
+    # grace window instead of only in hindsight.
+    #
+    # any(record[5:]) below is any-MOTOR, not per-motor: with today's
+    # single bidirectional channel that's exactly right, but once a second
+    # bidir channel is in the same scenario (see project backlog's W18) a
+    # live motor would mask a silent one. Revisit per-motor tracking then.
+    if not has_bidir:
+        return
+    if elapsed_ms >= _REPLY_FAILSAFE_GRACE_MS and nonzero_records == 0:
+        raise RuntimeError(
+            "reply failsafe tripped: no ESC reply seen by " + str(elapsed_ms) +
+            "ms elapsed (every captured record's words are still all-zero) "
+            "- check ESC power/arming/bidir mode before continuing"
+        )
 
 
 def _check_expect(expect, dropped, largest_gap_us, records, elapsed_ms):
@@ -78,10 +130,12 @@ def test_scenario_capture():
     motors = []
     runner = None
     total_records = 0
+    total_nonzero_records = 0
     total_dropped = 0
     last_record_us = None
     largest_gap_us = 0
     outcome = "failed"
+    has_bidir = bool(scenario.bidir_indices)
 
     try:
         for spec in scenario.motors:
@@ -120,6 +174,8 @@ def test_scenario_capture():
 
             for record in runner.drain():
                 total_records += 1
+                if any(record[5:]):
+                    total_nonzero_records += 1
                 sink.write_record(*record)
                 ticks_us = record[0]
                 if last_record_us is not None:
@@ -129,6 +185,7 @@ def test_scenario_capture():
                 last_record_us = ticks_us
 
             total_dropped = runner.dropped
+            _check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
             _check_expect(scenario.expect, total_dropped, largest_gap_us, total_records, elapsed_ms)
 
             now = utime.ticks_ms()
@@ -136,8 +193,8 @@ def test_scenario_capture():
                 last_status_ms = now
                 elapsed_s = utime.ticks_diff(now, run_start) / 1000
                 rate = total_records / elapsed_s if elapsed_s else 0.0
-                print("  [{:7.1f}s] records={} dropped={} rate={:.1f}/s largest_gap={:.1f}ms".format(
-                    elapsed_s, total_records, total_dropped, rate, largest_gap_us / 1000))
+                print("  [{:7.1f}s] records={} nonzero={} dropped={} rate={:.1f}/s largest_gap={:.1f}ms".format(
+                    elapsed_s, total_records, total_nonzero_records, total_dropped, rate, largest_gap_us / 1000))
 
             utime.sleep_ms(scenario.poll_ms)
 
@@ -159,6 +216,8 @@ def test_scenario_capture():
             while utime.ticks_diff(utime.ticks_ms(), stop_start) < scenario.stop_duration_ms:
                 for record in runner.drain():
                     total_records += 1
+                    if any(record[5:]):
+                        total_nonzero_records += 1
                     sink.write_record(*record)
                 utime.sleep_ms(scenario.poll_ms)
             runner.stop()
@@ -178,6 +237,7 @@ def test_scenario_capture():
         print("Session:", sink.path)
         print("Outcome:", outcome)
         print("Total records captured:", total_records)
+        print("Records with a real (non-all-zero) reply:", total_nonzero_records)
         print("Records dropped (ring buffer full):", total_dropped)
         print("Largest gap between records: {:.1f}ms".format(largest_gap_us / 1000))
         print("=== Test Complete ===" if outcome == "completed" else "=== Test FAILED ===")
