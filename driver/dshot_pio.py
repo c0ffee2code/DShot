@@ -4,6 +4,7 @@
 # DShot protocol reference: https://brushlesswhoop.com/dshot-and-bidirectional-dshot/
 
 import utime
+from array import array
 from machine import Pin
 from rp2 import PIO, StateMachine, asm_pio
 
@@ -355,6 +356,18 @@ class UnidirectionalDShot(DShotPIO):
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         super().__init__(state_machine_id, pin, dshot_speed, dshot)
 
+    # No reply is captured, so there are no eRPM words to hand out. Reaching
+    # any of these means the application wired a unidirectional motor where it
+    # needed a bidirectional one - its own configuration bug, surfaced loudly.
+    def rx_read(self):
+        raise UnsupportedOperationException("UnidirectionalDShot captures no telemetry")
+
+    def latest_capture(self):
+        raise UnsupportedOperationException("UnidirectionalDShot captures no telemetry")
+
+    def decode_capture(self, words):
+        raise UnsupportedOperationException("UnidirectionalDShot captures no telemetry")
+
 
 class BidirectionalDShot(DShotPIO):
     """
@@ -444,20 +457,34 @@ class BidirectionalDShot(DShotPIO):
         self.rx_clock_hz = rx_speed
         self.expected_ratio = profile["expected_ratio"]
         self.ratio_tolerance = profile["ratio_tolerance"]
-        self.telemetry_pending = []
-        self.telemetry_desync_count = 0
-        self.telemetry_consecutive_fail_count = 0
+
+        # Words of the capture currently being assembled. A capture is exactly
+        # 4 words (128 samples) and the RX FIFO is 4 deep, so drain_rx() sees
+        # at most one capture's worth per call; a partial group simply carries
+        # over to the next call. Preallocated: this is filled on the command
+        # loop's hot path, and per-tick allocation was measured hurting it.
+        self.capture_buf = array('I', [0] * 4)
+        self.capture_fill = 0
+
+        # The single published slot: the latest completed capture. slot_seq is
+        # a seqlock counter - 0 means nothing published yet, odd means the
+        # writer is mid-update, even means stable. Only drain_rx() writes it.
+        self.slot_words = array('I', [0] * 4)
+        self.slot_ticks_us = 0
+        self.slot_seq = 0
 
     def start(self):
         # Flush any leftover words from a previous run and start RX
         # listening before TX can release the pin and fire its first
         # irq(rel(1)) - see dshot_bidir_rx's irq(clear, rel(0)) comment
         # for the rest of this epoch-clean boundary. A leftover partial
-        # telemetry group from a prior run would otherwise misalign the
-        # first post-restart poll_telemetry() group.
+        # partial capture from a prior run would otherwise misalign the first
+        # post-restart capture, and a stale published capture must not
+        # survive into the new run.
         while self.rx_sm.rx_fifo():
             self.rx_sm.get()
-        self.telemetry_pending = []
+        self.capture_fill = 0
+        self.slot_seq = 0
         self.rx_sm.active(1)
         super().start()
 
@@ -472,63 +499,86 @@ class BidirectionalDShot(DShotPIO):
         dshot_bidir_rx's comments). Raw and unpaired: determining the real
         bit period/phase from this and decoding into eRPM is a later phase
         (see ADR-002).
+
+        Diagnostic access. Use either this or drain_rx() on a given motor,
+        never both - they consume the same FIFO.
         """
         if not self.rx_sm.rx_fifo():
             return None
         return self.rx_sm.get()
 
-    def poll_telemetry(self):
+    def drain_rx(self, publish):
         """
-        Drain up to one complete 4-word capture via rx_read() and, if a
-        group just completed, run it through the real GCR/CRC decode
-        (gcr_decode.analyze_capture) and return the result verbatim.
+        Empty the RX FIFO. Call this on every command-loop tick: an undrained
+        FIFO stalls the RX state machine, and the captures taken right after
+        a stall come back corrupted (see ADR-002).
 
-        Returns None if no group completed this call (nothing queued, or
-        still mid-group) - the same meaning rx_read() and analyze_capture()
-        already use for "nothing here," not a distinct sentinel. Returns
-        analyze_capture()'s dict otherwise: crc_ok is the real validity
-        signal, not the structural "does this look like a capture" check
-        rx_read() alone allows - see decision/ADR-002-bidirectional-dshot.md's
-        2026-09-06/07 characterization entries for why the structural check
-        alone was proven unreliable.
+        Words accumulate into 4-word captures. When one completes and
+        `publish` is true it replaces the single published slot (read it with
+        latest_capture()); when `publish` is false it is dropped. Either way
+        the word grouping stays aligned. No decoding happens here - that is
+        the application's job, on its own schedule (decode_capture()).
 
-        Never reads more than 4 words per call: the RX FIFO's depth is
-        exactly 4, and dshot_bidir_rx stalls on autopush before a 5th word
-        can ever land, so no call can see more than one group's remainder.
+        Must be called from one place only (MotorThrottleGroup.update()); it
+        is the slot's only writer.
+        """
+        rx_sm = self.rx_sm
+        buf = self.capture_buf
+        while rx_sm.rx_fifo():
+            fill = self.capture_fill
+            buf[fill] = rx_sm.get()
+            fill += 1
+            if fill < 4:
+                self.capture_fill = fill
+                continue
+            self.capture_fill = 0
+            if publish:
+                seq = self.slot_seq
+                self.slot_seq = seq + 1  # odd: update in progress
+                slot = self.slot_words
+                slot[0] = buf[0]
+                slot[1] = buf[1]
+                slot[2] = buf[2]
+                slot[3] = buf[3]
+                self.slot_ticks_us = utime.ticks_us()
+                self.slot_seq = seq + 2  # even: stable
+
+    def latest_capture(self):
+        """
+        Return the latest published capture as (ticks_us, sequence, words), or
+        None if nothing has been published since start().
+
+        ticks_us is utime.ticks_us() at publication (wraps - compare with
+        ticks_diff). sequence counts published captures since start(), so a
+        caller can tell a fresh capture from one it has already seen. words is
+        a tuple of the 4 raw 32-bit RX words.
+
+        Safe to call from a different core than drain_rx(): a capture being
+        rewritten mid-read is detected and retried, and gives up (None) after
+        a few attempts rather than spinning.
         """
         for _ in range(4):
-            word = self.rx_read()
-            if word is None:
+            seq = self.slot_seq
+            if seq == 0:
                 return None
-            self.telemetry_pending.append(word)
-            if len(self.telemetry_pending) < 4:
+            if seq & 1:
                 continue
-
-            group = self.telemetry_pending
-            self.telemetry_pending = []
-
-            if (group[0] >> 31) != 0:
-                # The marker bit is always 0 on a real reply - this is
-                # structurally impossible otherwise. In practice this
-                # almost never fires (5 times in ~48,500 groups across
-                # this project's hardware sessions so far, including runs
-                # where real CRC-valid rate was 0%) - a zero reading here
-                # is not evidence of phase alignment, see
-                # telemetry_consecutive_fail_count below for the signal
-                # that actually is discriminating.
-                self.telemetry_desync_count += 1
-
-            result = gcr_decode.analyze_capture(group, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
-            if result is not None and result["crc_ok"]:
-                self.telemetry_consecutive_fail_count = 0
-            elif result is not None and result["full"] is not None:
-                # Symbols decoded, CRC simply didn't match - a genuinely
-                # bad individual reply fails sporadically; a run of these
-                # is what a phase slip in telemetry_pending's grouping
-                # looks like (see poll_telemetry()'s docstring).
-                self.telemetry_consecutive_fail_count += 1
-            return result
+            slot = self.slot_words
+            words = (slot[0], slot[1], slot[2], slot[3])
+            ticks_us = self.slot_ticks_us
+            if self.slot_seq == seq:
+                return (ticks_us, seq >> 1, words)
         return None
+
+    def decode_capture(self, words):
+        """
+        Decode one raw capture with this motor's own RX profile and return
+        gcr_decode.analyze_capture()'s result dict (crc_ok is the validity
+        signal - a capture that is complete and correctly framed can still
+        fail it). Costs ~10ms; call it at whatever pace the application can
+        afford, never from the command loop.
+        """
+        return gcr_decode.analyze_capture(words, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
 
     def stop(self):
         super().stop()

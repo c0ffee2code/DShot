@@ -18,7 +18,7 @@
 # tests/test_scenario_capture.py.
 
 from machine import Pin
-from dshot_pio import DSHOT_SPEEDS
+from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
 from core1_runner import Core1Runner
 import utime
@@ -44,7 +44,9 @@ def test_slow_spin():
     print(f"Speed: {DSHOT_SPEED}")
     print()
 
-    motors = MotorThrottleGroup([Pin(p) for p in MOTOR_PINS], DSHOT_SPEED)
+    motors = MotorThrottleGroup([
+        UnidirectionalDShot(i, Pin(p), DSHOT_SPEED) for i, p in enumerate(MOTOR_PINS)
+    ])
     runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
 
     try:

@@ -47,7 +47,7 @@ class DSHOT_SPEEDS:
 # brute-force sweep) - see decision/ADR-002-bidirectional-dshot.md's
 # fixed-ratio RX sampling section. expected_ratio is None until a rate is
 # retuned to a clean integer ratio and verified on real hardware (see that
-# ADR section's plan) - poll_telemetry() passes these straight through to
+# ADR section's plan) - BidirectionalDShot.decode_capture() passes these straight through to
 # analyze_capture() for every profile, so a None here keeps the
 # brute-force sweep as that speed's live behavior. Both DSHOT300 and
 # DSHOT600 were retuned and verified 2026-09-12 (both K=9) and now always

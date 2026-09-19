@@ -8,7 +8,7 @@
 import utime
 from array import array
 
-from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
+from dshot_pio import UnsupportedOperationException
 
 # Lifecycle states, as reported by MotorThrottleGroup.state
 DISARMED = 0
@@ -25,8 +25,10 @@ class MotorThrottleGroup:
     """
     Facade for controlling throttle on a group of DShot motors.
 
-    This class owns the PIO state machines and the throttle values. It does
-    NOT own a command loop: the application decides which core, thread, timer
+    This class owns the throttle values and the lifecycle of the motors it is
+    given. The motors themselves (UnidirectionalDShot or BidirectionalDShot,
+    one per motor, 1 to 4 of them) are built by the application, which picks
+    their state machines and pins. It does NOT own a command loop: the application decides which core, thread, timer
     or main loop calls update(), because that is an architecture choice of the
     application, not of this library.
 
@@ -35,10 +37,13 @@ class MotorThrottleGroup:
 
     Usage (application runs the loop on Core 1):
         from machine import Pin
-        from dshot_pio import DSHOT_SPEEDS
+        from dshot_pio import UnidirectionalDShot, BidirectionalDShot, DSHOT_SPEEDS
         from motor_throttle_group import MotorThrottleGroup
 
-        group = MotorThrottleGroup([Pin(4), Pin(5)], DSHOT_SPEEDS.DSHOT600)
+        group = MotorThrottleGroup([
+            UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600),
+            BidirectionalDShot(2, Pin(5), DSHOT_SPEEDS.DSHOT600, rx_state_machine_id=3),
+        ])
 
         runner = Core1Runner(group.update)  # application-supplied, see tests/
         runner.start()
@@ -93,26 +98,33 @@ class MotorThrottleGroup:
     # commands the stop; the rest are margin against a frame lost to noise.
     DISARM_FRAMES = 4
 
-    def __init__(self, pins, dshot_speed=DSHOT_SPEEDS.DSHOT600):
+    # Motors a group can drive: one ESC's worth
+    MIN_MOTORS = 1
+    MAX_MOTORS = 4
+
+    def __init__(self, motors):
         """
         Initialize motor group.
 
-        Creates the PIO state machines but leaves them inactive - arm()
-        activates them.
+        The motors' state machines stay inactive - arm() activates them.
 
         Args:
-            pins: List of Pin objects for motor signal outputs
-            dshot_speed: DShot protocol speed (default: DSHOT600)
+            motors: List of 1 to 4 UnidirectionalDShot / BidirectionalDShot
+                instances, one per motor, in motor-index order. Bidirectional
+                ones must have been built as such from the start: an ESC only
+                detects bidirectional DShot during arming.
         """
-        if not pins:
-            raise MotorThrottleGroupException("At least one pin required")
+        if len(motors) < self.MIN_MOTORS or len(motors) > self.MAX_MOTORS:
+            raise MotorThrottleGroupException(
+                "Expected 1 to 4 motors, got " + str(len(motors))
+            )
 
-        self.motor_count = len(pins)
+        self.motor_count = len(motors)
+        self.motors = list(motors)
 
-        # Create UnidirectionalDShot instances internally (SM index = motor index)
-        self.motors = [
-            UnidirectionalDShot(i, pin, dshot_speed) for i, pin in enumerate(pins)
-        ]
+        # The subset whose reply must be drained on every update(), resolved
+        # once so the command loop does no per-tick type checks
+        self.bidir_motors = [m for m in self.motors if m.bidirectional]
 
         # Shared throttle array - lock-free access (atomic on ARM).
         # Using unsigned 16-bit integers ('H') for DShot throttle values.
@@ -211,10 +223,15 @@ class MotorThrottleGroup:
 
     def update(self):
         """
-        Send one DShot command to each motor and advance the arming sequence.
+        Send one DShot command to each motor, drain each bidirectional
+        motor's reply FIFO, and advance the arming sequence.
 
         The application calls this at least every UPDATE_INTERVAL_US, from
-        whichever core or scheduling arrangement it chooses.
+        whichever core or scheduling arrangement it chooses. Draining here is
+        deliberate: an RX FIFO left undrained stalls the receiver and corrupts
+        the captures that follow, so it must not depend on the application
+        remembering a second call. Replies drained while ARMING are discarded
+        (before the ESC arms, what the receiver hears is our own transmit).
 
         Does nothing while disarmed, so it is always safe to call - including
         before arm() or after disarm(), when the state machines are inactive
@@ -238,6 +255,9 @@ class MotorThrottleGroup:
             for motor in self.motors:
                 motor.send_throttle_command(0)
 
+            for motor in self.bidir_motors:
+                motor.drain_rx(False)
+
             if utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms:
                 # Re-read rather than promoting from the snapshot above: a
                 # disarm() on another core may have landed since, and writing
@@ -250,6 +270,9 @@ class MotorThrottleGroup:
             motors = self.motors
             for i in range(self.motor_count):
                 motors[i].send_throttle_command(throttles[i])
+
+            for motor in self.bidir_motors:
+                motor.drain_rx(True)
 
         self.last_update_ms = now
 
@@ -267,6 +290,37 @@ class MotorThrottleGroup:
             True while the arming window is still in progress
         """
         return self.state == ARMING
+
+    def raw_telemetry(self, motor_index):
+        """
+        Latest raw telemetry capture for one bidirectional motor.
+
+        Returns (ticks_us, sequence, words) from that motor's
+        latest_capture(), or None while the group is not ARMED or nothing has
+        arrived yet. The group stores nothing itself - it only refuses to
+        hand out captures taken before arming completed, which are not the
+        ESC's replies. Decode with group.motors[motor_index].decode_capture(words);
+        if that fails its CRC, discard it and ask again later - retry timing
+        is the application's decision.
+
+        Safe to call from a different core than update().
+
+        Raises UnsupportedOperationException for a unidirectional motor,
+        whatever the state: asking one for telemetry is an application bug.
+        """
+        if motor_index < 0 or motor_index >= self.motor_count:
+            raise MotorThrottleGroupException(
+                "Invalid motor index: " + str(motor_index)
+            )
+
+        motor = self.motors[motor_index]
+        if not motor.bidirectional:
+            raise UnsupportedOperationException("Motor " + str(motor_index) + " is unidirectional")
+
+        if self.state != ARMED:
+            return None
+
+        return motor.latest_capture()
 
     def set_throttle(self, motor_index, value):
         """

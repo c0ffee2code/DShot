@@ -54,7 +54,7 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 **`driver/motor_throttle_group.py`** - Multi-motor facade (see ADR-004):
 
-1. **`MotorThrottleGroup` class**: Owns the PIO state machines and throttle values for a group of motors. Provides `arm()`, `disarm()`, `update()`, `is_armed()`, `set_throttle()`.
+1. **`MotorThrottleGroup` class**: Takes 1-4 already-built `UnidirectionalDShot`/`BidirectionalDShot` motors (the application picks their state machines and pins) and owns the throttle values and lifecycle for the group. Provides `arm()`, `disarm()`, `update()`, `is_armed()`, `set_throttle()`, and `raw_telemetry(index)`. `update()` also drains every bidirectional motor's RX FIFO into that motor's one-slot latest capture (discarded while arming); `raw_telemetry()` hands the latest capture out only once armed and holds no data itself. Decoding (`motor.decode_capture(words)`) and retry-on-CRC-failure are the application's business, on its own schedule.
 
 2. **Core-agnostic by design**: The library does **not** spawn threads or pick a core. The application calls `update()` at least every 1ms from wherever its architecture dictates. Do not add `_thread` to anything under `driver/` — that inversion is the whole point of ADR-004.
 
@@ -81,12 +81,15 @@ See `specification/DSHOT_PROTOCOL.md` for complete protocol documentation includ
 **Recommended (multi-motor with reliable timing):**
 ```python
 from machine import Pin
-from dshot_pio import DSHOT_SPEEDS
+from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
 from core1_runner import Core1Runner  # application code, see tests/
 import utime
 
-motors = MotorThrottleGroup([Pin(4), Pin(5)], DSHOT_SPEEDS.DSHOT600)
+motors = MotorThrottleGroup([
+    UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600),
+    UnidirectionalDShot(1, Pin(5), DSHOT_SPEEDS.DSHOT600),
+])
 
 # The application picks the core - here, a dedicated Core 1 loop
 runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)

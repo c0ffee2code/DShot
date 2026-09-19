@@ -112,13 +112,17 @@ motor.stop()  # Deactivate - the ESC times out and the motor cannot spin
 
 ```python
 from machine import Pin
-from dshot_pio import DSHOT_SPEEDS
+from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
 from motor_throttle_group import MotorThrottleGroup
 from core1_runner import Core1Runner  # your code - see tests/harness/core1_runner.py
 import utime
 
-# Create group with Pin objects (UnidirectionalDShot instances created internally)
-motors = MotorThrottleGroup([Pin(4), Pin(5)], DSHOT_SPEEDS.DSHOT600)
+# One motor object per motor (1-4). You pick the state machine and pin for each;
+# use BidirectionalDShot instead where you want eRPM telemetry.
+motors = MotorThrottleGroup([
+    UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600),
+    UnidirectionalDShot(1, Pin(5), DSHOT_SPEEDS.DSHOT600),
+])
 
 # You choose where the command loop runs. This one dedicates Core 1.
 runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
