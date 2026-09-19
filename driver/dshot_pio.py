@@ -11,6 +11,12 @@ from rp2 import PIO, StateMachine, asm_pio
 import gcr_decode
 from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES
 
+# Highest value the 11-bit throttle field of a DShot packet can carry. A module
+# constant rather than a class attribute lookup because send_throttle_command()
+# reads it on every frame of every motor.
+MAX_THROTTLE = 2047
+
+
 class InvalidThrottleException(Exception):
     def __init__(self,message):
         self.message=message
@@ -159,12 +165,19 @@ class DShotPIO:
     # Words the PIO TX FIFO holds before put() starts blocking
     TX_FIFO_DEPTH = 4
 
+    # Exposed for applications and MotorThrottleGroup; see the module constant
+    MAX_THROTTLE = MAX_THROTTLE
+
     # Each subclass overrides this. send_throttle_command() inverts the CRC
     # when it is True, and application code reads it to tell the two apart.
     bidirectional = False
 
     # Creates the state machine but leaves it inactive - call start() to enable it
     def __init__(self, state_machine_id, pin, dshot_speed, program):
+        # Kept so a group of motors can check that no two share hardware
+        self.state_machine_id = state_machine_id
+        self.pin = pin
+
         self.sm = StateMachine(state_machine_id, program, freq=dshot_speed,
                                 sideset_base=pin, set_base=pin)
 
@@ -227,7 +240,7 @@ class DShotPIO:
         Send a throttle command to the ESC.
 
         Args:
-            throttle: Throttle value (0-2047)
+            throttle: Throttle value (0 to MAX_THROTTLE)
 
         Note: DShot protocol includes a telemetry request bit, but this implementation
         always sets it to 0. AM32 sends a GCR telemetry reply after every frame once
@@ -236,8 +249,8 @@ class DShotPIO:
         """
         if throttle < 0:
             raise InvalidThrottleException("Throttle cannot be negative.")
-        if throttle > 2047:
-            raise InvalidThrottleException("Throttle value is too high. Maximum value is 2047.")
+        if throttle > MAX_THROTTLE:
+            raise InvalidThrottleException("Throttle value is too high. Maximum value is " + str(MAX_THROTTLE) + ".")
 
         # Build 12-bit value: 11-bit throttle shifted left, telemetry bit = 0
         packetValue = throttle << 1
@@ -260,24 +273,26 @@ class DShotPIO:
         # Put the packet into the PIO machine
         self.sm.put(rightPaddedPacket)
 
+    # The telemetry interface every motor shares. Only BidirectionalDShot
+    # captures replies, so these raise by default: reaching one on a
+    # unidirectional motor means the application wired the wrong kind of motor
+    # into a place that needs telemetry - its own configuration bug, surfaced
+    # loudly rather than as a silent empty result.
+    def rx_read(self):
+        raise UnsupportedOperationException("This motor captures no telemetry")
+
+    def latest_capture(self):
+        raise UnsupportedOperationException("This motor captures no telemetry")
+
+    def decode_capture(self, words):
+        raise UnsupportedOperationException("This motor captures no telemetry")
+
 
 class UnidirectionalDShot(DShotPIO):
     """Sends commands only - the plain DShot waveform, no reply capture."""
 
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         super().__init__(state_machine_id, pin, dshot_speed, dshot)
-
-    # No reply is captured, so there are no eRPM words to hand out. Reaching
-    # any of these means the application wired a unidirectional motor where it
-    # needed a bidirectional one - its own configuration bug, surfaced loudly.
-    def rx_read(self):
-        raise UnsupportedOperationException("UnidirectionalDShot captures no telemetry")
-
-    def latest_capture(self):
-        raise UnsupportedOperationException("UnidirectionalDShot captures no telemetry")
-
-    def decode_capture(self, words):
-        raise UnsupportedOperationException("UnidirectionalDShot captures no telemetry")
 
 
 class BidirectionalDShot(DShotPIO):
@@ -366,6 +381,8 @@ class BidirectionalDShot(DShotPIO):
         self.rx_clock_hz = rx_speed
         self.expected_ratio = profile["expected_ratio"]
         self.ratio_tolerance = profile["ratio_tolerance"]
+
+        self.rx_state_machine_id = rx_state_machine_id
 
         # Words of the capture currently being assembled. A capture is exactly
         # 4 words (128 samples) and the RX FIFO is 4 deep, so drain_rx() sees

@@ -7,7 +7,8 @@
 # pace (not on the Core 1 command loop).
 #
 # Checks (any failure raises):
-#   1. Group construction rejects 0 and 5 motors.
+#   1. Group construction rejects 0 and 5 motors, two motors on one state
+#      machine, and two motors on one pin; arm() is rejected while armed.
 #   2. raw_telemetry() on a unidirectional motor raises
 #      UnsupportedOperationException, on a bidirectional one returns None
 #      while disarmed, on a bad index raises MotorThrottleGroupException.
@@ -62,6 +63,19 @@ def test_motor_group_telemetry():
     print("Construction checks...")
     expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([]), "0 motors rejected")
     expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([object()] * 5), "5 motors rejected")
+    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([
+        UnidirectionalDShot(0, Pin(6), DSHOT_SPEED),
+        UnidirectionalDShot(0, Pin(7), DSHOT_SPEED),
+    ]), "two motors on one state machine rejected")
+    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([
+        UnidirectionalDShot(0, Pin(6), DSHOT_SPEED),
+        BidirectionalDShot(2, Pin(7), DSHOT_SPEED, rx_state_machine_id=3),
+        UnidirectionalDShot(3, Pin(8), DSHOT_SPEED),
+    ]), "a state machine used as another motor's RX rejected")
+    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([
+        UnidirectionalDShot(0, Pin(6), DSHOT_SPEED),
+        UnidirectionalDShot(2, Pin(6), DSHOT_SPEED),
+    ]), "two motors on one pin rejected")
 
     bidir = BidirectionalDShot(0, Pin(6), DSHOT_SPEED, rx_state_machine_id=1)
     motors = MotorThrottleGroup([
@@ -96,6 +110,7 @@ def test_motor_group_telemetry():
             arm_polls += 1
             utime.sleep_ms(1)
         print("  OK   armed; None on all " + str(arm_polls) + " polls during arming")
+        expect_raises(MotorThrottleGroupException, lambda: motors.arm(), "arm() while armed rejected")
 
         motors.set_throttle(0, THROTTLE)
         utime.sleep_ms(SETTLE_MS)
@@ -132,7 +147,7 @@ def test_motor_group_telemetry():
             if age_us > max_age_us:
                 max_age_us = age_us
 
-            result = bidir.decode_capture(words)
+            result = motors.decode_telemetry(0, words)
             decoded += 1
             if result is not None and result["crc_ok"]:
                 crc_ok += 1

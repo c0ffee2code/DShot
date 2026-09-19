@@ -8,7 +8,7 @@
 import utime
 from array import array
 
-from dshot_pio import UnsupportedOperationException
+from dshot_pio import DShotPIO, UnsupportedOperationException
 
 # Lifecycle states, as reported by MotorThrottleGroup.state
 DISARMED = 0
@@ -85,8 +85,8 @@ class MotorThrottleGroup:
     # because the ESC resets its own arming counter when commands stop arriving
     ARM_GAP_TOLERANCE_MS = 10
 
-    # Highest value representable in an 11-bit DShot throttle field
-    MAX_THROTTLE = 2047
+    # Highest throttle a motor will transmit; set_throttle() clamps to it
+    MAX_THROTTLE = DShotPIO.MAX_THROTTLE
 
     # Zero-throttle frames disarm() transmits before cutting the signal. One
     # commands the stop; the rest are margin against a frame lost to noise.
@@ -112,6 +112,26 @@ class MotorThrottleGroup:
             raise MotorThrottleGroupException(
                 "Expected 1 to 4 motors, got " + str(len(motors))
             )
+
+        # The application chose each motor's state machines and pin, so check
+        # they do not collide: two motors on one state machine would silently
+        # replace each other, and two on one pin would fight over the line.
+        # A bidirectional motor uses two state machines.
+        used_state_machines = []
+        used_pins = []
+        for motor in motors:
+            ids = [motor.state_machine_id]
+            if motor.bidirectional:
+                ids.append(motor.rx_state_machine_id)
+            for state_machine_id in ids:
+                if state_machine_id in used_state_machines:
+                    raise MotorThrottleGroupException(
+                        "State machine " + str(state_machine_id) + " is used by more than one motor"
+                    )
+                used_state_machines.append(state_machine_id)
+            if motor.pin in used_pins:
+                raise MotorThrottleGroupException("Two motors share the same pin")
+            used_pins.append(motor.pin)
 
         self.motor_count = len(motors)
         self.motors = list(motors)
@@ -144,9 +164,17 @@ class MotorThrottleGroup:
         Any throttle set before arm() is discarded - arming always starts
         from zero.
 
+        Only valid while disarmed. Restarting the motors under a live command
+        loop would flush their RX FIFOs and reset their published telemetry
+        mid-write and snap the throttles to zero, so calling it while ARMING or
+        ARMED raises MotorThrottleGroupException; disarm() first to start over.
+
         Args:
             duration_ms: Arming duration (default: DEFAULT_ARM_DURATION_MS)
         """
+        if self.state != DISARMED:
+            raise MotorThrottleGroupException("arm() called while already arming or armed")
+
         for i in range(self.motor_count):
             self.throttles[i] = 0
 
@@ -298,9 +326,9 @@ class MotorThrottleGroup:
         ARMED means that window has elapsed, not that the ESC has armed: with
         a window shorter than the ESC needs, or an ESC without power, the
         captures handed out can still be echoes or noise. The CRC check in
-        group.motors[motor_index].decode_capture(words) is what tells a real
-        reply from those, and a CRC-failed capture should be discarded and
-        asked for again later - retry timing is the application's decision.
+        decode_telemetry() is what tells a real reply from those, and a
+        CRC-failed capture should be discarded and asked for again later -
+        retry timing is the application's decision.
 
         Safe to call from a different core than update().
 
@@ -321,6 +349,30 @@ class MotorThrottleGroup:
 
         return motor.latest_capture()
 
+    def decode_telemetry(self, motor_index, words):
+        """
+        Decode one capture returned by raw_telemetry() with that motor's own RX
+        profile; see BidirectionalDShot.decode_capture() for the result.
+
+        Costs 10-20ms, so call it at whatever pace the application can afford,
+        never from the command loop. Raises UnsupportedOperationException for a
+        unidirectional motor.
+        """
+        if motor_index < 0 or motor_index >= self.motor_count:
+            raise MotorThrottleGroupException(
+                "Invalid motor index: " + str(motor_index)
+            )
+
+        return self.motors[motor_index].decode_capture(words)
+
+    def clamp_throttle(self, value):
+        """Limit a throttle to the range a motor will transmit, 0 to MAX_THROTTLE."""
+        if value < 0:
+            return 0
+        if value > self.MAX_THROTTLE:
+            return self.MAX_THROTTLE
+        return value
+
     def set_throttle(self, motor_index, value):
         """
         Set throttle for a single motor.
@@ -340,12 +392,7 @@ class MotorThrottleGroup:
                 "Invalid motor index: " + str(motor_index)
             )
 
-        if value < 0:
-            value = 0
-        elif value > self.MAX_THROTTLE:
-            value = self.MAX_THROTTLE
-
-        self.throttles[motor_index] = value
+        self.throttles[motor_index] = self.clamp_throttle(value)
 
     def set_all_throttles(self, values):
         """
@@ -363,13 +410,8 @@ class MotorThrottleGroup:
                 " values, got " + str(len(values))
             )
 
-        max_throttle = self.MAX_THROTTLE
         for i, value in enumerate(values):
-            if value < 0:
-                value = 0
-            elif value > max_throttle:
-                value = max_throttle
-            self.throttles[i] = value
+            self.throttles[i] = self.clamp_throttle(value)
 
     def get_all_throttles(self):
         """
