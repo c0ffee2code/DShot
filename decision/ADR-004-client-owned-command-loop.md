@@ -1,6 +1,6 @@
 # ADR-004: Client-Owned Command Loop
 
-**Status:** Accepted
+**Status:** Accepted, amended by [ADR-005](ADR-005-bidirectional-telemetry-data-flow.md) (the facade takes motor objects and `update()` also drains replies)
 **Date:** 2026-08-12
 **Supersedes in part:** [ADR-001](ADR-001-dual-core-motor-control.md) (core assignment and thread lifecycle only)
 
@@ -23,7 +23,7 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 
 **The library exposes `update()`. The application decides when and where it is called.**
 
-`MotorThrottleGroup` remains a facade over the PIO state machines and throttle state. It knows *what* to transmit and *when it is due*; it does not know, and does not ask, which core it is running on.
+`MotorThrottleGroup` remains a facade over the motors it is given and their throttle state. It knows *what* to transmit and *when it is due*; it does not know, and does not ask, which core it is running on.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -44,19 +44,21 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 │                                                             │
 │  arm()      - activate state machines, open arming window   │
 │  disarm()   - transmit zeros, deactivate state machines     │
-│  update()   - one frame per motor, advance arming           │
+│  update()   - a frame per motor, drain replies, advance arm │
 │  is_armed() - application polls for arming completion       │
+│  raw_telemetry(i) - latest reply capture, once armed        │
 │                                                             │
 │        Shared throttle array (lock-free writes)             │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                     DRIVER (DShotPIO)                       │
+│     DRIVER (DShotPIO: Unidirectional / Bidirectional)       │
 │                                                             │
 │  start() / stop() - PIO state machine activation            │
 │  drain()          - wait for queued frames to go out        │
 │  send_throttle_command(throttle) - encode and transmit      │
+│  drain_rx() / latest_capture() - bidirectional replies      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -115,7 +117,7 @@ Unchanged and still in force:
 
 - **Three-layer separation** — application, facade, driver. Only the core assignment moves.
 - **Lock-free shared state.** `array('H')` throttles with atomic per-element writes, no mutex. This matters *more* now: the library no longer knows which core writes throttles versus which calls `update()`, so the guarantee has to hold unconditionally.
-- **1kHz command rate**, 500ms arming duration, minimum usable throttle 70 — all hardware-verified in ADR-001 and unaffected.
+- **The timing figures** - 1kHz command rate, 500ms arming duration, minimum usable throttle 70 - were verified in ADR-001 on the original BLHeli_S ESC. The library's current values are `UPDATE_INTERVAL_US` and `DEFAULT_ARM_DURATION_MS` in `driver/motor_throttle_group.py`.
 - **`DShotPIO` stays scheduling-unaware.**
 
 Reversed:
@@ -152,9 +154,9 @@ Reversed:
 
 ## Verification
 
-**Status:** Pending hardware verification
+**Status:** Partly verified. Arming, running and disarming through the facade with an application-owned Core 1 loop has been exercised repeatedly on the AM32 bench ESC (`tests/test_slow_spin.py`, `tests/test_motor_group_telemetry.py`). The other checks below have not been re-run individually, and the scripts named in the table were retired.
 
-The test hardware and pass criteria are those of ADR-001 — in particular, **both motors must arm reliably every time**, which is the regression this refactor must not introduce.
+The original test hardware and pass criteria are those of ADR-001 — in particular, **both motors must arm reliably every time**, which is the regression this refactor must not introduce.
 
 | Check | Purpose |
 |---|---|

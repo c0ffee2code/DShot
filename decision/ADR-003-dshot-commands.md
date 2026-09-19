@@ -46,6 +46,13 @@ DShot commands require ESC firmware that implements them:
 - **BLHeli_32** - Native support, requires different ESC hardware
 - **AM32** - Free, open source, requires ARM-based ESC
 
+*Since this was written, the project has narrowed its supported ESC firmware
+to exactly two families: BLHeli_S (which lacks these commands) and AM32.
+Bluejay and BLHeli_32 are no longer targets, and an AM32 ESC is now on the
+bench. That undercuts this ADR's blocker ("several different ESCs required for
+testing"), so its Blocked status needs a fresh decision rather than being
+assumed still to hold; AM32's command support has not been checked here.*
+
 ## Decision
 
 Defer implementation of special commands in `DShotPIO` driver until several different ESCs are available for testing. The API design below documents the intended interface.
@@ -66,7 +73,7 @@ class DSHOT_CMD:
 
 
 class DShotPIO:
-    def sendCommand(self, command, telemetry=False):
+    def send_command(self, command, telemetry=False):
         """
         Send a DShot special command (0-47).
 

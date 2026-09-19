@@ -6,7 +6,7 @@
 
 > **Superseded in part (2026-08-12).** The problem analysis, the hardware verification, and the lock-free shared-state sub-decision below all still hold. What changed is *who owns the command loop*: assigning Core 1 from inside the library made the library dictate the threading topology of every application importing it. [ADR-004](ADR-004-client-owned-command-loop.md) moves that choice to the application, which now calls `update()` from a context of its own choosing.
 >
-> Consequently the API described here — `start()` / `stop()`, blocking `arm()`, the heartbeat and `isHealthy()`, and the `_core1_loop()` sketch — no longer matches the code. Read this record for *why the timing requirements exist*; read ADR-004 for the current design.
+> Consequently the API described here — `start()` / `stop()`, blocking `arm()`, the heartbeat and `isHealthy()`, the `_core1_loop()` sketch, and the constructor that took pins and a speed (it now takes ready-built motor objects, see [ADR-005](ADR-005-bidirectional-telemetry-data-flow.md)) — no longer matches the code. The verified parameters at the end were measured on the original BLHeli_S ESC, not the AM32 ESC the bench now uses. Read this record for *why the timing requirements exist*; read ADR-004 for the current design.
 
 ## Context
 
