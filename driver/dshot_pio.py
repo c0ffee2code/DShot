@@ -4,11 +4,11 @@
 # DShot protocol reference: https://brushlesswhoop.com/dshot-and-bidirectional-dshot/
 
 import utime
-from array import array
 from machine import Pin
 from rp2 import PIO, StateMachine, asm_pio
 
 import gcr_decode
+from capture_mailbox import CaptureMailbox
 from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES
 
 # Highest value the 11-bit throttle field of a DShot packet can carry. A module
@@ -384,24 +384,26 @@ class BidirectionalDShot(DShotPIO):
 
         self.rx_state_machine_id = rx_state_machine_id
 
-        # Words of the capture currently being assembled. A capture is exactly
-        # 4 words (128 samples) and the RX FIFO is 4 deep, so drain_rx() sees
-        # at most one capture's worth per call; a partial group simply carries
-        # over to the next call. Preallocated because this is filled on the
-        # command loop's hot path, where allocating costs time and invites
-        # garbage-collection pauses.
-        self.capture_buf = array('I', [0] * 4)
-        self.capture_fill = 0
-
-        # The single published slot: the latest completed capture. slot_seq is
-        # a seqlock counter - 0 means nothing published yet, odd means the
-        # writer is mid-update, even means stable. drain_rx() is the only writer
-        # while running; start() also resets it, which is safe because it runs
-        # before the command loop is live (MotorThrottleGroup.arm() sets its
-        # state last).
-        self.slot_words = array('I', [0] * 4)
-        self.slot_ticks_us = 0
-        self.slot_seq = 0
+        # Assembles replies from the RX FIFO and holds the latest one for the
+        # application to read from another core.
+        #
+        # drain_rx(publish) empties the RX FIFO. Call it on every command-loop
+        # tick: an undrained FIFO stalls the RX state machine, and the captures
+        # taken right after a stall come back corrupted (see ADR-002). Words
+        # accumulate into 4-word captures; a completed one replaces the single
+        # published capture (read it with latest_capture()) when `publish` is
+        # true and is dropped otherwise, and either way the word grouping stays
+        # aligned. It takes at most RX_DRAIN_LIMIT words per call, does no
+        # decoding (that is the application's job, on its own schedule - see
+        # decode_capture()), and must be called from one place only
+        # (MotorThrottleGroup.update()): while the loop runs it is the only
+        # writer of the published capture.
+        #
+        # It is the mailbox's own method, bound here, rather than a method of
+        # this class that calls the mailbox: it runs on every tick, and a
+        # Python-level call layer per tick measurably slowed the command loop.
+        self.mailbox = CaptureMailbox(self.rx_sm, self.RX_DRAIN_LIMIT, utime.ticks_us)
+        self.drain_rx = self.mailbox.drain
 
     def start(self):
         # Start each run from a clean slate. RX listens before TX can release
@@ -412,8 +414,7 @@ class BidirectionalDShot(DShotPIO):
         # survive into the new run.
         while self.rx_sm.rx_fifo():
             self.rx_sm.get()
-        self.capture_fill = 0
-        self.slot_seq = 0
+        self.mailbox.reset()
         self.rx_sm.active(1)
         super().start()
 
@@ -435,74 +436,21 @@ class BidirectionalDShot(DShotPIO):
             return None
         return self.rx_sm.get()
 
-    def drain_rx(self, publish):
-        """
-        Empty the RX FIFO. Call this on every command-loop tick: an undrained
-        FIFO stalls the RX state machine, and the captures taken right after
-        a stall come back corrupted (see ADR-002).
-
-        Words accumulate into 4-word captures. When one completes and
-        `publish` is true it replaces the single published slot (read it with
-        latest_capture()); when `publish` is false it is dropped. Either way
-        the word grouping stays aligned. No decoding happens here - that is
-        the application's job, on its own schedule (decode_capture()).
-
-        Takes at most RX_DRAIN_LIMIT words per call. Must be called from one
-        place only (MotorThrottleGroup.update()): while the command loop runs
-        it is the slot's only writer.
-        """
-        rx_sm = self.rx_sm
-        buf = self.capture_buf
-        for _ in range(self.RX_DRAIN_LIMIT):
-            if not rx_sm.rx_fifo():
-                break
-            fill = self.capture_fill
-            buf[fill] = rx_sm.get()
-            fill += 1
-            if fill < 4:
-                self.capture_fill = fill
-                continue
-            self.capture_fill = 0
-            if publish:
-                seq = self.slot_seq
-                self.slot_seq = seq + 1  # odd: update in progress
-                slot = self.slot_words
-                slot[0] = buf[0]
-                slot[1] = buf[1]
-                slot[2] = buf[2]
-                slot[3] = buf[3]
-                self.slot_ticks_us = utime.ticks_us()
-                self.slot_seq = seq + 2  # even: stable
-
     def latest_capture(self):
         """
         Return the latest published capture as (ticks_us, sequence, words), or
         None if there is none to hand out right now: nothing has been published
-        since start(), or the writer kept rewriting the slot for every attempt
-        below. Callers polling for telemetry treat both the same way - ask
-        again later.
+        since start(), or the writer kept rewriting it for every attempt (see
+        CaptureMailbox). Callers polling for telemetry treat both the same way -
+        ask again later.
 
         ticks_us is utime.ticks_us() at publication (wraps - compare with
         ticks_diff). sequence counts published captures since start(), so a
         caller can tell a fresh capture from one it has already seen. words is
-        a tuple of the 4 raw 32-bit RX words.
-
-        Safe to call from a different core than drain_rx(): a capture being
-        rewritten mid-read is detected and retried, and gives up (None) after
-        a few attempts rather than spinning.
+        a tuple of the 4 raw 32-bit RX words. Safe to call from a different
+        core than drain_rx().
         """
-        for _ in range(4):
-            seq = self.slot_seq
-            if seq == 0:
-                return None
-            if seq & 1:
-                continue
-            slot = self.slot_words
-            words = (slot[0], slot[1], slot[2], slot[3])
-            ticks_us = self.slot_ticks_us
-            if self.slot_seq == seq:
-                return (ticks_us, seq >> 1, words)
-        return None
+        return self.mailbox.latest()
 
     def decode_capture(self, words):
         """

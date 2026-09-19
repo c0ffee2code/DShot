@@ -1,9 +1,9 @@
 # Test: cross-core consistency of BidirectionalDShot's one-slot capture
 #
 # Purpose: MotorThrottleGroup.update() (Core 1) publishes each completed
-# telemetry capture into a single slot via drain_rx(), and the application
-# (Core 0) reads it with latest_capture(). The slot is guarded by a seqlock made
-# of plain attribute and array writes, and MicroPython on the RP2350 runs the
+# telemetry capture into a single slot (CaptureMailbox) via drain_rx(), and the
+# application (Core 0) reads it with latest_capture(). The slot is guarded by a
+# seqlock made of plain attribute and array writes, and MicroPython on the RP2350 runs the
 # two cores truly in parallel with no global interpreter lock, so nothing but
 # the protocol itself keeps a reader from seeing half of one capture and half of
 # the next. This test hammers that protocol far harder than a real ESC can.
@@ -84,7 +84,7 @@ def test_capture_slot_stress():
     print("=== Capture Slot Stress Test (no motor, no ESC power) ===")
 
     motor = BidirectionalDShot(SM_ID, Pin(PIN), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=RX_SM_ID)
-    motor.rx_sm = FakeRxStateMachine()
+    motor.mailbox.source = FakeRxStateMachine()
     writer = Writer(motor)
 
     reads = 0
@@ -106,7 +106,7 @@ def test_capture_slot_stress():
 
         # Sampling the raw counter shows how often a read lands inside the
         # writer's update window - the case the seqlock exists for
-        if motor.slot_seq & 1:
+        if motor.mailbox.slot_seq & 1:
             odd_seen += 1
 
         capture = motor.latest_capture()
@@ -133,7 +133,7 @@ def test_capture_slot_stress():
             break
         utime.sleep_ms(10)
 
-    published = motor.slot_seq >> 1
+    published = motor.mailbox.slot_seq >> 1
     print("  writer drain_rx calls:        " + str(writer.calls))
     print("  captures published:           " + str(published))
     print("  reader reads (valid):         " + str(reads))
