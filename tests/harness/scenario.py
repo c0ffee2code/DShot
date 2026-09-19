@@ -56,11 +56,10 @@ class Scenario:
 
 
 def _pio_block(sm_id):
-    # RP2350: state machine ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2. Must
-    # match BidirectionalDShot.__init__'s own rx_state_machine_id docstring exactly -
-    # BidirectionalDShot itself does not validate this, so a scenario with a
-    # cross-block bidir pair would otherwise fail confusingly (or silently
-    # misbehave) only once armed.
+    # RP2350: state machine ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2, the same
+    # mapping BidirectionalDShot.__init__ enforces. Checked here as well so a
+    # scenario with a cross-block bidirectional pair is rejected when it is
+    # loaded, before anything is constructed or armed.
     return sm_id // 4
 
 

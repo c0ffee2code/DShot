@@ -335,6 +335,15 @@ class BidirectionalDShot(DShotPIO):
                 "own docstring"
             )
 
+        # Ids 0-3 are PIO0, 4-7 PIO1, 8-11 PIO2: with the +1 offset, a TX on the
+        # last state machine of a block would put its RX in the next block
+        if state_machine_id // 4 != rx_state_machine_id // 4:
+            raise ValueError(
+                "state_machine_id " + str(state_machine_id) + " and rx_state_machine_id " +
+                str(rx_state_machine_id) + " must share a PIO block (ids 0-3 -> PIO0, "
+                "4-7 -> PIO1, 8-11 -> PIO2) - see this constructor's own docstring"
+            )
+
         profile = BIDIR_PROFILES.get(dshot_speed)
         if profile is None:
             raise ValueError("BidirectionalDShot needs a dshot_speed with a verified "
