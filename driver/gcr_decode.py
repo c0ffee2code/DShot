@@ -1,26 +1,17 @@
 """
 On-device bidirectional DShot GCR telemetry decoder - MicroPython, mirrors
 scripts/dshot_bidir_decode.py (the PC-side reference) function-for-function
-for the fixed-ratio decode path (the two intentionally diverge on the
-brute-force sweep - see estimate_bit_period_fixed's docstring below and
-decision/ADR-002-bidirectional-dshot.md's "Fixed-ratio RX sampling retune"
-section). scripts/verify_gcr_decode_port.py is the permanent regression
-check keeping the shared path in sync - re-run it whenever either file
-changes.
+for the fixed-ratio decode path. The two differ only in how the bit period is
+found: this module takes it from a tuned profile, the reference can also search
+for it. scripts/verify_gcr_decode_port.py checks that the shared path stays in
+sync - re-run it whenever either file changes.
 
-Decodes the densely, uniformly-oversampled raw captures produced by
-dshot_bidir_rx (see decision/ADR-002-bidirectional-dshot.md's "RX redesign:
-unslotted dense oversampling" section for the full history).
-
-dshot_bidir_rx makes NO assumption about the real GCR bit period at the PIO
-level - it just samples the pin every 2 PIO cycles, continuously, for 128
-samples, covering the marker bit, the 20 real GCR data bits, and idle tail,
-all in one flat un-slotted stream. What real bit period those cycles work
-out to is a per-profile tuned constant (driver/dshot_profiles.py's
-BIDIR_PROFILES, one per DShot speed, each measured and verified on real
-hardware - see the ADR section above), not searched for at decode time -
-this module's job is turning that raw waveform into bits using the tuned
-constant, not discovering the period fresh from every capture.
+Decodes the raw captures produced by dshot_bidir_rx: a dense, uniform sampling
+of the pin covering the marker bit, the 20 GCR data bits and the idle tail.
+The real bit period those samples work out to is a per-DShot-speed constant
+(driver/dshot_profiles.py's BIDIR_PROFILES), not something this module
+searches for on every capture - searching is too slow to run on the Pico.
+This module turns the raw waveform into bits using that constant.
 
 Each real reply produces FOUR 32-bit words (in_shiftdir=SHIFT_LEFT,
 push_thresh=32): the OLDEST sample in each word is at bit31, the NEWEST at
@@ -32,16 +23,13 @@ pass. This is fully deterministic, so this module tracks each sample's exact
 absolute CYCLE position (not just its index) rather than assuming uniform
 spacing.
 
-Unlike the reference script, this module's check_crc() accepts ONLY the
-inverted CRC polarity, not both. This is a deliberate difference, not a
-missed port: tallying every CRC-valid capture pulled from real hardware so
-far (714 groups, 2026-09-06/07) came back 100% inverted, 0% plain, matching
-what AM32's own firmware source produces. Accepting only the polarity the
-hardware actually uses halves the false-accept probability of the 4-bit CRC
-check (1/16 instead of 2/16) - the reference script keeps accepting both
-because it is a PC-side exploration tool where a stray "plain" hit would
-itself be diagnostic; this module exists specifically to be the driver's
-validity gate, so it doesn't get that latitude.
+Unlike the reference script, check_crc() here accepts ONLY the inverted CRC
+polarity. That is deliberate: every CRC-valid capture from real hardware has
+been inverted, matching AM32's firmware source, and accepting the plain
+polarity as well would double the false-accept probability of the 4-bit CRC
+(2/16 instead of 1/16) for a polarity the hardware never produces. The
+reference script accepts both because a stray plain hit is diagnostic there;
+this module is the driver's validity gate and has no such use for it.
 
 Method:
 1. Reconstruct the 128-sample time series with exact per-sample cycle
@@ -110,13 +98,9 @@ def find_edges(samples):
     Returns a list of (cycle, sample_index) pairs where the value changes
     between consecutive samples. Carrying sample_index (not just the cycle
     position) lets reconstruct_bits read the transitioned-to value directly
-    by indexing `samples`, instead of re-searching for the nearest sample -
-    this is the same sample find_edges already looked at to detect the
-    transition, no reason to look it up a second time. Replaces the old
-    value_at_cycle() linear scan (O(128) per lookup, called once per
-    reconstructed bit) with an O(1) index read - see
-    decision/ADR-002-bidirectional-dshot.md for the measured on-device
-    timing impact.
+    by indexing `samples`, instead of re-searching for the nearest sample:
+    find_edges has already looked at exactly that sample to detect the
+    transition, and a search per reconstructed bit is too slow on the Pico.
     """
     edges = []
     for i in range(1, len(samples)):
@@ -127,12 +111,12 @@ def find_edges(samples):
 
 def _period_score(gaps, p):
     """
-    Shared residual-scoring math for estimate_bit_period and
-    estimate_bit_period_fixed: how well would rounding every gap to the
-    nearest integer multiple of candidate period p explain the observed
-    gaps, as a total relative (residual/period)^2 score - see
-    estimate_bit_period's docstring for why relative, not absolute, and
-    for the q=g/p reuse that avoids a redundant division.
+    How well rounding every gap to the nearest integer multiple of candidate
+    period p explains the observed gaps, as a total (residual/period)^2 score
+    (lower is better). The residual is relative to the period so that
+    candidates of different sizes are comparable. q = g/p is computed once and
+    reused for both the rounded multiple and the residual, because division is
+    expensive here.
     """
     score = 0.0
     for g in gaps:
@@ -145,35 +129,24 @@ def _period_score(gaps, p):
 
 def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
     """
-    Betaflight-style fixed-ratio period estimate: when rx_speed has been
-    tuned so the nominal samples-per-bit ratio is a known constant, there
-    is no need to search for the real period at all - see decision/
-    ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section for
-    the density/margin tradeoff this depends on, and for why the tuned
-    ratio is measured on real hardware before being trusted, not derived
-    from the nominal protocol bitrate alone (real ESC oscillators drift a
-    few percent off nominal).
+    Fixed-ratio bit period estimate (the technique Betaflight's bidirectional
+    DShot decoder uses). rx_speed is tuned so a reply bit spans a known,
+    measured number of RX cycles, so the period does not have to be searched
+    for on every capture. The ratio is measured on hardware rather than derived
+    from the protocol's nominal bit rate, because ESC oscillators run a few
+    percent off nominal (see driver/dshot_profiles.py).
 
-    tolerance=0.0 (default): returns expected_ratio directly - a bare
-    fixed divisor, no search, the fastest possible path (this is
-    Betaflight's own technique: `(run_length + 1) / K` in `dshot_bitbang_
-    decode.c`, just written as a function here instead of inline).
+    tolerance=0.0 (default): returns expected_ratio directly - a bare fixed
+    divisor, the cheapest path. It is valid when the profile's measured spread
+    stays well inside half a cycle, so rounding run lengths to bits is
+    unambiguous.
 
-    tolerance>0.0: sweeps a narrow band [expected_ratio-tolerance,
-    expected_ratio+tolerance] in 0.04 steps via _period_score, for when
-    real hardware data shows the tuned rate still needs some margin
-    against drift rather than being trusted as a bare constant. Every
-    live DShot speed's profile so far (see driver/dshot_profiles.py) uses
-    tolerance=0.0 - both DSHOT300 and DSHOT600 measured tight enough
-    (std well under the 0.5-cycle rounding boundary) that a bare divisor
-    reproduces the old brute-force sweep's answer exactly on every
-    CRC-valid capture checked (see decision/ADR-002-bidirectional-
-    dshot.md's fixed-ratio RX sampling section) - the tolerance>0.0 path
-    exists for a future profile whose measured spread doesn't clear that
-    bar as cleanly.
+    tolerance>0.0: searches [expected_ratio-tolerance, expected_ratio+tolerance]
+    in 0.04 steps via _period_score, for a profile whose spread is too wide to
+    trust as a bare constant. No current profile needs it.
 
-    len(edges) < 2 returns None - analyze_capture treats that as a
-    dead-line signal, not something to paper over.
+    Fewer than 2 edges returns None: analyze_capture treats that as a dead
+    line rather than guessing.
     """
     if len(edges) < 2:
         return None
@@ -249,10 +222,7 @@ def decode(bits):
 
 def check_crc(dshot_full_number):
     """
-    Only the inverted polarity is accepted - see module docstring for why
-    (714/714 real CRC-valid captures pulled from hardware so far are
-    inverted; accepting plain too would just double the false-accept rate
-    of a 4-bit CRC for a polarity this hardware has never actually produced).
+    Only the inverted polarity is accepted - see the module docstring for why.
     """
     crc = dshot_full_number & 0xF
     data12 = (dshot_full_number >> 4) & 0xFFF
@@ -265,16 +235,11 @@ def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
     """
     Full pipeline from 4 raw 32-bit capture words to a decoded result.
 
-    expected_ratio/ratio_tolerance feed estimate_bit_period_fixed - every
-    DShot speed this driver supports has a tuned profile in
-    driver/dshot_profiles.py's BIDIR_PROFILES with a real, measured
-    expected_ratio, so this is a required argument, not optional: there is
-    no brute-force sweep fallback any more (retired 2026-09-12 once both
-    DSHOT300 and DSHOT600 had a verified fixed ratio - see decision/
-    ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section).
-    scripts/dshot_bidir_decode.py, the PC-side reference, deliberately
-    keeps its own brute-force sweep permanently for analyzing captures
-    from any era/rate - only this on-device module dropped it.
+    expected_ratio/ratio_tolerance feed estimate_bit_period_fixed. They are
+    required: every supported DShot speed has a measured profile in
+    driver/dshot_profiles.py's BIDIR_PROFILES, so there is no search fallback
+    on the device. The PC-side reference (scripts/dshot_bidir_decode.py) keeps
+    its own search for analysing captures taken at any rate.
 
     Returns None if no edges were found at all (dead line). Otherwise
     returns a dict with:

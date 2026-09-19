@@ -33,71 +33,40 @@ def dshot():
     jmp("start")         .side(0)    [2] # 3 cycles, "ZERO" condition
     wrap()
 
-# Bidirectional DShot TX. Same bit timing as dshot() above for every bit
-# (every side-set value flipped, so idle and the "0" duty portion sit HIGH
-# instead of LOW - this is what lets an AM32 ESC auto-detect bidirectional
-# mode; see ADR-002 and BidirectionalDShot's class docstring for why
-# this must be in use for the *entire* arm sequence, not switched in
-# afterward), but unlike dshot() this releases the pin (pindirs -> input)
-# after each 16-bit frame so an RX state machine sharing the same pin - or
-# the ESC itself - can drive it for the GCR telemetry reply, then reclaims
-# it before the next frame.
+# Bidirectional DShot TX. Same bit timing as dshot(), with every side-set level
+# flipped so the line idles HIGH and the "0" bit's duty portion sits HIGH. An
+# AM32 ESC recognises bidirectional mode from this inverted polarity, and only
+# while it is disarmed, so this program has to be in use for the whole arm
+# sequence (see BidirectionalDShot).
 #
-# This needs a manual pull() + bit counter instead of autopull: autopull
-# refills the OSR transparently, with no signal a program can branch on, so
-# there is no way to know "a full frame just finished" without counting it
-# ourselves - and that is exactly the point where the pin needs to be
-# released. pull() is placed so it blocks with the pin already released:
-# the gap where an RX window can happen is the time between one frame ending
-# and Python supplying the next one, which is also the time this state
-# machine spends stalled here.
+# Unlike dshot(), it releases the pin (pindirs -> input) after each 16-bit frame
+# so the ESC can drive the line for its GCR telemetry reply, then reclaims it
+# for the next frame.
 #
-# The "bit=1" and "bit=0" paths each carry their own copy of the release-and-
-# loop tail rather than sharing one: a single PIO instruction encodes exactly
-# one side-set value, and the two paths need different ones, so they cannot
-# converge on one shared instruction. Duplicating a couple of instructions
-# costs program memory (32 words available, this uses 12) but not cycles -
-# the per-bit timing is unaffected because both paths still spend exactly 8
-# cycles on out()+jmp(not_x)+jmp(y_dec) before falling into their own tail on
-# the last bit only.
+# It counts bits by hand and uses a manual pull() instead of autopull: autopull
+# refills the OSR with nothing a program can branch on, so the end of a frame -
+# the moment the pin must be released - could not be detected. pull() blocks
+# with the pin already released, so the idle time between frames is also the
+# ESC's reply window.
 #
-# irq(rel(1)) (Option A' - see ADR-002) fires once per frame, right after the
-# pin is released, to tell dshot_bidir_rx on the paired state machine that it
-# is safe to start its own fixed post-release delay before listening. This is
-# a non-blocking set (no "block" argument) - it does not wait for RX to be
-# listening, so it costs nothing if RX is inactive or still busy with a
-# previous capture.
+# The bit=1 and bit=0 paths each carry their own release-and-loop tail because
+# one PIO instruction encodes exactly one side-set value and the two paths need
+# different ones. That costs program memory (12 of 32 words) but no cycles: the
+# per-bit timing is identical on both paths.
 #
-# BACKGROUND: this used to be the literal irq(4) - a real bug, found
-# 2026-08-30 while building a multi-bidir-channel test harness (W18,
-# bidirectional_dshot_review.md), not caught by ADR-002's original
-# single-pair verification. IRQ flags 4-7 never reach the CPU, but they ARE
-# shared across every state machine on the same PIO block - literal irq(4)
-# is not a private TX-to-its-own-RX channel, it is one block-wide flag. With
-# only one bidir pair per block this was invisible; with two or more pairs
-# sharing a block, both RX state machines would wait on the SAME flag, and
-# either could consume the pulse meant for the other - silent cross-talk.
+# irq(rel(1)) fires once per frame, right after the release, telling the paired
+# dshot_bidir_rx that it may start its post-release delay. It is non-blocking,
+# so it costs nothing when RX is inactive or still busy with the previous
+# capture.
 #
-# The fix uses RP2040/2350's relative-IRQ addressing instead: `rel(k)`
-# resolves at runtime to a flag based on the EXECUTING state machine's own
-# id, so a TX and its paired RX land on the same flag as each other but a
-# DIFFERENT flag than any other pair on the same block - as long as every
-# pair uses the same TX-to-RX id offset, which is why BidirectionalDShot.__init__
-# hard-enforces rx_state_machine_id == state_machine_id + 1 below (TX always
-# fires irq(rel(1)), RX always waits on irq(rel(0)) - see dshot_bidir_rx).
-#
-# STATUS: CONFIRMED WORKING on hardware 2026-08-30, second attempt. A first
-# attempt earlier the same day was reverted after channel 1 (sm0/rx1) got
-# 0/0 completed telemetry groups both alone and paired with channel 3 on
-# the same PIO0 block - but that revert was made on confounded evidence
-# (channel 1's ESC power turned out to be off), not a real driver failure:
-# channel 3, using this identical mechanism in that same run, got 100%
-# CRC-valid telemetry. With channel 1's power confirmed on and a clean
-# retest, two bidirectional pairs sharing PIO0 (channel 1 sm0/rx1 at
-# throttle 150, channel 3 sm2/rx3 at throttle 300) both produced 100%
-# CRC-valid telemetry with distinct, plausible, throttle-proportional eRPM
-# (~61.5k vs ~143.5k steady-state) - captures/2026-08-30_21-09-16. See
-# bidirectional_dshot_review.md's W18 entry for the full history.
+# The IRQ is relative (rel) rather than a literal flag number because flags 4-7
+# are shared by every state machine on a PIO block: with a literal flag, two
+# bidirectional pairs on one block would consume each other's signal. rel(k)
+# resolves to a flag derived from the executing state machine's own id, so a TX
+# and its RX share one flag and every other pair gets a different one - provided
+# every pair uses the same TX-to-RX id offset. That is why BidirectionalDShot
+# requires rx_state_machine_id == state_machine_id + 1 (TX fires rel(1), RX
+# waits on rel(0)). See ADR-002's per-pair synchronization section.
 @asm_pio(sideset_init=PIO.OUT_HIGH, set_init=PIO.OUT_HIGH, out_shiftdir=PIO.SHIFT_LEFT, autopull=False)
 def dshot_bidir_tx():
     label("frame_start")
@@ -117,113 +86,53 @@ def dshot_bidir_tx():
     irq(rel(1))                .side(1)   [0] # tell paired RX (id = this SM's id + 1) the pin was just released
     jmp("frame_start")         .side(1)   [0]
 
-# GCR capture for a bidirectional DShot ESC's eRPM reply (Option A' - see
-# ADR-002's "Implementation Update" for the design rationale, and its
-# "RX capture diagnosis" section for the full history of what this program
-# used to do and why it changed again here).
+# Captures an ESC's GCR telemetry reply as a dense, uniform raw waveform for
+# software to decode (see gcr_decode.py).
 #
-# Two earlier designs were tried and diagnosed to their limit:
+# The program assumes nothing about the reply's bit period. It samples the pin
+# every 2 PIO cycles, continuously, 128 times, which is several samples per bit
+# at the rx_speed chosen for the DShot speed (BIDIR_PROFILES) - dense enough that
+# software can find bit boundaries from the run lengths between edges rather
+# than trusting a bit period baked into the PIO program. The marker bit is
+# captured too, giving software an unambiguous 0 to anchor against.
 #
-# 1. A single point-sample per bit (no fixed delay) - pure noise, 4/84 valid
-#    GCR symbols.
-# 2. A "slotted" design assuming a specific bit period (8 PIO cycles, 5/4x
-#    the DShot bitrate per the generic spec), 3 samples per assumed slot at
-#    fixed offsets. After fixing several real bugs (predelay overshoot, a
-#    marker-skip cycle-count error, an illegal `set` immediate), this got
-#    close - alignment confirmed, the first GCR symbol decoded correctly and
-#    deterministically in all 17 test captures - but CRC validated in only
-#    1/17, with failures growing monotonically deeper into the frame. That
-#    signature (clean front, degrading back) doesn't match a framing bug
-#    (would corrupt the front first) or uniform noise (would hit evenly) -
-#    it matches a *small* residual rate error the coarse 3-sample vote
-#    couldn't resolve from noise. Every attempt to pin down that error from
-#    the existing 3-samples/slot data (run-length histograms, resampling
-#    onto candidate periods) came back too weak to act on - see ADR-002.
+# 128 samples are packed by autopush at push_thresh=32 (the maximum, which keeps
+# the word count down): exactly 4 words per reply, equal to the RX FIFO depth,
+# so a single capture can never stall waiting for the CPU mid-frame.
 #
-# This version removes the "slot" assumption entirely instead of refining
-# it further. It does not assume any particular bit period - it just
-# samples the pin uniformly and continuously, densely enough (5-6+ samples
-# per plausible real bit) that the actual bit period and phase can be
-# measured directly from the raw waveform in software, rather than assumed
-# by the PIO program and inferred backward from a coarse vote. The marker
-# bit itself is captured too (previously skipped and used only for edge
-# timing) so software has an unambiguous, self-evident zero to anchor
-# everything else against.
-#
-# `rx_speed` (see BidirectionalDShot.__init__) is chosen independently of any assumed
-# GCR bitrate - just fast enough to safely oversample the plausible range of
-# real bit periods (previously measured to sit somewhere around 7-8 PIO
-# cycles at the old 3MHz clock, i.e. roughly 2.3-2.7us) with margin on both
-# sides. Originally tuned for DShot300 only; DSHOT600 was retuned and
-# verified the same way 2026-09-12 (see decision/ADR-002-bidirectional-
-# dshot.md's fixed-ratio RX sampling section) - both speeds now have their
-# own measured rx_speed/expected_ratio in driver/dshot_profiles.py.
-# Revisit that ADR section's methodology before adding bidirectional=True
-# support for any DShot speed beyond these two.
-#
-# VERIFIED on hardware (see ADR-002): scripts/decode_bidir_capture.py's
-# run-length reconstruction (not simple resampling - see its module
-# comment for why that distinction matters) decodes 17/17 real captures
-# with valid CRC, eRPM rising monotonically across throttle steps. The
-# real bit period measured ~10.1-10.4 PIO cycles at this rx_speed (~2.5-
-# 2.6us) - within the range this program was tuned to oversample.
-#
-# 128 raw samples packed via autopush at push_thresh=32 (the max, to
-# minimise word count) - exactly 4 32-bit words per real reply, matching the
-# RX FIFO depth exactly so a single capture can never stall waiting for
-# Python to drain mid-frame.
-#
-# `set`'s immediate operand is a 5-bit field (max 31) - `set(y, 127)` is
-# illegal and would have silently misassembled (this is the same class of
-# bug as `set(y, 39)` earlier in this ADR's history, caught this time before
-# a hardware round rather than after). 128 samples needs a nested loop: an
-# outer pass of 4 (`x`), each running an inner loop of 32 samples (`y`).
-# This is NOT perfectly uniform: within a pass, consecutive samples are 2
-# cycles apart (`in_` + `jmp(y_dec)`, 1 cycle each); at each of the 3 pass
-# boundaries, reloading `y` and looping `x` costs 2 *extra* cycles (a failed
-# `jmp(y_dec)` + `jmp(x_dec)` + `set(y, 31)` vs. the single taken `jmp` a
-# within-pass transition would have cost), so those 3 gaps are 4 cycles
-# instead of 2. This is fully deterministic - scripts/decode_bidir_capture.py
-# computes each sample's exact absolute cycle position (not just its index)
-# to account for it, rather than assuming uniform spacing.
+# set()'s immediate is a 5-bit field (max 31), so 128 samples cannot be one
+# loop: it is 4 outer passes (x) of 32 inner samples (y). Samples within a pass
+# are 2 cycles apart, but at each of the 3 pass boundaries reloading y and
+# looping x costs 2 extra cycles, so those gaps are 4. The seam is
+# deterministic, and gcr_decode.sample_cycle() accounts for it.
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=32)
 def dshot_bidir_rx():
     wrap_target()
-    # irq(rel(0)): this RX's own id resolves to the SAME flag its paired TX
-    # targets with irq(rel(1)) - see dshot_bidir_tx's module comment for the
-    # full explanation, the cross-talk bug this replaces, and hardware
-    # confirmation that it works.
-    #
-    # That resolved flag is a single sticky flag, not a queue: if this SM
-    # was still busy (autopush stalled on a full RX FIFO - see rx_read()'s
-    # comment) when its paired TX fired its irq for a frame we then missed,
-    # that signal would otherwise sit latched and get consumed as if it were
-    # fresh the moment we reach wait() below - re-phasing the predelay +
-    # marker search against the wrong point in time and risking a capture
-    # of TX's own waveform instead of a real reply (see R1/R2 in
-    # bidirectional_dshot_review.md). Clearing first forces the wait below to
-    # block for a genuinely new release, every time - including the very
-    # first iteration after start(), which is what also prevents a flag from
-    # a previous run surviving stop()'s restart() into this one.
+    # Clear before waiting. The flag is sticky, not a queue: a signal left over
+    # from a frame this state machine missed (autopush stalled on a full FIFO)
+    # would be consumed as fresh at the wait below, phasing the capture against
+    # the wrong moment and possibly capturing TX's own waveform as a "reply".
+    # Clearing first makes the wait block for a genuinely new release every
+    # iteration - including the first after start(), which also stops a flag
+    # from a previous run surviving stop()'s restart(). rel(0) resolves to the
+    # same flag the paired TX raises with rel(1); see dshot_bidir_tx.
     irq(clear, rel(0))
     wait(1, irq, rel(0))             # block for the paired TX's per-frame release signal (auto-clears the flag)
 
-    # ~4.7us fixed delay before listening - empirically confirmed correct
-    # (see ADR-002): AM32's actual reply turnaround on this ESC sits here,
-    # not the ~25-30us a generic reference suggested. wait(0, pin, 0) below
-    # is a level wait, not an edge detector - too short a predelay re-
-    # triggers instantly on TX's own still-LOW tail (this project's very
-    # first RX attempt's all-zero-capture failure), so this is a lower
-    # bound, not zero.
+    # Fixed ~14-cycle delay (two 7-cycle iterations) before listening: about
+    # 4.15us at DSHOT300's RX clock, 2.07us at DSHOT600's. It is a lower bound,
+    # not the reply's start - wait(0, pin, 0) below finds that. That wait is a
+    # level wait, not an edge detector, so a delay too short would let it
+    # re-trigger immediately on TX's own still-LOW tail.
     set(x, 1)
     label("predelay")
     jmp(x_dec, "predelay")     [6]   # 2 iterations x 7 cycles = 14 cycles
 
     wait(0, pin, 0)                  # the reply's leading (marker) edge
 
-    # 4 outer passes x 32 inner samples = 128 total - see module comment for
-    # why this can't be one flat loop, and for the resulting (deterministic,
-    # accounted-for-in-software) timing seam every 32 samples.
+    # 4 outer passes x 32 inner samples = 128 total - see the comment above the
+    # program for why this cannot be one flat loop and for the timing seam it
+    # leaves every 32 samples.
     set(x, 3)
     label("outer")
     set(y, 31)
@@ -385,35 +294,22 @@ class BidirectionalDShot(DShotPIO):
                  rx_state_machine_id=None):
         """
         Args:
-            rx_state_machine_id: Required. The second state machine that
-                listens on the same pin for the ESC's GCR telemetry reply (see
-                dshot_bidir_rx). Two constraints, both enforced here:
-                (1) Must be on the same PIO block as state_machine_id - a
-                    GPIO's function select routes to one PIO block at a time
-                    (ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2 on RP2350),
-                    so a TX/RX pair sharing a pin must share a block, since
-                    inter-SM IRQs only reach state machines on the same
-                    block.
-                (2) Must be exactly state_machine_id + 1 - dshot_bidir_tx and
-                    dshot_bidir_rx synchronise via RP2040/2350's relative IRQ
-                    addressing (irq(rel(1)) / irq(rel(0)), not a literal
-                    flag number - see dshot_bidir_tx's comment), which
-                    resolves to a flag based on the EXECUTING state
-                    machine's own id. That only gives each pair on a shared
-                    block its own private flag if every pair uses the same
-                    TX-to-RX id offset - this implementation fixes that
-                    offset at +1. CONFIRMED on hardware 2026-08-30: two
-                    bidirectional pairs sharing one PIO block (channel 1
-                    sm0/rx1, channel 3 sm2/rx3, both on PIO0) each produced
-                    100% CRC-valid, independent telemetry with distinct,
-                    plausible eRPM values - see dshot_bidir_tx's comment and
-                    bidirectional_dshot_review.md's W18 entry for the full
-                    history, including an earlier reverted attempt whose
-                    failure turned out to be an unrelated ESC power issue,
-                    not a driver bug.
-                start() activates both state machines; from then on RX
-                synchronises itself to each TX frame via that IRQ with no
-                further calls needed - just drain rx_read() periodically.
+            rx_state_machine_id: Required. The second state machine, listening
+                on the same pin for the ESC's GCR reply (see dshot_bidir_rx).
+                Two constraints, both enforced here:
+                (1) Same PIO block as state_machine_id (ids 0-3 -> PIO0, 4-7 ->
+                    PIO1, 8-11 -> PIO2 on RP2350). A GPIO's function select
+                    routes to one PIO block at a time, and inter-SM IRQs only
+                    reach state machines on the same block.
+                (2) Exactly state_machine_id + 1. TX and RX synchronise
+                    through relative IRQ addressing, which resolves to a flag
+                    derived from the executing state machine's own id; a fixed
+                    TX-to-RX offset is what gives every pair on a shared block
+                    its own private flag (see dshot_bidir_tx).
+                start() activates both state machines. From then on RX
+                synchronises itself to each TX frame with no further calls -
+                the application only has to drain it (see drain_rx(), which
+                MotorThrottleGroup.update() calls every tick).
         """
         # Validate before claiming any hardware: a constructor that raises
         # partway through shouldn't leave a stray, half-configured state
@@ -437,17 +333,13 @@ class BidirectionalDShot(DShotPIO):
                               "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
         rx_speed = profile["rx_speed"]
 
-        # Both sides release the line between frames (see dshot_bidir_tx)
-        # so the other can drive it - with nobody driving, an undriven
-        # pad floats rather than sitting at a defined level, and on this
-        # hardware it was observed floating LOW, which reads as a false
-        # start bit to dshot_bidir_rx's wait(0, pin, 0). A weak pull-up
-        # holds the line at the expected idle-HIGH level whenever neither
-        # side is actively driving, without resisting either one when
-        # they are - the same fix any shared/open-drain-style bus needs.
-        # Pad-level pull config is independent of which peripheral's
-        # FUNCSEL claims the pin, so this holds even once the state
-        # machines below take over.
+        # Both sides release the line between frames (see dshot_bidir_tx), so
+        # for part of each frame nobody drives it. An undriven pad can float
+        # LOW, which dshot_bidir_rx's wait(0, pin, 0) would read as the start of
+        # a reply. A weak pull-up holds the line at its idle-HIGH level while
+        # nobody drives, without resisting either side when they do. Pad pull
+        # configuration is independent of which peripheral owns the pin, so it
+        # still applies once the state machines below take over.
         pin.init(Pin.IN, Pin.PULL_UP)
 
         super().__init__(state_machine_id, pin, dshot_speed, dshot_bidir_tx)
@@ -461,25 +353,28 @@ class BidirectionalDShot(DShotPIO):
         # Words of the capture currently being assembled. A capture is exactly
         # 4 words (128 samples) and the RX FIFO is 4 deep, so drain_rx() sees
         # at most one capture's worth per call; a partial group simply carries
-        # over to the next call. Preallocated: this is filled on the command
-        # loop's hot path, and per-tick allocation was measured hurting it.
+        # over to the next call. Preallocated because this is filled on the
+        # command loop's hot path, where allocating costs time and invites
+        # garbage-collection pauses.
         self.capture_buf = array('I', [0] * 4)
         self.capture_fill = 0
 
         # The single published slot: the latest completed capture. slot_seq is
         # a seqlock counter - 0 means nothing published yet, odd means the
-        # writer is mid-update, even means stable. Only drain_rx() writes it.
+        # writer is mid-update, even means stable. drain_rx() is the only writer
+        # while running; start() also resets it, which is safe because it runs
+        # before the command loop is live (MotorThrottleGroup.arm() sets its
+        # state last).
         self.slot_words = array('I', [0] * 4)
         self.slot_ticks_us = 0
         self.slot_seq = 0
 
     def start(self):
-        # Flush any leftover words from a previous run and start RX
-        # listening before TX can release the pin and fire its first
-        # irq(rel(1)) - see dshot_bidir_rx's irq(clear, rel(0)) comment
-        # for the rest of this epoch-clean boundary. A leftover partial
-        # partial capture from a prior run would otherwise misalign the first
-        # post-restart capture, and a stale published capture must not
+        # Start each run from a clean slate. RX listens before TX can release
+        # the pin and raise its first irq(rel(1)) (see dshot_bidir_rx's
+        # irq(clear, rel(0)) comment for the other half of this). Leftover
+        # words from a previous run are flushed because they would misalign
+        # the first new capture, and a stale published capture must not
         # survive into the new run.
         while self.rx_sm.rx_fifo():
             self.rx_sm.get()
@@ -496,9 +391,8 @@ class BidirectionalDShot(DShotPIO):
         no per-read setup call is needed. Each real reply produces four raw
         32-bit words back to back (128 uniformly-spaced, un-slotted samples
         covering the marker bit, the 20 real data bits, and idle tail - see
-        dshot_bidir_rx's comments). Raw and unpaired: determining the real
-        bit period/phase from this and decoding into eRPM is a later phase
-        (see ADR-002).
+        dshot_bidir_rx's comments). Raw and unpaired: decoding into eRPM is a
+        separate step (decode_capture()).
 
         Diagnostic access. Use either this or drain_rx() on a given motor,
         never both - they consume the same FIFO.
@@ -519,8 +413,8 @@ class BidirectionalDShot(DShotPIO):
         the word grouping stays aligned. No decoding happens here - that is
         the application's job, on its own schedule (decode_capture()).
 
-        Must be called from one place only (MotorThrottleGroup.update()); it
-        is the slot's only writer.
+        Must be called from one place only (MotorThrottleGroup.update()): while
+        the command loop runs it is the slot's only writer.
         """
         rx_sm = self.rx_sm
         buf = self.capture_buf
@@ -546,7 +440,10 @@ class BidirectionalDShot(DShotPIO):
     def latest_capture(self):
         """
         Return the latest published capture as (ticks_us, sequence, words), or
-        None if nothing has been published since start().
+        None if there is none to hand out right now: nothing has been published
+        since start(), or the writer kept rewriting the slot for every attempt
+        below. Callers polling for telemetry treat both the same way - ask
+        again later.
 
         ticks_us is utime.ticks_us() at publication (wraps - compare with
         ticks_diff). sequence counts published captures since start(), so a
@@ -575,8 +472,8 @@ class BidirectionalDShot(DShotPIO):
         Decode one raw capture with this motor's own RX profile and return
         gcr_decode.analyze_capture()'s result dict (crc_ok is the validity
         signal - a capture that is complete and correctly framed can still
-        fail it). Costs ~10ms; call it at whatever pace the application can
-        afford, never from the command loop.
+        fail it). Costs 10-20ms on the Pico; call it at whatever pace the
+        application can afford, never from the command loop.
         """
         return gcr_decode.analyze_capture(words, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
 

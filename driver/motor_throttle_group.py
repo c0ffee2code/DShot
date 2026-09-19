@@ -67,24 +67,18 @@ class MotorThrottleGroup:
     """
 
     # How often the application must call update(). 0 means "as fast as
-    # possible, no explicit delay" - an AM32-firmware ESC would not complete
-    # arming even at a clean 250us once Core1Runner's own per-call overhead
-    # was added on top; back-to-back calls (no sleep) is the only rate
-    # verified reliable through the real facade. See the "Verified
-    # Parameters" table in README.md.
+    # possible, no delay between calls", which is the rate the facade has been
+    # hardware-verified at (see the "Verified Parameters" table in README.md).
     UPDATE_INTERVAL_US = 0
 
-    # Default arming duration in milliseconds. An earlier finding claimed an
-    # AM32-firmware ESC never completed its own arm confirmation at 500ms,
-    # even at max frame rate, and set this to 3000ms - that finding was
-    # re-tested on 2026-09-12 after discovering the original test run(s)
-    # predated a fix for a board-state corruption bug (`mpremote run` not
-    # resetting the board between invocations - see scripts/deploy.py). Under
-    # the corrected reset-before-run workflow, 500ms (and even 300ms) armed
-    # cleanly, confirmed via genuine non-zero eRPM telemetry replies, not
-    # just elapsed time - see bidirectional_dshot_review.md's W18 notes.
-    # A longer hold is always safe for ESCs that need more (see README.md
-    # "Verified Parameters").
+    # Default arming window in milliseconds. A telemetry reply only shows that
+    # the ESC is armed, not that the motor is running: an armed ESC replies
+    # with an at-rest eRPM even when the motor does not start. The library
+    # cannot observe whether the motor started (or whether the ESC is beeping,
+    # or the Pico has hung), so an application should not treat "armed" or
+    # "replying" as "spinning". On the bench a 500ms window has spun the motor,
+    # but some runs have not started it and the cause was not established; the
+    # test bench arms for 3000ms. A longer window only costs startup time.
     DEFAULT_ARM_DURATION_MS = 500
 
     # A gap longer than this between update() calls restarts the arming window,
@@ -298,10 +292,15 @@ class MotorThrottleGroup:
         Returns (ticks_us, sequence, words) from that motor's
         latest_capture(), or None while the group is not ARMED or nothing has
         arrived yet. The group stores nothing itself - it only refuses to
-        hand out captures taken before arming completed, which are not the
-        ESC's replies. Decode with group.motors[motor_index].decode_capture(words);
-        if that fails its CRC, discard it and ask again later - retry timing
-        is the application's decision.
+        hand out captures taken while its own arming window was still open,
+        when what the receiver hears is mostly our own transmit.
+
+        ARMED means that window has elapsed, not that the ESC has armed: with
+        a window shorter than the ESC needs, or an ESC without power, the
+        captures handed out can still be echoes or noise. The CRC check in
+        group.motors[motor_index].decode_capture(words) is what tells a real
+        reply from those, and a CRC-failed capture should be discarded and
+        asked for again later - retry timing is the application's decision.
 
         Safe to call from a different core than update().
 

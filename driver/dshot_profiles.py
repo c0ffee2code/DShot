@@ -1,61 +1,48 @@
 """
 DSHOT_SPEEDS / BIDIR_PROFILES - pure data, no hardware imports (unlike
 dshot_pio.py, which imports machine/rp2/utime at module level and can
-therefore only run under MicroPython on the Pico). Split out specifically
-so PC-side tooling (e.g. scripts/verify_gcr_decode_port.py) can read the
-live profile values directly instead of duplicating them in a hand-
-maintained mirror - the same fragility this project already hit once
-with scripts/analyze_bidir_stress_log.py's own BIDIR_PROFILES copy.
+therefore only run under MicroPython on the Pico). They live here so PC-side
+tooling (e.g. scripts/verify_gcr_decode_port.py) can read the live values
+directly instead of keeping a hand-maintained copy that can drift out of sync.
 
-driver/dshot_pio.py imports and re-exports both names from here, so every
-existing `from dshot_pio import BIDIR_PROFILES`/`DSHOT_SPEEDS` call site
-keeps working unchanged. Deployed to the Pico by scripts/deploy.py
-alongside dshot_pio.py - it needs this file too, not just the PC side.
+driver/dshot_pio.py imports and re-exports both names, so
+`from dshot_pio import BIDIR_PROFILES, DSHOT_SPEEDS` keeps working. This file
+is deployed to the Pico alongside dshot_pio.py, which needs it too.
 """
 
-# The DShot speeds this project supports. Restricted to what AM32 itself
-# documents (its README and wiki.am32.ca both list DShot300/600 only) -
-# DSHOT150 and DSHOT1200 were never part of that support matrix (DSHOT1200
-# was measured working once, but only via undocumented rate-detection
-# overlap with DSHOT600 - see BIDIR_PROFILES below), so this project doesn't
-# carry them as named speeds per CLAUDE.md's design constraint (AM32's
-# source/docs are ground truth; no configuration surface for cases outside
-# the two ESC families this project targets).
+# The DShot speeds this project supports: DSHOT300 and DSHOT600, the two AM32
+# documents (its README and wiki.am32.ca). AM32's source is this project's
+# ground truth for ESC behaviour, and DSHOT150/DSHOT1200 fall outside it -
+# AM32 has no distinct DSHOT1200 path, it only happens to accept that signal
+# through its coarse input-rate bands - so they are not offered as named speeds.
+# Values are PIO clock frequencies: bit_rate * 8 cycles per bit.
 class DSHOT_SPEEDS:
     DSHOT300 = 2_400_000 # 300,000 bit/s * 8 cycle/bit
     DSHOT600 = 4_800_000 # 600,000 bit/s * 8 cycle/bit
 
-# rx_speed to use for dshot_bidir_rx per DShot request speed - hardware-verified
-# (bidirectional_dshot_review.md's W1 item), not a fixed ratio of dshot_speed.
-# DSHOT1200 is deliberately absent: AM32 documents bidirectional support for
-# DSHOT300/600 only (its own README, and wiki.am32.ca) - Src/signal.c's
-# checkDshot() has no distinct DSHOT1200 path, it just bins detected input
-# rate into two coarse reply-timing bands (~150/300 and ~600/1200) with loose
-# pulse-width thresholds, so DSHOT1200 happening to fall in the "600" band and
-# getting a CRC-valid reply on this specific ESC is undocumented incidental
-# behavior, not a feature AM32 tests or guarantees - per this project's
-# AM32-source-is-ground-truth constraint (CLAUDE.md), that makes it
-# unsupported here too, even though it was observed working (4/4 CRC-valid
-# at rx_speed=8MHz, same measured ~1.28-1.29us reply bit period as DSHOT600).
+# Settings for the bidirectional reply receiver, per DShot speed. Only speeds
+# with an entry here can be used with BidirectionalDShot.
 #
-# Each entry is {"rx_speed": ..., "expected_ratio": ..., "ratio_tolerance": ...}.
-# rx_speed is the RX state machine's own clock (see BidirectionalDShot.__init__ in
-# dshot_pio.py - independent of dshot_speed, TX and RX have separate clock
-# dividers on the same PIO block). expected_ratio/ratio_tolerance feed
-# gcr_decode.py's estimate_bit_period_fixed (a Betaflight-style fixed
-# divisor - or narrow band, if ratio_tolerance>0 - replacing the
-# brute-force sweep) - see decision/ADR-002-bidirectional-dshot.md's
-# fixed-ratio RX sampling section. expected_ratio is None until a rate is
-# retuned to a clean integer ratio and verified on real hardware (see that
-# ADR section's plan) - BidirectionalDShot.decode_capture() passes these straight through to
-# analyze_capture() for every profile, so a None here keeps the
-# brute-force sweep as that speed's live behavior. Both DSHOT300 and
-# DSHOT600 were retuned and verified 2026-09-12 (both K=9) and now always
-# use the fixed-ratio path - see decision/ADR-002-bidirectional-dshot.md's
-# fixed-ratio RX sampling section for the retirement of the sweep itself
-# from driver/gcr_decode.py that followed. ratio_tolerance defaults to 0.0
-# (bare fixed divisor) and is only meaningful once expected_ratio is set.
+#   rx_speed         the RX state machine's own clock. It is independent of the
+#                    DShot speed (TX and RX have separate clock dividers on the
+#                    same PIO block) and sets how many samples land in each bit
+#                    of the ESC's reply.
+#   expected_ratio   the reply's measured bit period in RX clock cycles. It is
+#                    measured on hardware rather than derived from the nominal
+#                    reply rate, because ESC oscillators run a few percent off
+#                    nominal. gcr_decode.estimate_bit_period_fixed uses it as a
+#                    fixed divisor instead of searching for the period on every
+#                    capture, which is what keeps decoding cheap enough to run
+#                    on the Pico.
+#   ratio_tolerance  0.0 uses expected_ratio as a bare divisor; above 0.0 the
+#                    decoder searches a band of that half-width around it, for
+#                    a profile whose measured spread is too wide to trust bare.
+#
+# See decision/ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section
+# for how these values were measured and chosen.
 BIDIR_PROFILES = {
-    DSHOT_SPEEDS.DSHOT300: {"rx_speed": 3_375_000, "expected_ratio": 8.7069, "ratio_tolerance": 0.0},  # K=9, 100% CRC-valid (4743/4743), std=0.0477 - see ADR-002 fixed-ratio retune, captures/2026-09-12_13-04-36
-    DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129, "ratio_tolerance": 0.0},  # K=9, 100% CRC-valid (2463/2463), std=0.0576 - see ADR-002 fixed-ratio retune, captures/2026-09-12_16-01-39
+    # rx_speed = 9 x the nominal 375kHz reply rate; the measured 8.7069 cycles per bit means the ESC replies ~3% faster than nominal
+    DSHOT_SPEEDS.DSHOT300: {"rx_speed": 3_375_000, "expected_ratio": 8.7069, "ratio_tolerance": 0.0},
+    # rx_speed = 9 x the nominal 750kHz reply rate
+    DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129, "ratio_tolerance": 0.0},
 }
