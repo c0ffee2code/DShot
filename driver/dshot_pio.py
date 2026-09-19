@@ -100,46 +100,48 @@ def dshot_bidir_tx():
 # the word count down): exactly 4 words per reply, equal to the RX FIFO depth,
 # so a single capture can never stall waiting for the CPU mid-frame.
 #
-# set()'s immediate is a 5-bit field (max 31), so 128 samples cannot be one
-# loop: it is 4 outer passes (x) of 32 inner samples (y). Samples within a pass
-# are 2 cycles apart, but at each of the 3 pass boundaries reloading y and
-# looping x costs 2 extra cycles, so those gaps are 4. The seam is
-# deterministic, and gcr_decode.sample_cycle() accounts for it.
+# What the program does, in order:
+#
+# 1. Clear the IRQ flag, then wait for the paired TX to raise it (its "pin
+#    released" signal). The flag is sticky, not a queue: a signal left over
+#    from a frame this state machine missed (autopush stalled on a full FIFO)
+#    would be consumed as fresh at the wait, phasing the capture against the
+#    wrong moment and possibly capturing TX's own waveform as a "reply".
+#    Clearing first makes the wait block for a genuinely new release every
+#    iteration - including the first after start(), which also stops a flag
+#    from a previous run surviving stop()'s restart(). rel(0) resolves to the
+#    same flag the paired TX raises with rel(1); see dshot_bidir_tx.
+#
+# 2. Delay about 14 cycles (two 7-cycle iterations): about 4.15us at DSHOT300's
+#    RX clock, 2.07us at DSHOT600's. This is a lower bound, not the reply's
+#    start - step 3 finds that. Step 3 is a level wait, not an edge detector, so
+#    a delay too short would let it re-trigger immediately on TX's own
+#    still-LOW tail.
+#
+# 3. Wait for the pin to go LOW: the reply's leading (marker) edge.
+#
+# 4. Take the 128 samples. set()'s immediate is a 5-bit field (max 31), so they
+#    cannot come from one loop: it is 4 outer passes (x) of 32 inner samples
+#    (y). Samples within a pass are 2 cycles apart, but at each of the 3 pass
+#    boundaries reloading y and looping x costs 2 extra cycles, so those gaps
+#    are 4. The seam is deterministic, and gcr_decode.sample_cycle() accounts
+#    for it.
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=32)
 def dshot_bidir_rx():
     wrap_target()
-    # Clear before waiting. The flag is sticky, not a queue: a signal left over
-    # from a frame this state machine missed (autopush stalled on a full FIFO)
-    # would be consumed as fresh at the wait below, phasing the capture against
-    # the wrong moment and possibly capturing TX's own waveform as a "reply".
-    # Clearing first makes the wait block for a genuinely new release every
-    # iteration - including the first after start(), which also stops a flag
-    # from a previous run surviving stop()'s restart(). rel(0) resolves to the
-    # same flag the paired TX raises with rel(1); see dshot_bidir_tx.
-    irq(clear, rel(0))
-    wait(1, irq, rel(0))             # block for the paired TX's per-frame release signal (auto-clears the flag)
-
-    # Fixed ~14-cycle delay (two 7-cycle iterations) before listening: about
-    # 4.15us at DSHOT300's RX clock, 2.07us at DSHOT600's. It is a lower bound,
-    # not the reply's start - wait(0, pin, 0) below finds that. That wait is a
-    # level wait, not an edge detector, so a delay too short would let it
-    # re-trigger immediately on TX's own still-LOW tail.
-    set(x, 1)
+    irq(clear, rel(0))               # step 1: drop any stale release signal...
+    wait(1, irq, rel(0))             # ...then block for the paired TX's per-frame release signal (auto-clears the flag)
+    set(x, 1)                        # step 2: predelay
     label("predelay")
     jmp(x_dec, "predelay")     [6]   # 2 iterations x 7 cycles = 14 cycles
-
-    wait(0, pin, 0)                  # the reply's leading (marker) edge
-
-    # 4 outer passes x 32 inner samples = 128 total - see the comment above the
-    # program for why this cannot be one flat loop and for the timing seam it
-    # leaves every 32 samples.
-    set(x, 3)
+    wait(0, pin, 0)                  # step 3: the reply's leading (marker) edge
+    set(x, 3)                        # step 4: 4 outer passes
     label("outer")
     set(y, 31)
     label("inner")
-    in_(pins, 1)                      # 1 cycle
-    jmp(y_dec, "inner")               # 1 cycle - 2 cycles/sample within a pass
-    jmp(x_dec, "outer")               # 1 cycle - only reached once per pass, after 32 samples
+    in_(pins, 1)                     # 1 cycle
+    jmp(y_dec, "inner")              # 1 cycle - 2 cycles/sample within a pass
+    jmp(x_dec, "outer")              # 1 cycle - only reached once per pass, after 32 samples
     wrap()
 
 # DSHOT_SPEEDS and BIDIR_PROFILES live in dshot_profiles.py (pure data, no
