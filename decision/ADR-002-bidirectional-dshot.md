@@ -1357,6 +1357,78 @@ period_tally_short*.json`, `scripts/tally_period_cycles.py`,
 `scripts/capture_session.py`, `scripts/deploy.py`'s reset-before-run) is
 all reusable as-is.
 
+### Per-pair TX/RX synchronization: stale-signal clearing and relative IRQ addressing (2026-08-29/30)
+
+The TX state machine tells its paired RX state machine that the pin has been
+released by raising a PIO IRQ flag. Two separate problems with that signal
+were found and fixed, and both fixes are load-bearing in
+`dshot_bidir_tx`/`dshot_bidir_rx` today.
+
+**The flag is sticky, not a queue (2026-08-29).** If the RX state machine is
+still busy when TX signals a later frame - typically because `autopush` has
+stalled on a full 4-word RX FIFO that nobody drained - that signal stays
+latched, and RX consumes it as if it were fresh the next time it reaches its
+wait. The capture is then phased against the wrong point in time, and
+`wait(0, pin, 0)` can trigger on TX's own LOW bits, capturing TX's waveform as
+a "reply". The latched flag also survives `restart()`, so a stale signal from
+before `stop()` leaked into the next run. The fix is `irq(clear, rel(0))` at
+the top of every RX iteration, so the wait blocks for a genuinely new release
+every time (including the first one after `start()`), plus `start()` flushing
+the RX FIFO and activating RX before TX.
+
+Verified with a targeted repro: not draining the RX FIFO for 10 frames at a
+settled throttle (enough to fill it and stall the state machine), then
+resuming and decoding offline. Before the fix, 19 of 22 captures were
+CRC-valid, with 3 consecutive corrupted captures at the stall boundary - one
+measured a 6.0-cycle bit period against a ~10.2-10.3 cycle baseline, a
+plausible-looking but wrong decode. After the fix, 20 of 21 were CRC-valid
+with exactly one affected capture, a cleanly truncated pattern that fails CRC
+and is rejected. The standard throttle sweep was unaffected (17/17 CRC-valid,
+eRPM ~21.6k / ~48.8k / ~75.6k at throttle 100/200/300). These runs predate
+the fixed-ratio RX retune, so the cycle counts are at the old 4MHz `rx_speed`.
+
+**The flag was shared by the whole PIO block, not private to a pair
+(2026-08-30).** The first implementation used a literal `irq(4)` /
+`wait(1, irq, 4)`. IRQ flags 4-7 never reach the CPU, but every state machine
+on a PIO block shares them: there is one flag 4 per block. With one
+bidirectional pair per block that is invisible; with two pairs on one block,
+both RX state machines wait on the same flag and either can consume the signal
+meant for the other. This was flagged by an external review and confirmed by
+re-reading the assembly, while extending the bench harness to several
+bidirectional channels.
+
+The fix is relative IRQ addressing. `rel(k)` resolves at runtime to a flag
+derived from the executing state machine's own id, so TX fires `irq(rel(1))`
+and its RX waits on `irq(rel(0))` and both land on the same flag, while a pair
+with different state machine ids lands on a different one. That only holds if
+every pair uses the same TX-to-RX id offset, which is why `BidirectionalDShot`
+requires `rx_state_machine_id == state_machine_id + 1`. One program serves
+every pair; nothing is assembled per pair.
+
+The first attempt at this fix, on 2026-08-30, was reverted after channel 1
+(sm0/rx1) produced no completed telemetry groups either alone or paired with
+channel 3 on the same PIO0 block, while channel 3, using the identical
+mechanism in the same run, was 100% CRC-valid. That revert rested on
+confounded evidence: channel 1's ESC power turned out to have been off, which
+explains "fails alone and paired, while channel 3 is fine" better than a
+driver bug does. The retry, with ESC power confirmed on every channel under
+test, passed:
+
+- one bidirectional pair: 17,624 of 17,624 captures CRC-valid;
+- two pairs sharing PIO0 (channel 1 sm0/rx1 at throttle 150, channel 3
+  sm2/rx3 at throttle 300): 15,437 of 15,437 CRC-valid on each, with distinct,
+  throttle-proportional eRPM (~61.5k vs ~143.5k) and no cross-talk;
+- two pairs on separate blocks (channel 1 on PIO0, channel 3 on PIO1) running
+  diverging throttle profiles for 60 seconds: 30,221 of 30,221 and 30,220 of
+  30,221 CRC-valid, ~504 records/s sustained, no dropped records.
+
+Not verified: a fourth pair (channel 4, sm6/rx7 on PIO1) reproducibly failed -
+about 322 records/s against a 450/s floor, and 61.1% CRC-valid - even when it
+was the only pair on its block, which rules out block sharing as the cause.
+The cause is unknown (its pin, wiring or ESC channel are all candidates) and
+it is parked; the relative-IRQ mechanism itself is confirmed by the other
+three channels.
+
 ## References
 
 - [Brushless Whoop - Bidirectional DShot](https://brushlesswhoop.com/dshot-and-bidirectional-dshot/)
