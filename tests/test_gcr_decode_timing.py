@@ -15,7 +15,7 @@
 #
 # Every group in both datasets below is CRC-valid: with ratio_tolerance=0.0
 # (both live profiles use it), estimate_bit_period_fixed never calls
-# _period_score at all, so raw_samples/find_edges/reconstruct_bits, not
+# period_score at all, so raw_samples/find_edges/reconstruct_bits, not
 # period search, dominate cost regardless of validity - unlike the old
 # sweep benchmark, there's no reason to seek out an invalid group here.
 # Groups are still picked with a spread of edge counts to keep those

@@ -109,7 +109,7 @@ def find_edges(samples):
     return edges
 
 
-def _period_score(gaps, p):
+def period_score(gaps, p):
     """
     How well rounding every gap to the nearest integer multiple of candidate
     period p explains the observed gaps, as a total (residual/period)^2 score
@@ -142,7 +142,7 @@ def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
     unambiguous.
 
     tolerance>0.0: searches [expected_ratio-tolerance, expected_ratio+tolerance]
-    in 0.04 steps via _period_score, for a profile whose spread is too wide to
+    in 0.04 steps via period_score, for a profile whose spread is too wide to
     trust as a bare constant. No current profile needs it.
 
     Fewer than 2 edges returns None: analyze_capture treats that as a dead
@@ -158,7 +158,7 @@ def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
     p = expected_ratio - tolerance
     end = expected_ratio + tolerance
     while p <= end:
-        score = _period_score(gaps, p)
+        score = period_score(gaps, p)
         if best_score is None or score < best_score:
             best_score = score
             best_period = p

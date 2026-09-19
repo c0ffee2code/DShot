@@ -112,7 +112,7 @@ def is_marker_valid(words):
     return (words[0] >> 31) == 0
 
 
-def _padded_words(words):
+def padded_words(words):
     padded = list(words) + [0] * (4 - len(words))
     return padded[0], padded[1], padded[2], padded[3]
 
@@ -136,7 +136,7 @@ def maybe_sample(state, phase, ticks_us, words, counters):
         take = True
 
     if take:
-        w0, w1, w2, w3 = _padded_words(words)
+        w0, w1, w2, w3 = padded_words(words)
         state.samples.append((ticks_us, phase, len(words), w0, w1, w2, w3))
 
 
@@ -266,7 +266,7 @@ def run_starvation_cycle(states, counters):
 
         restart_required = not recovered
         if restart_required:
-            _restart_and_rearm(state, counters)
+            restart_and_rearm(state, counters)
 
         # The RX FIFO holds at most one capture's worth while stalled, and
         # a stalled RX SM cannot start a new capture cycle at all - so
@@ -286,7 +286,7 @@ def run_starvation_cycle(states, counters):
         })
 
 
-def _restart_and_rearm(state, counters):
+def restart_and_rearm(state, counters):
     # Expensive and, per the arm sequence's back-to-back requirement,
     # likely de-arms the ESC - that cost/frequency is itself the headline
     # datum this path exists to surface. In multi-channel mode this stalls

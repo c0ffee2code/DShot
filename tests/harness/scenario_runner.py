@@ -174,7 +174,7 @@ class ScenarioRunner:
         Each record is a flat 21-tuple:
         (ticks_us, throttle0..3, motor0_w0..w3, motor1_w0..w3,
          motor2_w0..w3, motor3_w0..w3) - matches
-        tests/harness/bidir_capture_sink.py's _RECORD_FMT field order exactly,
+        tests/harness/bidir_capture_sink.py's RECORD_FMT field order exactly,
         so sink.write_record(*record) works directly.
 
         Call this from Core 0 as often as you like - it never blocks and

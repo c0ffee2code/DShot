@@ -28,7 +28,7 @@ from dshot_bidir_decode import analyze_capture
 from scenario import load_scenario
 
 # ticks_us, throttle0..3, then one 4-word GCR group per motor - must match
-# tests/harness/bidir_capture_sink.py's _RECORD_FMT
+# tests/harness/bidir_capture_sink.py's BidirCaptureSink.RECORD_FMT
 _RECORD_FMT = "<I4H16I"
 _RECORD_SIZE = struct.calcsize(_RECORD_FMT)
 

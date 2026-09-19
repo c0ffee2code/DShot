@@ -55,7 +55,7 @@ class Scenario:
         return [i for i, m in enumerate(self.motors) if m.bidirectional]
 
 
-def _pio_block(sm_id):
+def pio_block(sm_id):
     # RP2350: state machine ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2, the same
     # mapping BidirectionalDShot.__init__ enforces. Checked here as well so a
     # scenario with a cross-block bidirectional pair is rejected when it is
@@ -66,10 +66,10 @@ def _pio_block(sm_id):
 def load_scenario(path):
     with open(path) as f:
         data = json.load(f)
-    return _build_scenario(data)
+    return build_scenario(data)
 
 
-def _build_scenario(data):
+def build_scenario(data):
     dshot_speed_name = data["dshot_speed"]
     dshot_speed = DSHOT_SPEED_NAMES.get(dshot_speed_name)
     if dshot_speed is None:
@@ -122,8 +122,8 @@ def _build_scenario(data):
                     "motor " + str(index) + ": rx_sm_id must be sm_id + 1 "
                     "(got sm_id=" + str(sm_id) + ", rx_sm_id=" + str(rx_sm_id) + ")"
                 )
-            block = _pio_block(sm_id)
-            if block != _pio_block(rx_sm_id):
+            block = pio_block(sm_id)
+            if block != pio_block(rx_sm_id):
                 raise ValueError(
                     "motor " + str(index) + ": sm_id " + str(sm_id) + " and rx_sm_id " +
                     str(rx_sm_id) + " must share a PIO block (ids 0-3 -> PIO0, "
@@ -155,7 +155,7 @@ def _build_scenario(data):
     # verify_gcr_decode_port.py or scripts/tally_period_cycles.py against
     # the pulled session afterward to actually check this threshold. The
     # one on-device runtime check that DOES exist is a coarser, cheap
-    # proxy: _check_reply_failsafe in test_scenario_capture.py, which only
+    # proxy: check_reply_failsafe in test_scenario_capture.py, which only
     # asserts "at least one non-all-zero reply appeared" - not a CRC-valid
     # percentage.
     expect = data.get("expect", {})

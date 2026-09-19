@@ -24,7 +24,7 @@ from pathlib import Path
 from dshot_bidir_decode import analyze_capture
 
 # ticks_us, channel, phase, word_count, w0..w3 - must match
-# tests/harness/stress_capture_sink.py's _RECORD_FMT
+# tests/harness/stress_capture_sink.py's StressCaptureSink.RECORD_FMT
 _RECORD_FMT = "<IBBB4I"
 _RECORD_SIZE = struct.calcsize(_RECORD_FMT)
 

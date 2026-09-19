@@ -13,7 +13,7 @@
 #
 # Fail-fast, deliberately: a Core 1 error, a dropped-record/gap/rate
 # violation of the scenario's own "expect" thresholds, a tripped reply
-# failsafe (see _check_reply_failsafe - a record is written on the RX
+# failsafe (see check_reply_failsafe - a record is written on the RX
 # FIFO's own fixed capture cadence, NOT only when the ESC actually replies,
 # so record *count* alone cannot catch a non-replying ESC; bidirectional
 # DShot's contract is a continuous eRPM reply, so a sustained run of
@@ -39,7 +39,7 @@ SCENARIO_PATH = "scenario.json"
 
 
 # Grace window before the reply failsafe is armed. Deliberately short (not
-# the 20s settling window _check_expect's min_record_rate_hz needs, which
+# the 20s settling window check_expect's min_record_rate_hz needs, which
 # is a CUMULATIVE-average threshold and genuinely needs one) - this checks
 # for the mere existence of one real reply, and arming already finished
 # scenario.arm_duration_ms before this function is ever called, so a
@@ -47,10 +47,10 @@ SCENARIO_PATH = "scenario.json"
 # short window also matters practically: short scenarios like
 # period_tally_short.json (duration_ms=8000) need the failsafe to be able
 # to trip at all before the run just ends on its own.
-_REPLY_FAILSAFE_GRACE_MS = 2000
+REPLY_FAILSAFE_GRACE_MS = 2000
 
 
-def _check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
+def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
     # Bidirectional DShot's contract is a continuous eRPM reply every
     # command - unlike a rate/gap threshold, "the ESC has never once
     # replied" is not a tunable performance bar, it's a protocol violation,
@@ -75,7 +75,7 @@ def _check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
     # live motor would mask a silent one. Revisit per-motor tracking then.
     if not has_bidir:
         return
-    if elapsed_ms >= _REPLY_FAILSAFE_GRACE_MS and nonzero_records == 0:
+    if elapsed_ms >= REPLY_FAILSAFE_GRACE_MS and nonzero_records == 0:
         raise RuntimeError(
             "reply failsafe tripped: no ESC reply seen by " + str(elapsed_ms) +
             "ms elapsed (every captured record's words are still all-zero) "
@@ -83,7 +83,7 @@ def _check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
         )
 
 
-def _check_expect(expect, dropped, largest_gap_us, records, elapsed_ms):
+def check_expect(expect, dropped, largest_gap_us, records, elapsed_ms):
     if not expect:
         return
 
@@ -188,8 +188,8 @@ def test_scenario_capture():
                 last_record_us = ticks_us
 
             total_dropped = runner.dropped
-            _check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
-            _check_expect(scenario.expect, total_dropped, largest_gap_us, total_records, elapsed_ms)
+            check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
+            check_expect(scenario.expect, total_dropped, largest_gap_us, total_records, elapsed_ms)
 
             now = utime.ticks_ms()
             if utime.ticks_diff(now, last_status_ms) >= scenario.status_interval_ms:

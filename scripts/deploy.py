@@ -56,6 +56,7 @@ LIBRARY_FILES = [
     ("tests/harness/scenario_runner.py", "scenario_runner.py"),
     ("tests/harness/sdcard.py", "sdcard.py"),
     ("tests/harness/pcf8523.py", "pcf8523.py"),
+    ("tests/harness/capture_sink.py", "capture_sink.py"),
     ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
     ("tests/harness/stress_capture_sink.py", "stress_capture_sink.py"),
 ]

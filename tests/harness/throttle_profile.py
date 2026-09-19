@@ -15,7 +15,7 @@
 # scripts/check_scenario.py smoke test, not just on-device.
 
 
-def _compile(segments, cursor, throttle):
+def compile_segments(segments, cursor, throttle):
     """
     Compile one segment list (a motor's top-level profile, or a repeat's
     inner segments) starting at absolute time `cursor` with the throttle
@@ -73,7 +73,7 @@ def _compile(segments, cursor, throttle):
             iterations = 0
             while cursor - start_cursor < total_ms:
                 before = cursor
-                inner_waypoints, cursor, throttle = _compile(inner, cursor, throttle)
+                inner_waypoints, cursor, throttle = compile_segments(inner, cursor, throttle)
                 waypoints.extend(inner_waypoints)
                 iterations += 1
                 if cursor == before:
@@ -104,12 +104,12 @@ class ThrottleProfile:
     """
 
     def __init__(self, segments):
-        waypoints, total_duration_ms, _ = _compile(segments, 0, 0)
+        waypoints, total_duration_ms, _ = compile_segments(segments, 0, 0)
         if not waypoints or waypoints[0][0] != 0:
             waypoints.insert(0, (0, 0))
         self.waypoints = waypoints
         self.total_duration_ms = total_duration_ms
-        self._cursor = 0
+        self.cursor = 0
 
     def throttle_at(self, elapsed_ms):
         """
@@ -120,8 +120,8 @@ class ThrottleProfile:
         scan, O(1) amortized, not a fresh search from the start each time.
         """
         waypoints = self.waypoints
-        idx = self._cursor
+        idx = self.cursor
         while idx + 1 < len(waypoints) and waypoints[idx + 1][0] <= elapsed_ms:
             idx += 1
-        self._cursor = idx
+        self.cursor = idx
         return waypoints[idx][1]
