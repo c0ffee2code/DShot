@@ -290,6 +290,12 @@ class BidirectionalDShot(DShotPIO):
 
     bidirectional = True
 
+    # Most words drain_rx() takes in one call (4 captures' worth). It bounds how
+    # long one call can hold the command loop - which also feeds TX - if the
+    # receiver keeps producing while the FIFO is being emptied; anything left
+    # over is taken on the next call.
+    RX_DRAIN_LIMIT = 16
+
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600,
                  rx_state_machine_id=None):
         """
@@ -413,12 +419,15 @@ class BidirectionalDShot(DShotPIO):
         the word grouping stays aligned. No decoding happens here - that is
         the application's job, on its own schedule (decode_capture()).
 
-        Must be called from one place only (MotorThrottleGroup.update()): while
-        the command loop runs it is the slot's only writer.
+        Takes at most RX_DRAIN_LIMIT words per call. Must be called from one
+        place only (MotorThrottleGroup.update()): while the command loop runs
+        it is the slot's only writer.
         """
         rx_sm = self.rx_sm
         buf = self.capture_buf
-        while rx_sm.rx_fifo():
+        for _ in range(self.RX_DRAIN_LIMIT):
+            if not rx_sm.rx_fifo():
+                break
             fill = self.capture_fill
             buf[fill] = rx_sm.get()
             fill += 1
