@@ -8,7 +8,7 @@
 import utime
 from array import array
 
-from dshot_pio import DShotPIO, DSHOT_SPEEDS
+from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
 
 # Lifecycle states, as reported by MotorThrottleGroup.state
 DISARMED = 0
@@ -109,9 +109,9 @@ class MotorThrottleGroup:
 
         self.motor_count = len(pins)
 
-        # Create DShotPIO instances internally (SM index = motor index)
+        # Create UnidirectionalDShot instances internally (SM index = motor index)
         self.motors = [
-            DShotPIO(i, pin, dshot_speed) for i, pin in enumerate(pins)
+            UnidirectionalDShot(i, pin, dshot_speed) for i, pin in enumerate(pins)
         ]
 
         # Shared throttle array - lock-free access (atomic on ARM).

@@ -89,10 +89,10 @@ your project.
 
 ```python
 from machine import Pin
-from dshot_pio import DShotPIO, DSHOT_SPEEDS
+from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
 import utime
 
-motor = DShotPIO(0, Pin(4), DSHOT_SPEEDS.DSHOT600)  # SM 0, GPIO 4
+motor = UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600)  # SM 0, GPIO 4
 motor.start()  # Activate PIO state machine
 
 # Arm ESC (send throttle=0 back-to-back for ~500ms). Some ESC firmware needs
@@ -117,7 +117,7 @@ from motor_throttle_group import MotorThrottleGroup
 from core1_runner import Core1Runner  # your code - see tests/harness/core1_runner.py
 import utime
 
-# Create group with Pin objects (DShotPIO instances created internally)
+# Create group with Pin objects (UnidirectionalDShot instances created internally)
 motors = MotorThrottleGroup([Pin(4), Pin(5)], DSHOT_SPEEDS.DSHOT600)
 
 # You choose where the command loop runs. This one dedicates Core 1.

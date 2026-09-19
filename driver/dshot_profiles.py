@@ -39,7 +39,7 @@ class DSHOT_SPEEDS:
 # at rx_speed=8MHz, same measured ~1.28-1.29us reply bit period as DSHOT600).
 #
 # Each entry is {"rx_speed": ..., "expected_ratio": ..., "ratio_tolerance": ...}.
-# rx_speed is the RX state machine's own clock (see DShotPIO.__init__ in
+# rx_speed is the RX state machine's own clock (see BidirectionalDShot.__init__ in
 # dshot_pio.py - independent of dshot_speed, TX and RX have separate clock
 # dividers on the same PIO block). expected_ratio/ratio_tolerance feed
 # gcr_decode.py's estimate_bit_period_fixed (a Betaflight-style fixed

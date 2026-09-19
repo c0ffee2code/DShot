@@ -8,7 +8,7 @@ its hardware-verified history.
 
 from dshot_bidir_decode import analyze_capture, crc_plain, crc_inverted, MOTOR_POLES
 
-RX_CLOCK_HZ = 4_000_000  # see dshot_pio.py's DShotPIO.__init__
+RX_CLOCK_HZ = 4_000_000  # see dshot_pio.py's BidirectionalDShot.__init__
 
 CAPTURES = [
     (100, [0x0ffc1f03, 0xfe007ff0, 0x07fe007e, 0x1fffffff]),

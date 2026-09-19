@@ -35,7 +35,7 @@
 import gc
 
 from machine import Pin
-from dshot_pio import DShotPIO, DSHOT_SPEEDS, BIDIR_PROFILES
+from dshot_pio import BidirectionalDShot, DSHOT_SPEEDS, BIDIR_PROFILES
 from stress_capture_sink import StressCaptureSink
 import utime
 
@@ -383,8 +383,8 @@ def test_bidir_rx_stress():
     try:
         for ch in CHANNELS:
             wiring = CHANNEL_WIRING[ch]
-            motor = DShotPIO(wiring["sm_id"], Pin(wiring["pin"]), DSHOT_SPEED,
-                              bidirectional=True, rx_state_machine_id=wiring["rx_sm_id"])
+            motor = BidirectionalDShot(wiring["sm_id"], Pin(wiring["pin"]), DSHOT_SPEED,
+                                        rx_state_machine_id=wiring["rx_sm_id"])
             motor.start()
             states[ch] = ChannelState(ch, motor)
 

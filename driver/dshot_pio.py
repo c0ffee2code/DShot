@@ -14,6 +14,10 @@ class InvalidThrottleException(Exception):
     def __init__(self,message):
         self.message=message
 
+class UnsupportedOperationException(Exception):
+    def __init__(self,message):
+        self.message=message
+
 # PIO assembly code for sending DShot throttle packets
 # This is set up to transmit the 16 high order bits of a 32 bit input from high to low order
 # Each bit is sent in 8 clock cycles
@@ -31,7 +35,7 @@ def dshot():
 # Bidirectional DShot TX. Same bit timing as dshot() above for every bit
 # (every side-set value flipped, so idle and the "0" duty portion sit HIGH
 # instead of LOW - this is what lets an AM32 ESC auto-detect bidirectional
-# mode; see ADR-002 and DShotPIO.__init__'s bidirectional docstring for why
+# mode; see ADR-002 and BidirectionalDShot's class docstring for why
 # this must be in use for the *entire* arm sequence, not switched in
 # afterward), but unlike dshot() this releases the pin (pindirs -> input)
 # after each 16-bit frame so an RX state machine sharing the same pin - or
@@ -77,7 +81,7 @@ def dshot():
 # resolves at runtime to a flag based on the EXECUTING state machine's own
 # id, so a TX and its paired RX land on the same flag as each other but a
 # DIFFERENT flag than any other pair on the same block - as long as every
-# pair uses the same TX-to-RX id offset, which is why DShotPIO.__init__
+# pair uses the same TX-to-RX id offset, which is why BidirectionalDShot.__init__
 # hard-enforces rx_state_machine_id == state_machine_id + 1 below (TX always
 # fires irq(rel(1)), RX always waits on irq(rel(0)) - see dshot_bidir_rx).
 #
@@ -145,7 +149,7 @@ def dshot_bidir_tx():
 # timing) so software has an unambiguous, self-evident zero to anchor
 # everything else against.
 #
-# `rx_speed` (see DShotPIO.__init__) is chosen independently of any assumed
+# `rx_speed` (see BidirectionalDShot.__init__) is chosen independently of any assumed
 # GCR bitrate - just fast enough to safely oversample the plausible range of
 # real bit periods (previously measured to sit somewhere around 7-8 PIO
 # cycles at the old 3MHz clock, i.e. roughly 2.3-2.7us) with margin on both
@@ -234,90 +238,21 @@ def dshot_bidir_rx():
 
 
 class DShotPIO:
+    """
+    Common base for UnidirectionalDShot and BidirectionalDShot - construct one
+    of those, not this. Holds everything the two share: the TX state machine,
+    start()/stop()/drain(), and send_throttle_command().
+    """
+
     # Words the PIO TX FIFO holds before put() starts blocking
     TX_FIFO_DEPTH = 4
 
+    # Each subclass overrides this. send_throttle_command() inverts the CRC
+    # when it is True, and application code reads it to tell the two apart.
+    bidirectional = False
+
     # Creates the state machine but leaves it inactive - call start() to enable it
-    def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600,
-                 bidirectional=False, rx_state_machine_id=None):
-        """
-        Args:
-            bidirectional: Use the inverted TX waveform an AM32 (or other
-                bidirectional-capable) ESC needs to auto-detect bidirectional
-                DShot. Detection only happens while the ESC is disarmed, so
-                this must be set for the whole arm sequence - there is no way
-                to arm with a normal signal and switch afterward.
-            rx_state_machine_id: Required when bidirectional=True. Creates a
-                second state machine that listens on the same pin for the
-                ESC's GCR telemetry reply (see dshot_bidir_rx). Two
-                constraints, both enforced here:
-                (1) Must be on the same PIO block as state_machine_id - a
-                    GPIO's function select routes to one PIO block at a time
-                    (ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2 on RP2350),
-                    so a TX/RX pair sharing a pin must share a block, since
-                    inter-SM IRQs only reach state machines on the same
-                    block.
-                (2) Must be exactly state_machine_id + 1 - dshot_bidir_tx and
-                    dshot_bidir_rx synchronise via RP2040/2350's relative IRQ
-                    addressing (irq(rel(1)) / irq(rel(0)), not a literal
-                    flag number - see dshot_bidir_tx's comment), which
-                    resolves to a flag based on the EXECUTING state
-                    machine's own id. That only gives each pair on a shared
-                    block its own private flag if every pair uses the same
-                    TX-to-RX id offset - this implementation fixes that
-                    offset at +1. CONFIRMED on hardware 2026-08-30: two
-                    bidirectional pairs sharing one PIO block (channel 1
-                    sm0/rx1, channel 3 sm2/rx3, both on PIO0) each produced
-                    100% CRC-valid, independent telemetry with distinct,
-                    plausible eRPM values - see dshot_bidir_tx's comment and
-                    bidirectional_dshot_review.md's W18 entry for the full
-                    history, including an earlier reverted attempt whose
-                    failure turned out to be an unrelated ESC power issue,
-                    not a driver bug.
-                start() activates both state machines; from then on RX
-                synchronises itself to each TX frame via that IRQ with no
-                further calls needed - just drain rx_read() periodically.
-        """
-        # Validate before claiming any hardware: a constructor that raises
-        # partway through shouldn't leave a stray, half-configured state
-        # machine bound to the pin behind it.
-        if bidirectional:
-            if rx_state_machine_id is None:
-                raise ValueError("rx_state_machine_id is required when bidirectional=True")
-
-            if rx_state_machine_id != state_machine_id + 1:
-                raise ValueError(
-                    "rx_state_machine_id must be state_machine_id + 1 (got "
-                    "state_machine_id=" + str(state_machine_id) +
-                    ", rx_state_machine_id=" + str(rx_state_machine_id) +
-                    ") - the TX/RX pair's relative-IRQ synchronization "
-                    "depends on this fixed offset, see this constructor's "
-                    "own docstring"
-                )
-
-            profile = BIDIR_PROFILES.get(dshot_speed)
-            if profile is None:
-                raise ValueError("bidirectional=True needs a dshot_speed with a verified "
-                                  "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
-            rx_speed = profile["rx_speed"]
-
-        self.bidirectional = bidirectional
-        program = dshot_bidir_tx if bidirectional else dshot
-
-        if bidirectional:
-            # Both sides release the line between frames (see dshot_bidir_tx)
-            # so the other can drive it - with nobody driving, an undriven
-            # pad floats rather than sitting at a defined level, and on this
-            # hardware it was observed floating LOW, which reads as a false
-            # start bit to dshot_bidir_rx's wait(0, pin, 0). A weak pull-up
-            # holds the line at the expected idle-HIGH level whenever neither
-            # side is actively driving, without resisting either one when
-            # they are - the same fix any shared/open-drain-style bus needs.
-            # Pad-level pull config is independent of which peripheral's
-            # FUNCSEL claims the pin, so this holds even once the state
-            # machines below take over.
-            pin.init(Pin.IN, Pin.PULL_UP)
-
+    def __init__(self, state_machine_id, pin, dshot_speed, program):
         self.sm = StateMachine(state_machine_id, program, freq=dshot_speed,
                                 sideset_base=pin, set_base=pin)
 
@@ -325,105 +260,8 @@ class DShotPIO:
         # up so a wait built from it is never short
         self.frame_us = (16 * 8 * 1_000_000 + dshot_speed - 1) // dshot_speed
 
-        self.rx_sm = None
-        self.rx_clock_hz = None
-        self.expected_ratio = None
-        self.ratio_tolerance = 0.0
-        self.telemetry_pending = []
-        self.telemetry_desync_count = 0
-        self.telemetry_consecutive_fail_count = 0
-        if bidirectional:
-            self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx,
-                                       freq=rx_speed, in_base=pin)
-            self.rx_clock_hz = rx_speed
-            self.expected_ratio = profile["expected_ratio"]
-            self.ratio_tolerance = profile["ratio_tolerance"]
-
     def start(self):
-        if self.rx_sm is not None:
-            # Flush any leftover words from a previous run and start RX
-            # listening before TX can release the pin and fire its first
-            # irq(rel(1)) - see dshot_bidir_rx's irq(clear, rel(0)) comment
-            # for the rest of this epoch-clean boundary. A leftover partial
-            # telemetry group from a prior run would otherwise misalign the
-            # first post-restart poll_telemetry() group.
-            while self.rx_sm.rx_fifo():
-                self.rx_sm.get()
-            self.telemetry_pending = []
-            self.rx_sm.active(1)
         self.sm.active(1)
-
-    def rx_read(self):
-        """
-        Return the next raw captured word from the RX FIFO, or None if empty.
-
-        dshot_bidir_rx synchronises itself to every TX frame via a PIO IRQ -
-        no per-read setup call is needed. Each real reply produces four raw
-        32-bit words back to back (128 uniformly-spaced, un-slotted samples
-        covering the marker bit, the 20 real data bits, and idle tail - see
-        dshot_bidir_rx's comments). Raw and unpaired: determining the real
-        bit period/phase from this and decoding into eRPM is a later phase
-        (see ADR-002).
-        """
-        if not self.rx_sm.rx_fifo():
-            return None
-        return self.rx_sm.get()
-
-    def poll_telemetry(self):
-        """
-        Drain up to one complete 4-word capture via rx_read() and, if a
-        group just completed, run it through the real GCR/CRC decode
-        (gcr_decode.analyze_capture) and return the result verbatim.
-
-        Returns None if no group completed this call (nothing queued, or
-        still mid-group) - the same meaning rx_read() and analyze_capture()
-        already use for "nothing here," not a distinct sentinel. Returns
-        analyze_capture()'s dict otherwise: crc_ok is the real validity
-        signal, not the structural "does this look like a capture" check
-        rx_read() alone allows - see decision/ADR-002-bidirectional-dshot.md's
-        2026-09-06/07 characterization entries for why the structural check
-        alone was proven unreliable.
-
-        Never reads more than 4 words per call: the RX FIFO's depth is
-        exactly 4, and dshot_bidir_rx stalls on autopush before a 5th word
-        can ever land, so no call can see more than one group's remainder.
-        """
-        if self.rx_sm is None:
-            raise ValueError("poll_telemetry() needs bidirectional=True")
-
-        for _ in range(4):
-            word = self.rx_read()
-            if word is None:
-                return None
-            self.telemetry_pending.append(word)
-            if len(self.telemetry_pending) < 4:
-                continue
-
-            group = self.telemetry_pending
-            self.telemetry_pending = []
-
-            if (group[0] >> 31) != 0:
-                # The marker bit is always 0 on a real reply - this is
-                # structurally impossible otherwise. In practice this
-                # almost never fires (5 times in ~48,500 groups across
-                # this project's hardware sessions so far, including runs
-                # where real CRC-valid rate was 0%) - a zero reading here
-                # is not evidence of phase alignment, see
-                # telemetry_consecutive_fail_count below for the signal
-                # that actually is discriminating.
-                self.telemetry_desync_count += 1
-
-            result = gcr_decode.analyze_capture(group, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
-            if result is not None and result["crc_ok"]:
-                self.telemetry_consecutive_fail_count = 0
-            elif result is not None and result["full"] is not None:
-                # Symbols decoded, CRC simply didn't match - a genuinely
-                # bad individual reply fails sporadically; a run of these
-                # is what a phase slip in telemetry_pending's grouping
-                # looks like (see poll_telemetry()'s docstring).
-                self.telemetry_consecutive_fail_count += 1
-            return result
-        return None
 
     def drain(self):
         """
@@ -472,10 +310,6 @@ class DShotPIO:
         # the next start(), which is why drain() exists as a separate call.
         self.sm.restart()
 
-        if self.rx_sm is not None:
-            self.rx_sm.active(0)
-            self.rx_sm.restart()
-
     def send_throttle_command(self, throttle):
         """
         Send a throttle command to the ESC.
@@ -506,10 +340,197 @@ class DShotPIO:
 
         # Build 16-bit packet: SSSSSSSSSSSTCCCC (S=throttle, T=telemetry=0, C=CRC)
         dShotPacket = (packetValue << 4) | crc
-        
+
         # Since the state machine consumes the bits from high order to low order, we need to shift the
         #  data all the way to the high bit
         rightPaddedPacket = dShotPacket << 16
 
         # Put the packet into the PIO machine
         self.sm.put(rightPaddedPacket)
+
+
+class UnidirectionalDShot(DShotPIO):
+    """Sends commands only - the plain DShot waveform, no reply capture."""
+
+    def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
+        super().__init__(state_machine_id, pin, dshot_speed, dshot)
+
+
+class BidirectionalDShot(DShotPIO):
+    """
+    Sends commands with the inverted TX waveform an AM32 (or other
+    bidirectional-capable) ESC needs to auto-detect bidirectional DShot, and
+    captures the ESC's GCR telemetry reply on a second state machine sharing
+    the same pin (see dshot_bidir_rx). Detection only happens while the ESC is
+    disarmed, so this class must be in use for the whole arm sequence - there
+    is no way to arm with a normal signal and switch afterward.
+    """
+
+    bidirectional = True
+
+    def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600,
+                 rx_state_machine_id=None):
+        """
+        Args:
+            rx_state_machine_id: Required. The second state machine that
+                listens on the same pin for the ESC's GCR telemetry reply (see
+                dshot_bidir_rx). Two constraints, both enforced here:
+                (1) Must be on the same PIO block as state_machine_id - a
+                    GPIO's function select routes to one PIO block at a time
+                    (ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2 on RP2350),
+                    so a TX/RX pair sharing a pin must share a block, since
+                    inter-SM IRQs only reach state machines on the same
+                    block.
+                (2) Must be exactly state_machine_id + 1 - dshot_bidir_tx and
+                    dshot_bidir_rx synchronise via RP2040/2350's relative IRQ
+                    addressing (irq(rel(1)) / irq(rel(0)), not a literal
+                    flag number - see dshot_bidir_tx's comment), which
+                    resolves to a flag based on the EXECUTING state
+                    machine's own id. That only gives each pair on a shared
+                    block its own private flag if every pair uses the same
+                    TX-to-RX id offset - this implementation fixes that
+                    offset at +1. CONFIRMED on hardware 2026-08-30: two
+                    bidirectional pairs sharing one PIO block (channel 1
+                    sm0/rx1, channel 3 sm2/rx3, both on PIO0) each produced
+                    100% CRC-valid, independent telemetry with distinct,
+                    plausible eRPM values - see dshot_bidir_tx's comment and
+                    bidirectional_dshot_review.md's W18 entry for the full
+                    history, including an earlier reverted attempt whose
+                    failure turned out to be an unrelated ESC power issue,
+                    not a driver bug.
+                start() activates both state machines; from then on RX
+                synchronises itself to each TX frame via that IRQ with no
+                further calls needed - just drain rx_read() periodically.
+        """
+        # Validate before claiming any hardware: a constructor that raises
+        # partway through shouldn't leave a stray, half-configured state
+        # machine bound to the pin behind it.
+        if rx_state_machine_id is None:
+            raise ValueError("rx_state_machine_id is required for BidirectionalDShot")
+
+        if rx_state_machine_id != state_machine_id + 1:
+            raise ValueError(
+                "rx_state_machine_id must be state_machine_id + 1 (got "
+                "state_machine_id=" + str(state_machine_id) +
+                ", rx_state_machine_id=" + str(rx_state_machine_id) +
+                ") - the TX/RX pair's relative-IRQ synchronization "
+                "depends on this fixed offset, see this constructor's "
+                "own docstring"
+            )
+
+        profile = BIDIR_PROFILES.get(dshot_speed)
+        if profile is None:
+            raise ValueError("BidirectionalDShot needs a dshot_speed with a verified "
+                              "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
+        rx_speed = profile["rx_speed"]
+
+        # Both sides release the line between frames (see dshot_bidir_tx)
+        # so the other can drive it - with nobody driving, an undriven
+        # pad floats rather than sitting at a defined level, and on this
+        # hardware it was observed floating LOW, which reads as a false
+        # start bit to dshot_bidir_rx's wait(0, pin, 0). A weak pull-up
+        # holds the line at the expected idle-HIGH level whenever neither
+        # side is actively driving, without resisting either one when
+        # they are - the same fix any shared/open-drain-style bus needs.
+        # Pad-level pull config is independent of which peripheral's
+        # FUNCSEL claims the pin, so this holds even once the state
+        # machines below take over.
+        pin.init(Pin.IN, Pin.PULL_UP)
+
+        super().__init__(state_machine_id, pin, dshot_speed, dshot_bidir_tx)
+
+        self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx,
+                                   freq=rx_speed, in_base=pin)
+        self.rx_clock_hz = rx_speed
+        self.expected_ratio = profile["expected_ratio"]
+        self.ratio_tolerance = profile["ratio_tolerance"]
+        self.telemetry_pending = []
+        self.telemetry_desync_count = 0
+        self.telemetry_consecutive_fail_count = 0
+
+    def start(self):
+        # Flush any leftover words from a previous run and start RX
+        # listening before TX can release the pin and fire its first
+        # irq(rel(1)) - see dshot_bidir_rx's irq(clear, rel(0)) comment
+        # for the rest of this epoch-clean boundary. A leftover partial
+        # telemetry group from a prior run would otherwise misalign the
+        # first post-restart poll_telemetry() group.
+        while self.rx_sm.rx_fifo():
+            self.rx_sm.get()
+        self.telemetry_pending = []
+        self.rx_sm.active(1)
+        super().start()
+
+    def rx_read(self):
+        """
+        Return the next raw captured word from the RX FIFO, or None if empty.
+
+        dshot_bidir_rx synchronises itself to every TX frame via a PIO IRQ -
+        no per-read setup call is needed. Each real reply produces four raw
+        32-bit words back to back (128 uniformly-spaced, un-slotted samples
+        covering the marker bit, the 20 real data bits, and idle tail - see
+        dshot_bidir_rx's comments). Raw and unpaired: determining the real
+        bit period/phase from this and decoding into eRPM is a later phase
+        (see ADR-002).
+        """
+        if not self.rx_sm.rx_fifo():
+            return None
+        return self.rx_sm.get()
+
+    def poll_telemetry(self):
+        """
+        Drain up to one complete 4-word capture via rx_read() and, if a
+        group just completed, run it through the real GCR/CRC decode
+        (gcr_decode.analyze_capture) and return the result verbatim.
+
+        Returns None if no group completed this call (nothing queued, or
+        still mid-group) - the same meaning rx_read() and analyze_capture()
+        already use for "nothing here," not a distinct sentinel. Returns
+        analyze_capture()'s dict otherwise: crc_ok is the real validity
+        signal, not the structural "does this look like a capture" check
+        rx_read() alone allows - see decision/ADR-002-bidirectional-dshot.md's
+        2026-09-06/07 characterization entries for why the structural check
+        alone was proven unreliable.
+
+        Never reads more than 4 words per call: the RX FIFO's depth is
+        exactly 4, and dshot_bidir_rx stalls on autopush before a 5th word
+        can ever land, so no call can see more than one group's remainder.
+        """
+        for _ in range(4):
+            word = self.rx_read()
+            if word is None:
+                return None
+            self.telemetry_pending.append(word)
+            if len(self.telemetry_pending) < 4:
+                continue
+
+            group = self.telemetry_pending
+            self.telemetry_pending = []
+
+            if (group[0] >> 31) != 0:
+                # The marker bit is always 0 on a real reply - this is
+                # structurally impossible otherwise. In practice this
+                # almost never fires (5 times in ~48,500 groups across
+                # this project's hardware sessions so far, including runs
+                # where real CRC-valid rate was 0%) - a zero reading here
+                # is not evidence of phase alignment, see
+                # telemetry_consecutive_fail_count below for the signal
+                # that actually is discriminating.
+                self.telemetry_desync_count += 1
+
+            result = gcr_decode.analyze_capture(group, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
+            if result is not None and result["crc_ok"]:
+                self.telemetry_consecutive_fail_count = 0
+            elif result is not None and result["full"] is not None:
+                # Symbols decoded, CRC simply didn't match - a genuinely
+                # bad individual reply fails sporadically; a run of these
+                # is what a phase slip in telemetry_pending's grouping
+                # looks like (see poll_telemetry()'s docstring).
+                self.telemetry_consecutive_fail_count += 1
+            return result
+        return None
+
+    def stop(self):
+        super().stop()
+        self.rx_sm.active(0)
+        self.rx_sm.restart()

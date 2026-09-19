@@ -28,7 +28,7 @@
 # run on the PC against whatever gets logged.
 
 from machine import Pin
-from dshot_pio import DShotPIO
+from dshot_pio import BidirectionalDShot, UnidirectionalDShot
 from scenario import load_scenario
 from scenario_runner import ScenarioRunner
 from bidir_capture_sink import BidirCaptureSink
@@ -139,8 +139,11 @@ def test_scenario_capture():
 
     try:
         for spec in scenario.motors:
-            motor = DShotPIO(spec.sm_id, Pin(spec.pin), scenario.dshot_speed,
-                              bidirectional=spec.bidirectional, rx_state_machine_id=spec.rx_sm_id)
+            if spec.bidirectional:
+                motor = BidirectionalDShot(spec.sm_id, Pin(spec.pin), scenario.dshot_speed,
+                                            rx_state_machine_id=spec.rx_sm_id)
+            else:
+                motor = UnidirectionalDShot(spec.sm_id, Pin(spec.pin), scenario.dshot_speed)
             motors.append(motor)
             motor.start()
 

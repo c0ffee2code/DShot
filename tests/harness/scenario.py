@@ -57,8 +57,8 @@ class Scenario:
 
 def _pio_block(sm_id):
     # RP2350: state machine ids 0-3 -> PIO0, 4-7 -> PIO1, 8-11 -> PIO2. Must
-    # match DShotPIO.__init__'s own rx_state_machine_id docstring exactly -
-    # DShotPIO itself does not validate this, so a scenario with a
+    # match BidirectionalDShot.__init__'s own rx_state_machine_id docstring exactly -
+    # BidirectionalDShot itself does not validate this, so a scenario with a
     # cross-block bidir pair would otherwise fail confusingly (or silently
     # misbehave) only once armed.
     return sm_id // 4
@@ -105,7 +105,7 @@ def _build_scenario(data):
             if rx_sm_id in seen_sm_ids:
                 raise ValueError("motor " + str(index) + ": duplicate sm_id " + str(rx_sm_id))
             seen_sm_ids.add(rx_sm_id)
-            # Mirrors DShotPIO.__init__'s own two checks exactly (see its
+            # Mirrors BidirectionalDShot.__init__'s own two checks exactly (see its
             # docstring) - failing here means a bad scenario JSON is caught
             # before any hardware is touched, rather than at motor
             # construction time. rx_sm_id must be sm_id+1: dshot_bidir_tx/

@@ -39,7 +39,7 @@ class ScenarioRunner:
     dedicated Core 1 thread, and buffers raw captures for Core 0 to drain.
 
     Usage:
-        runner = ScenarioRunner(motors)  # motors: 4 DShotPIO instances
+        runner = ScenarioRunner(motors)  # motors: 4 DShotPIO subclass instances
         runner.start()                   # begins sending throttle=0 immediately
         utime.sleep_ms(500)               # arm window - continuous zero commands
         runner.set_throttle(0, 300)
@@ -67,7 +67,7 @@ class ScenarioRunner:
     def __init__(self, motors, interval_us=1000, ring_size=512):
         """
         Args:
-            motors: Exactly 4 DShotPIO instances, in motor-index order. Any
+            motors: Exactly 4 UnidirectionalDShot/BidirectionalDShot instances, in motor-index order. Any
                 subset may be bidirectional=True - their rx_read() is
                 drained every tick; do not call rx_read() on any of them
                 from anywhere else once the runner is started.

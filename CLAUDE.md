@@ -50,7 +50,7 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 2. **`DSHOT_SPEEDS` class**: Protocol variant constants, restricted to DSHOT300/600 — the only speeds AM32 documents support for (its README and wiki.am32.ca; DSHOT150 and DSHOT1200 are deliberately not offered, see the class's own comment). Values are clock frequencies: `bit_rate * 8_cycles_per_bit`.
 
-3. **`DShotPIO` class**: Main driver. Creates a PIO state machine on the specified pin (inactive until `start()`), provides `send_throttle_command(throttle)` to send 16-bit packets (11-bit throttle + 1-bit telemetry + 4-bit CRC), and `stop()` to deactivate.
+3. **`DShotPIO` base class, with `UnidirectionalDShot` and `BidirectionalDShot` subclasses**: Main driver. Creates a PIO state machine on the specified pin (inactive until `start()`), provides `send_throttle_command(throttle)` to send 16-bit packets (11-bit throttle + 1-bit telemetry + 4-bit CRC), and `stop()` to deactivate. `BidirectionalDShot` additionally owns the RX state machine that captures the ESC's telemetry reply.
 
 **`driver/motor_throttle_group.py`** - Multi-motor facade (see ADR-004):
 
@@ -106,9 +106,9 @@ runner.stop()
 **Low-level (single motor):**
 ```python
 from machine import Pin
-from dshot_pio import DShotPIO, DSHOT_SPEEDS
+from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
 
-motor = DShotPIO(0, Pin(4), DSHOT_SPEEDS.DSHOT600)
+motor = UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600)
 motor.start()  # Activate PIO state machine
 motor.send_throttle_command(100)  # Must call continuously at 1ms intervals
 motor.stop()   # Deactivate
