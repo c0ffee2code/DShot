@@ -13,8 +13,11 @@
 #      while disarmed, on a bad index raises MotorThrottleGroupException.
 #   3. raw_telemetry() returns None for the whole ARMING window - captures
 #      taken before the ESC arms are echoes of our own transmit.
-#   4. After arming, at a settled throttle, sequence numbers only advance and
-#      the CRC-valid rate of decoded captures matches earlier baselines.
+#   4. After arming, at a settled throttle, sequence numbers only advance,
+#      the CRC-valid rate of decoded captures matches earlier baselines, and
+#      the reported eRPM shows the motor actually spinning. CRC-valid alone
+#      proves only the telemetry link: an armed ESC keeps replying with a
+#      constant at-rest eRPM (917) even when the motor never starts.
 #   5. raw_telemetry() returns None again after disarm().
 #
 # Hardware: 4-in-1 AM32 ESC. Channel 1 -> GPIO 6 (motor + prop mounted, the
@@ -31,11 +34,17 @@ import utime
 
 DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300
 THROTTLE = 100
+# Armed-and-replying is not spinning, so this test checks eRPM as well. The
+# arm window is the 3000ms the bench tests have been run with when checking
+# that the motor spins, rather than the library default.
+ARM_DURATION_MS = 3000
 SETTLE_MS = 500
 SAMPLE_MS = 5000
 MIN_DECODED = 50
 MIN_CRC_VALID_PCT = 98.0
-ARM_TIMEOUT_MS = MotorThrottleGroup.DEFAULT_ARM_DURATION_MS + 1000
+# Throttle 100 sits around 20k eRPM on this bench; at rest the ESC reports 917
+MIN_MEDIAN_ERPM = 10000
+ARM_TIMEOUT_MS = ARM_DURATION_MS + 1000
 
 
 def expect_raises(exception_type, fn, label):
@@ -74,7 +83,7 @@ def test_motor_group_telemetry():
         runner.start()
 
         print("Arming (raw_telemetry must stay None throughout)...")
-        motors.arm()
+        motors.arm(ARM_DURATION_MS)
         arm_start = utime.ticks_ms()
         arm_polls = 0
         while not motors.is_armed():
@@ -95,6 +104,7 @@ def test_motor_group_telemetry():
         last_seq = 0
         decoded = 0
         crc_ok = 0
+        erpms = []
         no_capture = 0
         stale = 0
         max_age_us = 0
@@ -126,6 +136,8 @@ def test_motor_group_telemetry():
             decoded += 1
             if result is not None and result["crc_ok"]:
                 crc_ok += 1
+                if result["erpm"] is not None:
+                    erpms.append(result["erpm"])
 
         print("  captures published by Core 1 (last sequence): " + str(last_seq))
         print("  decoded on Core 0: " + str(decoded) + ", CRC-valid: " + str(crc_ok))
@@ -138,6 +150,15 @@ def test_motor_group_telemetry():
         if pct < MIN_CRC_VALID_PCT:
             raise Exception("FAIL CRC-valid " + str(pct) + "% below " + str(MIN_CRC_VALID_PCT) + "%")
         print("  OK   CRC-valid " + str(pct) + "%")
+
+        if not erpms:
+            raise Exception("FAIL no CRC-valid capture carried an eRPM value")
+        erpms.sort()
+        median_erpm = erpms[len(erpms) // 2]
+        print("  eRPM min/median/max: " + str(erpms[0]) + " / " + str(median_erpm) + " / " + str(erpms[-1]))
+        if median_erpm < MIN_MEDIAN_ERPM:
+            raise Exception("FAIL median eRPM " + str(median_erpm) + " below " + str(MIN_MEDIAN_ERPM) + " - motor is not spinning")
+        print("  OK   motor spinning")
 
     except KeyboardInterrupt:
         print("\nInterrupted!")

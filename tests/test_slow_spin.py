@@ -6,10 +6,8 @@
 # valid DShot signal, not just one - so all 4 get armed together via
 # MotorThrottleGroup; only channel 1 (motor index 0) gets nonzero throttle.
 #
-# An earlier finding claimed this ESC would not complete arming at 500ms
-# even at max frame rate, needing a full 3000ms - that finding didn't
-# reproduce on re-test (see driver/motor_throttle_group.py's
-# DEFAULT_ARM_DURATION_MS and README.md "Verified Parameters").
+# Arming is 3000ms here, explicitly, rather than the library default - the
+# window these tests have been run with when checking that the motor spins.
 #
 # Hardware: 4-in-1 ESC, channel 1 -> GPIO 6 (motor + prop mounted),
 # channels 2-4 -> GPIO 7/8/9 (wired but no motor mounted - idle only).
@@ -28,7 +26,7 @@ MOTOR_PINS = [6, 7, 8, 9]
 DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300
 THROTTLE = 100
 RUN_DURATION_SEC = 10
-ARM_DURATION_MS = MotorThrottleGroup.DEFAULT_ARM_DURATION_MS
+ARM_DURATION_MS = 3000
 
 # Longest acceptable gap between command transmissions before we call the
 # command loop unhealthy. Well under the ESC's own disarm timeout.
