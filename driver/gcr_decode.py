@@ -1,27 +1,25 @@
 """
 On-device bidirectional DShot GCR telemetry decoder - MicroPython, mirrors
-scripts/dshot_bidir_decode.py (the PC-side reference) function-for-function
-for the fixed-ratio decode path. The two differ only in how the bit period is
-found: this module takes it from a tuned profile, the reference can also search
-for it. scripts/verify_gcr_decode_port.py checks that the shared path stays in
-sync - re-run it whenever either file changes.
+scripts/dshot_bidir_decode.py (the PC-side reference) for the fixed-ratio decode
+path. The two differ only in how the bit period is found: this module takes it
+from a tuned profile, the reference can also search for it.
+scripts/verify_gcr_decode_port.py checks that the shared path stays in sync -
+re-run it whenever either file changes.
 
 Decodes the raw captures produced by dshot_bidir_rx: a dense, uniform sampling
 of the pin covering the marker bit, the 20 GCR data bits and the idle tail.
 The real bit period those samples work out to is a per-DShot-speed constant
-(driver/dshot_profiles.py's BIDIR_PROFILES), not something this module
-searches for on every capture - searching is too slow to run on the Pico.
-This module turns the raw waveform into bits using that constant.
+(driver/dshot_profiles.py's BIDIR_PROFILES), not something this module searches
+for on every capture - searching is too slow to run on the Pico.
 
 Each real reply produces FOUR 32-bit words (in_shiftdir=SHIFT_LEFT,
 push_thresh=32): the OLDEST sample in each word is at bit31, the NEWEST at
-bit0. Words concatenate in capture order, giving 128 samples in time order -
-but NOT perfectly uniformly spaced: dshot_bidir_rx's sample loop is a nested
-4x32 structure, which costs 2 extra PIO cycles at each of the 3 "outer pass"
+bit0. Words concatenate in capture order, giving 128 samples in time order - but
+NOT perfectly uniformly spaced: dshot_bidir_rx's sample loop is a nested 4x32
+structure, which costs 2 extra PIO cycles at each of the 3 "outer pass"
 boundaries (every 32 samples) versus the normal 2-cycles/sample gap within a
-pass. This is fully deterministic, so this module tracks each sample's exact
-absolute CYCLE position (not just its index) rather than assuming uniform
-spacing.
+pass. This is fully deterministic, so a sample's position is computed as its
+exact CYCLE (sample_cycle()), not assumed from its index.
 
 Unlike the reference script, check_crc() here accepts ONLY the inverted CRC
 polarity. That is deliberate: every CRC-valid capture from real hardware has
@@ -32,21 +30,27 @@ reference script accepts both because a stray plain hit is diagnostic there;
 this module is the driver's validity gate and has no such use for it.
 
 Method:
-1. Reconstruct the 128-sample time series with exact per-sample cycle
-   positions.
-2. Find the marker's rising edge and use the calling profile's tuned bit
-   period (a fixed constant in cycles, generally NOT an integer -
-   estimate_bit_period_fixed, see its own docstring).
-3. Reconstruct the actual bit sequence via RUN-LENGTH decoding (each run of
-   N cycles between edges contributes round(N/period) bits of that run's
-   value) - NOT by resampling at fixed offsets, which would accumulate
-   phase error deeper into the frame.
-4. The frame is marker (1 bit, always 0) + 20 differentially-encoded data
-   bits = 21 bits total.
-5. Trailing data bits whose value matches idle (1) merge invisibly into the
-   idle run, so run-length reconstruction alone can under-count by 1-2
-   bits; pad with idle-value (1) bits up to FRAME_LENGTH_BITS before
-   decoding - load-bearing, not a fallback.
+1. Find the edges - the samples whose value differs from the one before - by
+   XOR-ing each half-word with itself shifted by one, instead of looking at all
+   128 samples one by one. Only about a dozen samples are edges.
+2. Rebuild the bit sequence via RUN-LENGTH decoding: each run of N cycles
+   between edges contributes round(N/period) bits of that run's value, using the
+   calling profile's tuned bit period (a fixed constant in cycles, generally NOT
+   an integer). NOT by resampling at fixed offsets, which would accumulate phase
+   error deeper into the frame.
+3. The frame is marker (1 bit, always 0) + 20 differentially-encoded data bits =
+   21 bits. Trailing data bits whose value matches idle (1) merge invisibly into
+   the idle run, so run-length reconstruction alone can under-count by 1-2 bits;
+   pad with idle-value (1) bits up to FRAME_LENGTH_BITS - load-bearing, not a
+   fallback.
+4. Differential-decode, then look each 5-bit group up in the GCR table.
+
+Every step works on plain integers, not on lists of per-sample tuples. That is
+about 8 times faster than the per-sample version it replaced (roughly 1.3ms per
+capture instead of 10ms), and it allocates about 16 times less (under 1KB per
+capture instead of 11KB): this runs on the application core, but a garbage
+collection on either core pauses both, so heap churn here shows up as gaps in
+the command loop.
 """
 
 GCR_ENCODE_TABLE = [
@@ -69,6 +73,10 @@ PASS_LENGTH_SAMPLES = 32
 CYCLES_PER_PASS = 66
 CYCLES_PER_SAMPLE_WITHIN_PASS = 2
 
+# Which bit a value with exactly one bit set has, for the 16-bit halves
+# find_edges() scans. (This MicroPython has no int.bit_length().)
+BIT_POSITION = {1 << bit: bit for bit in range(16)}
+
 
 def sample_cycle(global_index):
     p, i = divmod(global_index, PASS_LENGTH_SAMPLES)
@@ -80,32 +88,32 @@ def crc_inverted(data12):
     return (~plain) & 0xF
 
 
-def raw_samples(words):
+def find_edges(words):
     """
-    Flatten 4 32-bit words into a 128-entry list of (cycle, bit) pairs, in
-    time order (oldest first), using the exact non-uniform cycle positions
-    of dshot_bidir_rx's nested sample loop - see module comment.
-    """
-    bits = []
-    for word in words:
-        for bit_pos in range(31, -1, -1):
-            bits.append((word >> bit_pos) & 1)
-    return [(sample_cycle(idx), bit) for idx, bit in enumerate(bits)]
+    Returns the indices, in ascending order, of the samples whose value differs
+    from the previous sample's (samples numbered 0-127 in time order, the top
+    bit of the first word being sample 0).
 
-
-def find_edges(samples):
-    """
-    Returns a list of (cycle, sample_index) pairs where the value changes
-    between consecutive samples. Carrying sample_index (not just the cycle
-    position) lets reconstruct_bits read the transitioned-to value directly
-    by indexing `samples`, instead of re-searching for the nearest sample:
-    find_edges has already looked at exactly that sample to detect the
-    transition, and a search per reconstructed bit is too slow on the Pico.
+    Each word is scanned in two 16-bit halves so no intermediate value passes 30
+    bits: a larger integer is a heap object, and this runs once per capture.
+    Within a half, XOR with the half shifted by one marks the transitions, and
+    clearing the lowest set bit visits them, newest sample first - hence the sort.
     """
     edges = []
-    for i in range(1, len(samples)):
-        if samples[i][1] != samples[i - 1][1]:
-            edges.append((samples[i][0], i))
+    previous = 0  # the last sample of the previous half
+    base = 0
+    for word in words:
+        for half in (word >> 16, word & 0xFFFF):
+            changed = half ^ ((half >> 1) | (previous << 15))
+            if base == 0:
+                changed &= 0x7FFF  # sample 0 has nothing before it
+            while changed:
+                lowest = changed & -changed
+                edges.append(base + 15 - BIT_POSITION[lowest])
+                changed ^= lowest
+            previous = half & 1
+            base += 16
+    edges.sort()
     return edges
 
 
@@ -136,6 +144,8 @@ def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
     from the protocol's nominal bit rate, because ESC oscillators run a few
     percent off nominal (see driver/dshot_profiles.py).
 
+    `edges` is find_edges()' result.
+
     tolerance=0.0 (default): returns expected_ratio directly - a bare fixed
     divisor, the cheapest path. It is valid when the profile's measured spread
     stays well inside half a cycle, so rounding run lengths to bits is
@@ -152,7 +162,8 @@ def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
         return None
     if tolerance <= 0.0:
         return expected_ratio
-    gaps = [edges[i + 1][0] - edges[i][0] for i in range(len(edges) - 1)]
+    cycles = [sample_cycle(e) for e in edges]
+    gaps = [cycles[i + 1] - cycles[i] for i in range(len(cycles) - 1)]
     best_period = None
     best_score = None
     p = expected_ratio - tolerance
@@ -166,58 +177,60 @@ def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
     return best_period
 
 
-def reconstruct_bits(samples, edges, period):
+def reconstruct_frame(words, edges, period):
     """
-    Reconstruct the bit sequence via run-length decoding rather than fixed-
-    offset resampling - see module docstring point 3. Returns bits starting
-    with the marker bit itself, padded with idle-value (1) bits up to
-    FRAME_LENGTH_BITS if the true trailing bits merged into idle (docstring
-    point 5) - this padding is load-bearing, not a fallback.
+    Rebuild the frame by run-length decoding (see the module docstring), as an
+    integer of FRAME_LENGTH_BITS bits with the marker bit at the top.
 
-    Each boundary's value is read directly via the sample index find_edges
-    already carries (samples[idx][1]) rather than re-searching for the
-    nearest sample - see find_edges' docstring.
+    Each run between two edges lasts (cycle of its end - cycle of its start) and
+    holds the value of the sample it starts at, which is the one just after the
+    previous edge (sample 0 for the first run). The idle tail after the last
+    edge is not a run: it carries no bits. If the runs come to fewer than
+    FRAME_LENGTH_BITS, the missing trailing bits are idle-value (1) ones that
+    merged into the tail - this padding is load-bearing, not a fallback - and
+    if they come to more, only the first FRAME_LENGTH_BITS count.
     """
-    boundaries = [(samples[0][0], 0)] + edges
-    bits = []
-    for i in range(len(boundaries) - 1):
-        seg_start, idx = boundaries[i]
-        seg_end = boundaries[i + 1][0]
-        length = seg_end - seg_start
-        val = samples[idx][1]
-        n = max(1, round(length / period))
-        bits.extend([val] * n)
-    while len(bits) < FRAME_LENGTH_BITS:
-        bits.append(1)
-    return bits
+    frame = 0
+    count = 0
+    start_cycle = 1  # sample_cycle(0)
+    value_index = 0
+    for edge in edges:
+        # sample_cycle(edge), written out because this runs for every edge
+        end_cycle = (edge >> 5) * CYCLES_PER_PASS + 1 + (edge & 31) * CYCLES_PER_SAMPLE_WITHIN_PASS
+        n = round((end_cycle - start_cycle) / period)
+        if n < 1:
+            n = 1
+        if (words[value_index >> 5] >> (31 - (value_index & 31))) & 1:
+            frame = (frame << n) | ((1 << n) - 1)
+        else:
+            frame <<= n
+        count += n
+        if count >= FRAME_LENGTH_BITS:
+            return frame >> (count - FRAME_LENGTH_BITS)
+        start_cycle = end_cycle
+        value_index = edge
+    missing = FRAME_LENGTH_BITS - count
+    return (frame << missing) | ((1 << missing) - 1)
 
 
-def decode(bits):
+def decode(frame):
     """
-    Differential-decode + GCR table lookup. bits[0] is the marker (always
-    0); bits[1:21] are the 20 differentially-encoded real data bits, XORed
-    against the immediately preceding bit - prev seeded from the marker's
-    own value (0).
+    Differential-decode + GCR table lookup. `frame` is reconstruct_frame()'s
+    result: its top bit is the marker (always 0) and the 20 bits below it are the
+    real data bits, each XORed against the bit before it, the first against the
+    marker's own value (0) - which is data ^ (data >> 1) over those 20 bits.
+    Returns the 16-bit DShot number (12-bit data + 4-bit CRC), or None if a
+    5-bit group is not a valid GCR symbol.
     """
-    data_bits = bits[1:21]
-    if len(data_bits) < 20:
-        return None
-    prev = 0
-    decoded_bits = []
-    for b in data_bits:
-        decoded_bits.append(b ^ prev)
-        prev = b
-    decoded20 = 0
-    for db in decoded_bits:
-        decoded20 = (decoded20 << 1) | db
-    nibbles = []
+    data = frame & 0xFFFFF
+    decoded20 = data ^ (data >> 1)
+    number = 0
     for shift in (15, 10, 5, 0):
-        symbol = (decoded20 >> shift) & 0x1F
-        nibble = GCR_DECODE_TABLE.get(symbol)
+        nibble = GCR_DECODE_TABLE.get((decoded20 >> shift) & 0x1F)
         if nibble is None:
             return None
-        nibbles.append(nibble)
-    return (nibbles[0] << 12) | (nibbles[1] << 8) | (nibbles[2] << 4) | nibbles[3]
+        number = (number << 4) | nibble
+    return number
 
 
 def check_crc(dshot_full_number):
@@ -251,15 +264,13 @@ def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
       data12         - the 12-bit payload (mantissa + exponent), if decoded
       erpm           - electrical RPM, or None if not decodable/CRC-invalid
     """
-    samples = raw_samples(words)
-    edges = find_edges(samples)
+    edges = find_edges(words)
     if not edges:
         return None
     period = estimate_bit_period_fixed(edges, expected_ratio, ratio_tolerance)
     if period is None:
         return None
-    bits = reconstruct_bits(samples, edges, period)
-    full = decode(bits)
+    full = decode(reconstruct_frame(words, edges, period))
     period_us = period / rx_clock_hz * 1_000_000
     result = {
         "period_cycles": period,

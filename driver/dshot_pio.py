@@ -456,8 +456,9 @@ class BidirectionalDShot(DShotPIO):
         Decode one raw capture with this motor's own RX profile and return
         gcr_decode.analyze_capture()'s result dict (crc_ok is the validity
         signal - a capture that is complete and correctly framed can still
-        fail it). Costs 10-20ms on the Pico; call it at whatever pace the
-        application can afford, never from the command loop.
+        fail it). Costs about 1.3ms on the Pico, several command-loop ticks;
+        call it at whatever pace the application can afford, never from the
+        command loop.
         """
         return gcr_decode.analyze_capture(words, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
 

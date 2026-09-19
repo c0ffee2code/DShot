@@ -62,29 +62,30 @@ def stage_breakdown(words, rx_clock_hz, expected_ratio, label, iterations=10):
     """Bracket each pipeline stage separately to find which one actually
     dominates cost - the whole-pipeline number alone can't tell an
     expensive linear scan in one stage from another."""
-    raw_us, edges_us, period_us, bits_us = [], [], [], []
+    edges_us, period_us, frame_us, decode_us = [], [], [], []
     for _ in range(iterations):
         t0 = utime.ticks_us()
-        samples = gcr_decode.raw_samples(words)
+        edges = gcr_decode.find_edges(words)
         t1 = utime.ticks_us()
-        edges = gcr_decode.find_edges(samples)
-        t2 = utime.ticks_us()
         period = gcr_decode.estimate_bit_period_fixed(edges, expected_ratio, 0.0)
+        t2 = utime.ticks_us()
+        frame = gcr_decode.reconstruct_frame(words, edges, period)
         t3 = utime.ticks_us()
-        gcr_decode.reconstruct_bits(samples, edges, period)
+        gcr_decode.decode(frame)
         t4 = utime.ticks_us()
-        raw_us.append(utime.ticks_diff(t1, t0))
-        edges_us.append(utime.ticks_diff(t2, t1))
-        period_us.append(utime.ticks_diff(t3, t2))
-        bits_us.append(utime.ticks_diff(t4, t3))
+        edges_us.append(utime.ticks_diff(t1, t0))
+        period_us.append(utime.ticks_diff(t2, t1))
+        frame_us.append(utime.ticks_diff(t3, t2))
+        decode_us.append(utime.ticks_diff(t4, t3))
 
-    total = sum(raw_us) + sum(edges_us) + sum(period_us) + sum(bits_us)
-    print("  [{}] edges={} raw_samples={:.0f}us find_edges={:.0f}us "
-          "estimate_bit_period_fixed={:.0f}us ({:.0f}%) reconstruct_bits={:.0f}us ({:.0f}%)".format(
+    total = sum(edges_us) + sum(period_us) + sum(frame_us) + sum(decode_us)
+    print("  [{}] edges={} find_edges={:.0f}us ({:.0f}%) estimate_bit_period_fixed={:.0f}us "
+          "reconstruct_frame={:.0f}us ({:.0f}%) decode={:.0f}us ({:.0f}%)".format(
               label, len(edges),
-              sum(raw_us) / iterations, sum(edges_us) / iterations,
-              sum(period_us) / iterations, sum(period_us) / total * 100,
-              sum(bits_us) / iterations, sum(bits_us) / total * 100))
+              sum(edges_us) / iterations, sum(edges_us) / total * 100,
+              sum(period_us) / iterations,
+              sum(frame_us) / iterations, sum(frame_us) / total * 100,
+              sum(decode_us) / iterations, sum(decode_us) / total * 100))
 
 
 def bench_one(label, groups, rx_clock_hz, expected_ratio):
