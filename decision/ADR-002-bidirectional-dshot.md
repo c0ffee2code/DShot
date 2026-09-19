@@ -2,17 +2,44 @@
 
 **Status:** Deferred — superseded by the 2026-08 implementation work below (RX
 capture + eRPM decode verified on hardware, 100% CRC-valid across two
-independent confirmation sweeps). Formal flip to Accepted is pending Phase
-4/5/6 (driver integration, docs) per the project plan; not yet done. The
+independent confirmation sweeps). The driver now exposes bidirectional
+telemetry through `BidirectionalDShot` and `MotorThrottleGroup` (see
+[ADR-005](ADR-005-bidirectional-telemetry-data-flow.md)); the formal flip to
+Accepted is still pending, as decoding non-eRPM frames (extended telemetry, the
+stopped-motor value) and the motor pole count are still open. The
 "Implementation Update (2026-08-23)" section and everything below it hold
 the real investigation history, including dead ends - each subsection's own
 heading/status line says whether it's verified or superseded, so read those
 markers rather than assuming everything under "Implementation Update" is
 final. Sections above "Implementation Update" are this ADR's original
 pre-implementation analysis and contain some estimates/assumptions later
-found inaccurate (flagged inline where relevant).
+found inaccurate (flagged inline where relevant). Test scripts and tooling
+named in the dated sections below (`test_bidir_rx_*.py`,
+`decode_bidir_capture.py`'s early forms and similar) were retired once their
+findings were recorded here; read those names as provenance, not as things
+you can still run.
 **Date:** 2026-02-01 (original analysis); implementation findings added 2026-08-23/24
 **Context:** Exploring ESC telemetry via bidirectional DShot for the test bench
+
+## Verification status
+
+What has and has not been shown on hardware, kept current as gates pass. Each
+row's evidence is in the dated sections below.
+
+| Layer | Status |
+|---|---|
+| Inverted TX (ESC detects bidirectional mode) | Verified |
+| Physical RX capture | Verified |
+| GCR decode | Verified |
+| CRC validation (inverted polarity only) | Verified |
+| eRPM value from a CRC-valid eRPM frame | Verified; mechanical RPM is not - the motor pole count is an unverified constant |
+| Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing); corruption after a stall under the production command loop not re-tested |
+| RX FIFO management | Drained on every command-loop tick, capped per call (ADR-005); steady operation verified, deliberate consumer stalls not re-tested |
+| Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4 fails and is parked, cause unknown; four bidirectional motors through the facade not verified |
+| Public API integration | Implemented (`BidirectionalDShot`, `MotorThrottleGroup`); one bidirectional motor verified through the facade, several not yet |
+| DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
+| Non-eRPM frames (extended telemetry, stopped-motor value) | Not handled |
+| Telemetry loss and health tracking | Not implemented |
 
 ## Context
 
@@ -51,6 +78,11 @@ Stock BLHeli_S firmware does not support bidirectional DShot. Alternative firmwa
 
 ### Recommendation: Bluejay
 
+*Superseded: this project supports exactly two ESC firmware families -
+BLHeli_S (unidirectional only, in its stock form) and AM32 (bidirectional).
+No Bluejay flash is planned, and the AM32 ESC that arrived on the bench made
+this recommendation moot. Kept as the original analysis.*
+
 Bluejay is the recommended path for the current ESCs:
 - Free and open source
 - Active development community
@@ -87,7 +119,7 @@ Bidirectional DShot:
 | Signal polarity | Normal (HIGH=1) | Inverted (HIGH=0) |
 | CRC calculation | `(value ^ (value >> 4) ^ (value >> 8)) & 0x0F` | Inverted: `~crc & 0x0F` |
 | Communication | Unidirectional (FC→ESC) | Half-duplex (FC↔ESC) |
-| Update rate | Full speed | ~50% (wait for response) |
+| Update rate | Full speed | ~50% (wait for response) - a pre-implementation estimate, never measured; the driver's loop rate is set by the application, not by waiting for the reply |
 
 ### GCR Encoding
 
@@ -103,9 +135,9 @@ ESC response uses GCR (Group Code Recording) for noise immunity:
 **GCR Symbol Table** (corrected 2026-08-23 against AM32 firmware source,
 `Src/dshot.c`'s `gcr_encode_table[16]` - the table originally here agreed
 with AM32's real table on only 7 of 16 entries and diverged on the rest; see
-"Implementation Update" below for the source-verification method and for a
-separate, related finding that `specification/DSHOT_PROTOCOL.md`'s own GCR
-table is also wrong against this same source):
+"Implementation Update" below for the source-verification method.
+`specification/DSHOT_PROTOCOL.md` never carried a symbol table of its own, and
+now states that the encode table matches AM32's exactly):
 
 | Nibble | GCR | Nibble | GCR |
 |--------|-----|--------|-----|
@@ -166,9 +198,14 @@ decoded20 = gcr_value ^ (gcr_value >> 1)
 nibbles = [GCR_DECODE_TABLE[(decoded20 >> shift) & 0x1F] for shift in (15, 10, 5, 0)]
 dshot_full_number = (nibbles[0] << 12) | (nibbles[1] << 8) | (nibbles[2] << 4) | nibbles[3]
 
-# 3. Extract CRC + data fields from the reassembled 16-bit number
+# 3. Extract CRC + data fields from the reassembled 16-bit number, and check
+#    the CRC before trusting anything else. AM32 sends the INVERTED polarity
+#    (every CRC-valid capture from real hardware has been inverted, none
+#    plain), so the expected value is the complement of the usual nibble XOR.
 crc = dshot_full_number & 0x0F
 data12 = (dshot_full_number >> 4) & 0xFFF
+if crc != (~(data12 ^ (data12 >> 4) ^ (data12 >> 8))) & 0x0F:
+    return None                    # not a valid reply - discard it
 mantissa = data12 & 0x1FF          # 9 bits
 exponent = (data12 >> 9) & 0x07    # 3 bits
 
@@ -307,8 +344,11 @@ At DShot600:
 describe what was actually built or measured.** Channel 1 (the only
 bidirectional channel implemented) runs DShot300, not DShot600. The 30µs
 turnaround figure in particular was a generic estimate that hardware
-measurement later replaced: the real fixed delay before RX starts listening
-is ~4.7µs (see "Implementation Update"'s RX redesign section), not 30µs. The
+measurement later replaced: the real delay before RX starts listening is about
+14 RX cycles - roughly 4.15µs at DSHOT300's current RX clock (~4.7µs was the
+figure at the 3MHz clock of the superseded design, see "Implementation
+Update"'s RX redesign section) - not 30µs, and it is only a lower bound that
+keeps RX from re-triggering on TX's own tail, not the reply's start. The
 actual per-cycle timing is in any case dominated by the application's own
 update-loop cadence (tests hold each throttle step for seconds), not by this
 protocol-level minimum - these numbers were never load-bearing for anything
@@ -406,12 +446,12 @@ candidates so they survive context resets, not a final decision.
   simply alternates receive/reply on every DMA completion once
   `armed && dshot_telemetry`).
 - AM32's real `gcr_encode_table[16]` (`Src/dshot.c`) does **not** match the
-  GCR symbol table in `specification/DSHOT_PROTOCOL.md` - they agree on 6 of
-  16 entries and diverge after that. That spec table is wrong (or at least
-  not what this firmware implements) and needs fixing before it's trusted
-  for a decoder. Confirmed independently: it matches betaflight's own
-  `gcrs[]` reverse-lookup table exactly (see below), so the AM32-derived
-  table is the one to build a decoder against.
+  GCR symbol table this ADR originally carried - they agree on 7 of 16
+  entries and diverge after that. That original table was wrong (or at least
+  not what this firmware implements) and could not be trusted for a decoder.
+  Confirmed independently: AM32's table matches betaflight's own `gcrs[]`
+  reverse-lookup table exactly (see below), so the AM32-derived table is the
+  one to build a decoder against.
 
 ### Hardware findings from Phase 2/3 bring-up
 
@@ -482,7 +522,12 @@ implementation:
   SMs is now a preference (keeps the Phase-2-verified TX program untouched),
   not a technical necessity.
 
-### Design candidates for RX synchronization (not yet decided)
+### Design candidates for RX synchronization (decided: Option A' was built and is what ships)
+
+*The decision this heading once left open has been made: the dual-SM IRQ
+handshake below is the implemented design, and the transaction model built on
+it is recorded in [ADR-005](ADR-005-bidirectional-telemetry-data-flow.md).
+Option B is not being pursued. The text below is the original weighing.*
 
 **Option A' - keep dual-SM, add a PIO-to-PIO IRQ handshake.** TX program
 (unchanged from the Phase-2-verified waveform) raises a PIO IRQ right after
@@ -492,14 +537,16 @@ machines already sit on the same PIO block (required since they share a
 GPIO), which PIO IRQ signalling needs anyway.
 - Pro: the exact TX waveform already arm-verified on this ESC never
   changes - zero new risk to arming, which was thought fragile at the time
-  this option was weighed (500ms arm duration was believed not enough,
-  requiring 3000ms). That finding was later re-tested (2026-09-12) after a
-  board-reset bug in the test tooling was found and fixed, and did not
-  reproduce - 500ms (down to 300ms) armed cleanly under the corrected
-  workflow, confirmed via genuine telemetry replies. Arming is less fragile
-  than this section assumed when it was written; the option's pro still
-  held for the actual reason argued (an unchanged, already-verified TX
-  waveform carries zero new risk), just not for this specific timing claim.
+  this option was weighed (a 500ms arm window was believed not enough,
+  requiring 3000ms). That fragility claim came from test runs made before the
+  board-reset problem described below was found, so it is unconfirmed rather
+  than disproven: a later re-test (2026-09-12) showed the ESC replying with
+  telemetry at arm windows of 300-1000ms, but a telemetry reply only shows
+  the ESC is armed, not that the motor runs, and the runs that checked the
+  reported eRPM saw the motor at rest at those windows in some runs and
+  spinning in others; the cause was not established. The option's pro holds
+  for the reason argued - an unchanged, already-verified TX waveform carries
+  zero new risk.
 - Con: PIO inter-SM IRQ handshaking is new ground for this codebase; two
   programs to keep in sync; not a direct port of a working reference.
 
@@ -557,7 +604,11 @@ re-derive it.
    sample transitions (histogram of run widths in cycles, read as sample
    counts rather than raw cycles) confirmed the RX clock and the 8-cycles/
    bit design were both correct all along - `rx_speed`'s 5/4 multiplier is
-   right and should not be touched. The predelay was shortened to ~4.7µs
+   right and should not be touched. *(Disproven later, and not a standing
+   instruction: the real bit period measured a few percent off the 5/4-derived
+   figure, and that small mismatch, accumulating over the frame, is what
+   defeated this design - see "RX redesign: unslotted dense oversampling".)*
+   The predelay was shortened to ~4.7µs at that design's 3MHz clock
    (`set(x, 1)` instead of `set(x, 11)`), and a related 1-cycle bug in the
    marker-skip (`wait(0, pin, 0)` consumes a cycle on trigger that the
    following `nop()[7]` didn't account for, making the skip 9 cycles instead
@@ -765,7 +816,10 @@ clean bits from it.
 **Status: Phase 3 verified. Not yet integrated into `MotorThrottleGroup` or
 `DShotPIO`'s public API** (Phase 4/5 per the original plan) - the decode
 pipeline currently lives only in the offline `scripts/decode_bidir_capture.py`
-tool. The 128-sample/4-word capture width and `MAX_SNAPSHOT_WORDS` in
+tool. *(As of 2026-09: the decode now also runs on the device in
+`driver/gcr_decode.py`, and telemetry is exposed through `BidirectionalDShot`
+and `MotorThrottleGroup` - see ADR-005. This paragraph describes the state on
+2026-08-23.)* The 128-sample/4-word capture width and `MAX_SNAPSHOT_WORDS` in
 `tests/test_bidir_rx_raw.py` are still sized for investigation (generous
 margin for finding period/alignment), not necessarily final production
 values - revisit if/when integrating into the driver proper.
@@ -981,6 +1035,10 @@ done.
 
 ### Implications for the RX-synchronization decision (2026-09-06)
 
+*The decision discussed here has since been made: keep the dual-SM handshake,
+drain the RX FIFO on every command-loop tick, decode elsewhere, and gate
+captures on the CRC - see [ADR-005](ADR-005-bidirectional-telemetry-data-flow.md).*
+
 The two characterization runs above change what the open synchronization
 decision actually needs to solve.
 
@@ -1079,6 +1137,14 @@ structurally perfect capture taken right after a stall is, reliably, not
 a valid one.
 
 ### On-device telemetry validity check: real GCR/CRC decode replaces the structural check (2026-09-08/09)
+
+*Superseded in part (2026-09): the `poll_telemetry()` method described below
+bundled draining and decoding and has been removed. `BidirectionalDShot` now
+drains in `drain_rx()`, hands out the latest capture via `latest_capture()`,
+and decodes on request via `decode_capture()` (see ADR-005); the decode
+algorithm and its timing findings below are unchanged. The remark that no
+telemetry consumer exists yet is also out of date: `MotorThrottleGroup`
+integration has since been done.*
 
 The two characterization sections above ("Unpaced continuous send/drain
 characterization" and "RX-starvation and recovery characterization")
