@@ -1473,6 +1473,8 @@ channel actually driving a motor) remains genuinely outstanding, unchanged in su
 if anything, W11 (which would give `poll_telemetry()` its first real caller) is now the more
 natural path to finally exercising it live, rather than a standalone comparison harness.
 
+*Note (2026-09-19, later):* the decoder now works on integers instead of per-sample tuples: about 1.3ms per capture (was about 10ms) and under 1KB allocated (was 11KB), with identical results to the previous decoder on every real capture and on 400,000 fuzzed ones; `verify_gcr_decode_port.py` shows 0 mismatches over 690,901 groups. See ADR-002's performance section.
+
 *Note (2026-09-19):* `poll_telemetry()` no longer exists - draining and decoding were split
 (`drain_rx()` on the command loop, `decode_capture()` on the application's schedule, see
 ADR-005) - so the "first real caller" this item was waiting on arrived as

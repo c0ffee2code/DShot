@@ -1495,6 +1495,67 @@ The cause is unknown (its pin, wiring or ESC channel are all candidates) and
 it is parked; the relative-IRQ mechanism itself is confirmed by the other
 three channels.
 
+### Command-loop and decode performance (2026-09-19)
+
+Measured on the bench board (MicroPython v1.28.0, 150MHz, no global interpreter
+lock) with no ESC or motor: state machines on unused pins, the transmitter's own
+waveform captured as stand-in replies. The benchmarks are `tests/bench_cpu_costs.py`,
+`bench_loop_gaps.py`, `bench_drain_real.py` and `bench_decode.py`.
+
+**Where the time goes.** The interpreter is slow on this build - an empty loop
+iteration takes 1.7us - and cost follows bytecode and call count, not the work
+being done: a plain function call is 4.3us, a method call 16us, a class-attribute
+read through an instance 5.5us (an instance attribute 0.8us), and a small
+allocation 5-30us. The command loop is therefore CPU-bound, never wire-bound:
+one unidirectional motor's tick took 139us against 53us of wire time, four took
+318us, and adding one bidirectional motor whose RX state machine had words to
+drain took it to 658us.
+
+**Heap churn and stalls.** Reading the RX FIFO word by word makes a Python
+integer per word, and any word above 30 bits is a heap object: about 74 bytes per
+capture, over 100KB/s of garbage from the command loop alone. A garbage
+collection on either core pauses both. Forced collections on the application
+core stalled the command loop for up to 4.9ms on a small heap and for over 10ms
+(up to 14ms) with 150KB live; the old per-sample decoder, allocating 11KB per
+capture, stalled it for up to 12ms. Sustained allocation on the application core
+cut the loop's rate about 2.5 times, and with collection disabled for the same
+allocation the loop recovered, so it is the collections, not the allocations,
+that cost. A stall long enough to leave the RX FIFO undrained is the condition
+the earlier starvation runs tied to corrupted captures, which makes garbage
+collection a plausible cause of the unexplained mid-run CRC failures; that link
+has not been shown on a real ESC.
+
+**What changed.**
+
+- The drain reads a whole capture with one bulk `get(array)`, straight into the
+  published slot, when 4 words are waiting. That is 15us and no allocation
+  against about 50us and 74 bytes for four reads plus about 400us of bookkeeping
+  in the loop. A tick with one bidirectional motor went from 388us to 175us and
+  from 73 bytes allocated to none; four unidirectional plus one bidirectional
+  motor went from 658us (1,519 ticks/s, 973 of about 4,500 ticks over 1ms) to
+  366us (2,730 ticks/s, none over 1ms, worst tick 448us), and the command loop's
+  own allocation from 113KB/s to 1.4KB/s.
+- `send_throttle_command` passes the 16-bit packet to `put(packet, 16)` and lets
+  the C side do the shift. Shifting in Python made a heap integer per frame at
+  higher throttle. The words put on the FIFO were checked to be identical for
+  every throttle in both CRC polarities (`tests/test_put_shift.py`), and sends
+  now allocate nothing.
+- The decoder works on integers: the edges come from XOR-ing each half-word with
+  itself shifted by one, the frame is built as an integer and differential
+  decoding is one XOR. A decode went from 10.1ms and 11KB allocated to 1.3ms and
+  under 1KB. Its results are identical to the previous decoder on 5.57 million
+  comparisons over every real session on disk (five bit-period ratios) and on
+  400,000 random captures, and `scripts/verify_gcr_decode_port.py` reports no
+  mismatch against the PC-side reference over 690,901 groups.
+
+**Not addressed.** `send_throttle_command` still costs about 53us per motor, of
+which the packet arithmetic is about 7us, and `update()` has about 87us of fixed
+overhead per tick; a lookup table of packets and a flattened loop measured about
+10 times faster in a prototype but restructure the hot path and move the
+throttle validation, so they were left. When to collect garbage - for example at
+points where a stall is harmless - is a scheduling matter for the application.
+The scenario harness's `ScenarioRunner` still reads words one at a time.
+
 ## References
 
 - [Brushless Whoop - Bidirectional DShot](https://brushlesswhoop.com/dshot-and-bidirectional-dshot/)
