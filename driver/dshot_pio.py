@@ -266,12 +266,11 @@ class DShotPIO:
         # Build 16-bit packet: SSSSSSSSSSSTCCCC (S=throttle, T=telemetry=0, C=CRC)
         dShotPacket = (packetValue << 4) | crc
 
-        # Since the state machine consumes the bits from high order to low order, we need to shift the
-        #  data all the way to the high bit
-        rightPaddedPacket = dShotPacket << 16
-
-        # Put the packet into the PIO machine
-        self.sm.put(rightPaddedPacket)
+        # The state machine consumes the bits from high order to low order, so the
+        # 16-bit packet has to sit in the top of the 32-bit word. put() shifts it
+        # there itself: shifting in Python instead makes a heap integer once the
+        # value passes 30 bits, an allocation on every frame at higher throttle.
+        self.sm.put(dShotPacket, 16)
 
     # The telemetry interface every motor shares. Only BidirectionalDShot
     # captures replies, so these raise by default: reaching one on a
@@ -307,11 +306,11 @@ class BidirectionalDShot(DShotPIO):
 
     bidirectional = True
 
-    # Most words drain_rx() takes in one call (4 captures' worth). It bounds how
-    # long one call can hold the command loop - which also feeds TX - if the
-    # receiver keeps producing while the FIFO is being emptied; anything left
-    # over is taken on the next call.
-    RX_DRAIN_LIMIT = 16
+    # Most captures drain_rx() takes in one call. It bounds how long one call can
+    # hold the command loop - which also feeds TX - if the receiver keeps
+    # producing while the FIFO is being emptied; anything left over is taken on
+    # the next call.
+    RX_DRAIN_LIMIT = 4
 
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600,
                  rx_state_machine_id=None):
@@ -389,15 +388,15 @@ class BidirectionalDShot(DShotPIO):
         #
         # drain_rx(publish) empties the RX FIFO. Call it on every command-loop
         # tick: an undrained FIFO stalls the RX state machine, and the captures
-        # taken right after a stall come back corrupted (see ADR-002). Words
-        # accumulate into 4-word captures; a completed one replaces the single
-        # published capture (read it with latest_capture()) when `publish` is
-        # true and is dropped otherwise, and either way the word grouping stays
-        # aligned. It takes at most RX_DRAIN_LIMIT words per call, does no
-        # decoding (that is the application's job, on its own schedule - see
-        # decode_capture()), and must be called from one place only
-        # (MotorThrottleGroup.update()): while the loop runs it is the only
-        # writer of the published capture.
+        # taken right after a stall come back corrupted (see ADR-002). It takes
+        # whole 4-word captures only, leaving fewer than 4 waiting words for the
+        # next call, so the grouping cannot slip; a completed capture replaces
+        # the single published one (read it with latest_capture()) when
+        # `publish` is true and is dropped otherwise. It takes at most
+        # RX_DRAIN_LIMIT captures per call, does no decoding (that is the
+        # application's job, on its own schedule - see decode_capture()), and
+        # must be called from one place only (MotorThrottleGroup.update()):
+        # while the loop runs it is the only writer of the published capture.
         #
         # It is the mailbox's own method, bound here, rather than a method of
         # this class that calls the mailbox: it runs on every tick, and a

@@ -42,22 +42,26 @@ def word(n, j):
 
 
 class FakeRxStateMachine:
-    """A receive FIFO that is never empty, handing out capture 0, 1, 2, ... in order."""
+    """A receive FIFO that always holds a capture, handing out capture 0, 1, 2, ... in order."""
 
     def __init__(self):
         self.n = 0
-        self.j = 0
+        self.next_words = (0, 0, 0, 0)
 
     def rx_fifo(self):
+        # The words are worked out here, outside the writer's update window, so
+        # get() below is as cheap as the real bulk read: what the reader races
+        # against is a few array stores, not this test's arithmetic
+        self.next_words = (word(self.n, 0), word(self.n, 1), word(self.n, 2), word(self.n, 3))
         return 4
 
-    def get(self):
-        w = word(self.n, self.j)
-        self.j += 1
-        if self.j == 4:
-            self.j = 0
-            self.n += 1
-        return w
+    def get(self, buf):
+        words = self.next_words
+        buf[0] = words[0]
+        buf[1] = words[1]
+        buf[2] = words[2]
+        buf[3] = words[3]
+        self.n += 1
 
 
 class Writer:

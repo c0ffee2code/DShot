@@ -1,22 +1,28 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# CaptureMailbox: assembles an ESC's telemetry reply from the words the RX state
-# machine produces, and holds the latest completed one for another core to read.
+# CaptureMailbox: takes an ESC's telemetry reply from the RX state machine and
+# holds the latest completed one for another core to read.
 #
 # Pure Python with no hardware imports, so it can be exercised on a PC and kept
 # apart from the PIO driver that feeds it (see BidirectionalDShot).
 
 from array import array
 
+# Words in one capture: 128 samples, 32 per word
+WORDS = 4
+
 
 class CaptureMailbox:
     """
-    One writer drains words into it; any other core may read the latest capture.
+    One writer drains captures into it; any other core may read the latest one.
 
-    A reply arrives as 4 words (128 samples). drain() collects them from a word
-    source (the RX state machine's FIFO) and publishes each completed capture
-    into the single published slot. The slot keeps only the latest capture: the
-    application samples telemetry, so a newer capture always replaces an older
-    one.
+    A reply arrives as exactly 4 words. drain() takes a whole capture from the
+    source (the RX state machine's FIFO) in one bulk read, straight into the
+    published slot. The slot keeps only the latest capture: the application
+    samples telemetry, so a newer capture always replaces an older one.
+
+    Only whole captures are ever read. The RX FIFO is exactly one capture deep,
+    so a capture is complete when 4 words are waiting; with fewer, drain() leaves
+    them where they are, and the word grouping cannot slip.
 
     The two cores run in parallel with no global interpreter lock, and a
     capture is several stores, so a reader could otherwise see half of one
@@ -25,15 +31,14 @@ class CaptureMailbox:
     mid-update, even means stable. The reader copies the words and accepts them
     only if the counter was even and unchanged across the copy.
 
-    drain() runs on every command-loop tick, so it is written for the hot path:
-    every buffer is allocated once, because allocating costs time and invites
-    garbage-collection pauses, and it is one flat function with no calls to
-    helpers of its own, because a Python-level call here costs about as much as
-    the rest of the loop body.
+    drain() runs on every command-loop tick, so it is written for the hot path.
+    Reading a capture as one bulk get() into a preallocated array costs about a
+    quarter of four separate get() calls and allocates nothing: a single get()
+    returns a Python integer, and a 32-bit word above 30 bits is a heap object,
+    which fed the garbage collector and stalled both cores when it ran. It is
+    also one flat function with no calls to helpers of its own, because a
+    Python-level call here costs about as much as the rest of the loop body.
     """
-
-    # Words in one capture
-    WORDS = 4
 
     # How many times latest() re-reads a slot the writer keeps rewriting before
     # giving up, so a reader can never spin
@@ -42,9 +47,10 @@ class CaptureMailbox:
     def __init__(self, source, limit, clock):
         """
         Args:
-            source: Where words come from - anything with rx_fifo() (how many
-                are waiting) and get() (take one), like an RX state machine.
-            limit: Most words one drain() call takes.
+            source: Where captures come from - anything with rx_fifo() (how many
+                words are waiting) and get(buffer) (fill an array with that many
+                words, blocking if fewer are waiting), like an RX state machine.
+            limit: Most captures one drain() call takes.
             clock: Zero-argument callable returning a timestamp in microseconds
                 (utime.ticks_us on the device), used to stamp published captures.
         """
@@ -52,52 +58,39 @@ class CaptureMailbox:
         self.limit = limit
         self.clock = clock
 
-        # The capture being assembled. A partial group carries over between
-        # drain() calls, so it survives being drained in several pieces.
-        self.buf = array('I', [0] * self.WORDS)
-        self.fill = 0
-
-        self.slot_words = array('I', [0] * self.WORDS)
+        self.slot_words = array('I', [0] * WORDS)
         self.slot_ticks_us = 0
         self.slot_seq = 0
 
+        # Where a capture goes when it is being dropped rather than published
+        self.scratch = array('I', [0] * WORDS)
+
     def reset(self):
-        """Discard the partial capture and the published one (start of a run)."""
-        self.fill = 0
+        """Discard the published capture (start of a run)."""
         self.slot_seq = 0
 
     def drain(self, publish):
         """
-        Move up to `limit` words from the source into captures. A completed
-        capture is published, stamped with clock(), when `publish` is true and
-        dropped otherwise; either way the word grouping stays aligned.
+        Take up to `limit` whole captures from the source. Each is published,
+        stamped with clock(), when `publish` is true and dropped otherwise.
+        Fewer than 4 words waiting means no complete capture yet: nothing is
+        taken, so get() can never block here.
 
         Must be called from one place only: while running it is the only writer
         of the published slot.
         """
         source = self.source
-        buf = self.buf
-        words = self.WORDS
-        for _ in range(self.limit):
-            if not source.rx_fifo():
-                break
-            fill = self.fill
-            buf[fill] = source.get()
-            fill += 1
-            if fill < words:
-                self.fill = fill
-                continue
-            self.fill = 0
+        remaining = self.limit
+        while remaining and source.rx_fifo() >= WORDS:
+            remaining -= 1
             if publish:
                 seq = self.slot_seq
                 self.slot_seq = seq + 1  # odd: update in progress
-                slot = self.slot_words
-                slot[0] = buf[0]
-                slot[1] = buf[1]
-                slot[2] = buf[2]
-                slot[3] = buf[3]
+                source.get(self.slot_words)
                 self.slot_ticks_us = self.clock()
                 self.slot_seq = seq + 2  # even: stable
+            else:
+                source.get(self.scratch)
 
     def latest(self):
         """

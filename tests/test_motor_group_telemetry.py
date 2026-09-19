@@ -26,6 +26,7 @@
 # ESC only completes its arm handshake with valid signal on all 4 - see
 # tests/test_slow_spin.py).
 
+from array import array
 from machine import Pin
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot,
                        UnsupportedOperationException, DSHOT_SPEEDS)
@@ -45,6 +46,10 @@ MIN_DECODED = 50
 MIN_CRC_VALID_PCT = 98.0
 # Throttle 100 sits around 20k eRPM on this bench; at rest the ESC reports 917
 MIN_MEDIAN_ERPM = 10000
+# eRPM values kept for the median. A preallocated array rather than a list that
+# grows: thousands of retained small objects scattered through a heap that is
+# churning fragment it until even a 4KB allocation fails.
+MAX_ERPM_SAMPLES = 512
 ARM_TIMEOUT_MS = ARM_DURATION_MS + 1000
 
 
@@ -119,7 +124,8 @@ def test_motor_group_telemetry():
         last_seq = 0
         decoded = 0
         crc_ok = 0
-        erpms = []
+        erpms = array('f', [0.0] * MAX_ERPM_SAMPLES)
+        erpm_count = 0
         no_capture = 0
         stale = 0
         max_age_us = 0
@@ -151,8 +157,9 @@ def test_motor_group_telemetry():
             decoded += 1
             if result is not None and result["crc_ok"]:
                 crc_ok += 1
-                if result["erpm"] is not None:
-                    erpms.append(result["erpm"])
+                if result["erpm"] is not None and erpm_count < MAX_ERPM_SAMPLES:
+                    erpms[erpm_count] = result["erpm"]
+                    erpm_count += 1
 
         print("  captures published by Core 1 (last sequence): " + str(last_seq))
         print("  decoded on Core 0: " + str(decoded) + ", CRC-valid: " + str(crc_ok))
@@ -166,11 +173,11 @@ def test_motor_group_telemetry():
             raise Exception("FAIL CRC-valid " + str(pct) + "% below " + str(MIN_CRC_VALID_PCT) + "%")
         print("  OK   CRC-valid " + str(pct) + "%")
 
-        if not erpms:
+        if erpm_count == 0:
             raise Exception("FAIL no CRC-valid capture carried an eRPM value")
-        erpms.sort()
-        median_erpm = erpms[len(erpms) // 2]
-        print("  eRPM min/median/max: " + str(erpms[0]) + " / " + str(median_erpm) + " / " + str(erpms[-1]))
+        samples = sorted(erpms[:erpm_count])
+        median_erpm = samples[erpm_count // 2]
+        print("  eRPM min/median/max (first " + str(erpm_count) + " values): " + str(samples[0]) + " / " + str(median_erpm) + " / " + str(samples[-1]))
         if median_erpm < MIN_MEDIAN_ERPM:
             raise Exception("FAIL median eRPM " + str(median_erpm) + " below " + str(MIN_MEDIAN_ERPM) + " - motor is not spinning")
         print("  OK   motor spinning")
