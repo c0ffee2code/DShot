@@ -50,13 +50,18 @@ class BidirCaptureSink(CaptureSinkBase):
 
         self.open_capture()
 
-    def finalize(self, outcome, total_records, missed, largest_gap_us, published):
+    def finalize(self, outcome, total_records, missed, largest_gap_us, published, tallies, verdict):
         """Record how the run ended and its final device-side stats in meta.txt.
 
         `missed` is the number of captures the group published that the run
         never saw, and `published` maps each bidirectional motor's index to the
         sequence number of its last capture, so the analyzer can relate the
-        records in capture.bin to what the ESC actually sent.
+        records in capture.bin to what the ESC actually sent. `tallies` maps
+        each bidirectional motor's index to the DecodeTally of the captures the
+        run decoded on the device, which the analyzer repeats and compares.
+        `verdict` is "pass", or "fail: ..." naming the expectations missed. The
+        outcome stays "completed" for a run that finished but missed an
+        expectation: its capture is whole, and worth analysing.
         """
         fields = {
             "total_records": str(total_records),
@@ -65,6 +70,14 @@ class BidirCaptureSink(CaptureSinkBase):
         }
         for index in published:
             fields["motor" + str(index) + "_captures_published"] = str(published[index])
+        for index in tallies:
+            tally = tallies[index]
+            prefix = "motor" + str(index) + "_decode_"
+            fields[prefix + "sampled"] = str(tally.sampled)
+            fields[prefix + "crc_ok"] = str(tally.crc_ok)
+            fields[prefix + "crc_fail"] = str(tally.crc_fail)
+            fields[prefix + "invalid"] = str(tally.invalid)
+        fields["verdict"] = verdict
         self.finalize_meta(outcome, fields)
 
     def write_record(self, ticks_us, throttles, words):

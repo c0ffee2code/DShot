@@ -28,8 +28,15 @@
 # outcome=failed in meta.txt, so a truncated capture.bin is never mistaken for a
 # complete one by the PC-side analyzer.
 #
-# No GCR decoding happens here - that's scripts/dshot_bidir_decode.py's job, run on
-# the PC against whatever gets logged (scripts/analyze_bidir_capture_log.py).
+# Decoding: every Nth new capture per motor (scenario `decode_every`) is decoded
+# on the device with MotorGroup.decode_telemetry(), the way an application would
+# on Core 0, and tallied (decode_tally.py) as a real reply, a CRC failure or not
+# a reply at all. That sample is what the scenario's `min_crc_valid_pct` and
+# `min_median_erpm` are checked against at the end of the run, so a run gives its
+# own verdict without pulling the SD card. Decoding costs milliseconds, so it is
+# sampled, never done for every capture. scripts/analyze_bidir_capture_log.py
+# decodes everything logged on a PC, checks the same thresholds on all of it, and
+# repeats the device's sampling to check the two decoders agree.
 
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot
@@ -37,6 +44,7 @@ from motor_group import MotorGroup
 from core1_runner import Core1Runner
 from scenario import load_scenario
 from bidir_capture_sink import BidirCaptureSink
+from decode_tally import DecodeTally, is_sampled
 import utime
 
 SCENARIO_PATH = "scenario.json"
@@ -103,6 +111,17 @@ def check_expect(expect, largest_gap_us, records, elapsed_ms):
             )
 
 
+def check_decode_expect(expect, tallies):
+    """The scenario's decode thresholds the sampled tallies miss, as messages."""
+    failures = []
+    crc = expect.get("min_crc_valid_pct", {})
+    erpm = expect.get("min_median_erpm", {})
+    for index in tallies:
+        for message in tallies[index].check(crc.get(str(index)), erpm.get(str(index))):
+            failures.append("motor " + str(index) + ": " + message)
+    return failures
+
+
 def build_motor(spec, dshot_speed):
     if spec.bidirectional:
         return BidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed,
@@ -153,6 +172,9 @@ def test_scenario_capture():
     largest_gap_us = 0
     max_age_us = 0
     outcome = "failed"
+    tallies = {i: DecodeTally() for i in bidir_indices}
+    seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
+    failures = []
 
     try:
         group = MotorGroup([build_motor(spec, scenario.dshot_speed) for spec in scenario.motors])
@@ -192,6 +214,10 @@ def test_scenario_capture():
                 missed += seq - last_seq[index] - 1
                 last_seq[index] = seq
                 words[index] = capture_words
+                if any(capture_words):
+                    seen[index] += 1
+                    if is_sampled(seen[index], scenario.decode_every):
+                        tallies[index].add(group.decode_telemetry(index, capture_words))
                 if record_us is None or utime.ticks_diff(ticks_us, record_us) > 0:
                     record_us = ticks_us
                 age_us = utime.ticks_diff(utime.ticks_us(), ticks_us)
@@ -224,6 +250,7 @@ def test_scenario_capture():
             utime.sleep_ms(scenario.poll_ms)
 
         outcome = "completed"
+        failures = check_decode_expect(scenario.expect, tallies)
         print()
         print("Scenario duration complete.")
         print()
@@ -240,7 +267,8 @@ def test_scenario_capture():
             runner.stop()
         print("Motors stopped and disarmed.")
         published = {i: last_seq[i] for i in bidir_indices}
-        sink.finalize(outcome, total_records, missed, largest_gap_us, published)
+        verdict = "pass" if not failures else "fail: " + "; ".join(failures)
+        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict)
         sink.close()
         print("SD card flushed and unmounted.")
 
@@ -257,7 +285,15 @@ def test_scenario_capture():
         print("Captures published but never seen:", missed)
         print("Largest gap between records: {:.1f}ms".format(largest_gap_us / 1000))
         print("Oldest capture at the moment it was read: {:.1f}ms".format(max_age_us / 1000))
-        print("=== Test Complete ===" if outcome == "completed" else "=== Test FAILED ===")
+        for index in tallies:
+            print("Motor {} decoded on the device (every {}th capture): {}".format(
+                index, scenario.decode_every, tallies[index].summary()))
+        for message in failures:
+            print("  expectation missed - " + message)
+        print("=== Test Complete ===" if outcome == "completed" and not failures else "=== Test FAILED ===")
+
+    if failures:
+        raise RuntimeError("decode expectations missed: " + "; ".join(failures))
 
 
 test_scenario_capture()

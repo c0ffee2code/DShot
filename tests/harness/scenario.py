@@ -40,18 +40,24 @@ class MotorSpec:
 
 class Scenario:
     def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
-                 status_interval_ms, poll_ms, expect, motors):
+                 status_interval_ms, poll_ms, decode_every, expect, motors):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
         self.status_interval_ms = status_interval_ms
         self.poll_ms = poll_ms
+        self.decode_every = decode_every
         self.expect = expect
         self.motors = motors
 
     @property
     def bidir_indices(self):
         return [i for i, m in enumerate(self.motors) if m.bidirectional]
+
+
+# Decoding a capture costs about 1.3ms, so only a sample of them is decoded on the
+# device; this is often enough for a percentage and rare enough to stay cheap
+DEFAULT_DECODE_EVERY = 20
 
 
 def pio_block(sm_id):
@@ -154,6 +160,11 @@ def build_scenario(data):
     # reply check is a coarser, cheap proxy: check_reply_failsafe in
     # run_scenario.py, which only asserts "at least one non-all-zero reply
     # appeared".
+    # Every Nth new capture per bidirectional motor is decoded on the device (0 = never)
+    decode_every = data.get("decode_every", DEFAULT_DECODE_EVERY)
+    if not isinstance(decode_every, int) or decode_every < 0:
+        raise ValueError("decode_every must be a whole number >= 0, got " + str(decode_every))
+
     expect = data.get("expect", {})
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     for name in ("min_crc_valid_pct", "min_median_erpm"):
@@ -170,6 +181,7 @@ def build_scenario(data):
         arm_duration_ms=data.get("arm_duration_ms", 500),
         status_interval_ms=data.get("status_interval_ms", 15000),
         poll_ms=data.get("poll_ms", 10),
+        decode_every=decode_every,
         expect=expect,
         motors=motors,
     )

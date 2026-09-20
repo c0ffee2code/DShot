@@ -112,6 +112,19 @@ class ScenarioValidationTest(unittest.TestCase):
         data["expect"] = {"min_crc_valid_pct": {"0": 99.0}, "min_median_erpm": {"0": 10000}}
         self.assertEqual(build_scenario(data).expect["min_median_erpm"], {"0": 10000})
 
+    def test_decode_every_defaults_to_a_sample_and_can_be_turned_off(self):
+        self.assertEqual(build_scenario(valid_scenario()).decode_every, 20)
+        data = valid_scenario()
+        data["decode_every"] = 0
+        self.assertEqual(build_scenario(data).decode_every, 0)
+
+    def test_decode_every_must_be_a_non_negative_whole_number(self):
+        for bad in (-1, 2.5, "20"):
+            data = valid_scenario()
+            data["decode_every"] = bad
+            with self.assertRaises(ValueError):
+                build_scenario(data)
+
     def test_defaults(self):
         scenario = build_scenario(valid_scenario())
         self.assertEqual((scenario.arm_duration_ms, scenario.poll_ms), (500, 10))

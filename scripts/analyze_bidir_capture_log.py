@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "driver"))
 
 from dshot_bidir_decode import analyze_capture
 from dshot_profiles import BIDIR_PROFILES
+from decode_tally import DecodeTally, is_sampled
 from scenario import load_scenario
 
 # ticks_us, throttle0..3, then one 4-word GCR group per motor - must match
@@ -73,10 +74,13 @@ def _new_motor_state():
         "last_success_ticks_us": None, "largest_gap_us": 0,
         "erpm_min": None, "erpm_max": None, "erpm_sum": 0.0, "erpm_count": 0,
         "erpms": [],
+        # what the device's sampled decode should have tallied: the same rule
+        # (every Nth non-empty capture of this motor), replayed on the log
+        "seen": 0, "sample": DecodeTally(),
     }
 
 
-def analyze_records(records, bidir_indices, rx_clock_hz, expected_ratio):
+def analyze_records(records, bidir_indices, rx_clock_hz, expected_ratio, decode_every):
     per_motor = {i: _new_motor_state() for i in bidir_indices}
     overall_largest_gap_us = 0
     last_ticks_us = None
@@ -98,6 +102,9 @@ def analyze_records(records, bidir_indices, rx_clock_hz, expected_ratio):
             state = per_motor[index]
             state["completed_groups"] += 1
             result = analyze_capture(list(words), rx_clock_hz, expected_ratio)
+            state["seen"] += 1
+            if is_sampled(state["seen"], decode_every):
+                state["sample"].add(result)
             ok = result is not None and result["crc_ok"]
             if ok:
                 state["crc_valid"] += 1
@@ -122,6 +129,29 @@ def analyze_records(records, bidir_indices, rx_clock_hz, expected_ratio):
                     state["longest_fail_streak"] = state["fail_streak"]
 
     return per_motor, overall_largest_gap_us
+
+
+def compare_with_device(meta, per_motor):
+    """
+    Messages for every motor whose on-device sampled decode tally differs from the
+    one replayed here on the same captures. The device decodes in MicroPython, this
+    script in CPython with an independent decoder: a difference means the two
+    disagree about the same words (or a capture was lost between the device and
+    the log).
+    """
+    failures = []
+    for index, state in per_motor.items():
+        prefix = f"motor{index}_decode_"
+        if prefix + "sampled" not in meta:
+            continue  # a session from before the device decoded
+        replayed = state["sample"]
+        for name in ("sampled", "crc_ok", "crc_fail", "invalid"):
+            on_device = int(meta[prefix + name])
+            here = getattr(replayed, name)
+            if on_device != here:
+                failures.append(f"motor {index}: the device tallied {name}={on_device}, the "
+                                f"same captures decoded here give {here}")
+    return failures
 
 
 def median(values):
@@ -198,7 +228,7 @@ def main():
     print()
 
     per_motor, overall_largest_gap_us = analyze_records(records, bidir_indices, rx_clock_hz,
-                                                        expected_ratio)
+                                                        expected_ratio, scenario.decode_every)
 
     for index in bidir_indices:
         state = per_motor[index]
@@ -218,8 +248,15 @@ def main():
     print(f"Overall largest gap between any two records: {overall_largest_gap_us / 1000:.1f}ms")
 
     print()
+    print(f"Device verdict: {meta.get('verdict', 'not recorded')}")
+    for index in bidir_indices:
+        if f"motor{index}_decode_sampled" in meta:
+            tally = per_motor[index]["sample"]
+            print(f"Motor {index} sampled decode (every {scenario.decode_every}th capture), replayed here: "
+                  f"{tally.summary()}")
     failures = check_expect(scenario.expect, overall_largest_gap_us, total,
                              scenario.duration_ms, per_motor)
+    failures += compare_with_device(meta, per_motor)
     if failures:
         print("expect thresholds NOT met:")
         for f in failures:

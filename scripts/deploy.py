@@ -57,6 +57,7 @@ LIBRARY_FILES = [
     ("tests/harness/pcf8523.py", "pcf8523.py"),
     ("tests/harness/capture_sink.py", "capture_sink.py"),
     ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
+    ("tests/harness/decode_tally.py", "decode_tally.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
