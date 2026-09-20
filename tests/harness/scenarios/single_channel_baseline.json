@@ -1,13 +1,13 @@
 {
-  "_comment": "REGRESSION SCENARIO: a long single-channel run with throttle steps, to catch problems that only show over minutes (memory growth, a gap that appears late, telemetry drifting out of sync). Channel 1 bidirectional at 100, 200, then 300; channels 2-4 idle.",
+  "_comment": "REGRESSION SCENARIO: a long single-channel run with throttle steps, to catch problems that only show over minutes (memory growth, a gap that appears late, telemetry drifting out of sync). Channel 1 bidirectional at 100, 200, then 300; channels 2-4 idle. Thresholds sit well below what this bench delivers: about 255 records/s with one bidirectional motor and 225/s with two (Core 0 samples the latest capture, so this is a sampling rate, not the reply rate), a largest gap of 15ms typically and up to 62ms when the SD card flushes, and every sampled decode CRC-valid.",
   "dshot_speed": "DSHOT300",
   "duration_ms": 186000,
   "arm_duration_ms": 3000,
   "status_interval_ms": 15000,
   "poll_ms": 1,
   "expect": {
-    "max_gap_ms": 50,
-    "min_record_rate_hz": 100,
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 170,
     "min_crc_valid_pct": {
       "0": 99.0
     },

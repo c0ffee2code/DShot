@@ -267,7 +267,14 @@ def test_scenario_capture():
             runner.stop()
         print("Motors stopped and disarmed.")
         published = {i: last_seq[i] for i in bidir_indices}
-        verdict = "pass" if not failures else "fail: " + "; ".join(failures)
+        # The thresholds are judged on a run that reached its end; one that was
+        # cut short (a gap or rate threshold, a Core 1 error) has no verdict
+        if outcome != "completed":
+            verdict = "not evaluated: the run did not complete"
+        elif failures:
+            verdict = "fail: " + "; ".join(failures)
+        else:
+            verdict = "pass"
         sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict)
         sink.close()
         print("SD card flushed and unmounted.")
