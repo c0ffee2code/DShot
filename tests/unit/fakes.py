@@ -124,6 +124,9 @@ class PIO:
     IN_LOW = 2
     SHIFT_LEFT = 0
     SHIFT_RIGHT = 1
+    JOIN_NONE = 0
+    JOIN_TX = 1
+    JOIN_RX = 2
 
 
 def asm_pio(**kwargs):

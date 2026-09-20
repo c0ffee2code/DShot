@@ -34,7 +34,7 @@ row's evidence is in the dated sections below.
 | CRC validation (inverted polarity only) | Verified |
 | eRPM value from a CRC-valid eRPM frame | Verified; mechanical RPM is not - the motor pole count is an unverified constant |
 | Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing); corruption after a stall under the production command loop not re-tested |
-| RX FIFO management | Drained on every command-loop tick, capped per call (ADR-005); steady operation verified, deliberate consumer stalls not re-tested |
+| RX FIFO management | 8 words deep (joined), drained on every command-loop tick before the commands are sent, capped per call (ADR-005); two bidirectional motors verified 100% CRC-valid at both speeds, deliberate consumer stalls not re-tested |
 | Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4 fails and is parked, cause unknown; four bidirectional motors through the facade not verified |
 | Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one bidirectional motor verified through the facade, several not yet |
 | DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
@@ -1763,6 +1763,12 @@ smaller FIFO payload, and no oversampling density to tune per DShot speed. The
 decode is already off the command loop, so this is application headroom, not
 command-loop speed. It has to be weighed against replacing a receiver that is
 verified on hardware for both supported speeds.
+
+### The receiver's FIFO is joined to 8 words (2026-09-20)
+
+The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
+
+The receiver never uses its TX FIFO, so `fifo_join=PIO.JOIN_RX` gives its RX FIFO the whole 8 words at no cost: room for one capture the CPU has not taken yet plus the next. On the bench (two bidirectional motors, DSHOT300 and DSHOT600, 8-second and 60-second scenarios) it removed the failure: the old send-first order with the joined FIFO was clean in 4 of 4 runs, and with the drain moved before the send (ADR-005) both channels were 100% CRC-valid in the 60-second runs. Stalling the consumer for longer than a capture is still possible and still produces a corrupted capture, but it now takes two late drains in a row rather than one.
 
 ## References
 

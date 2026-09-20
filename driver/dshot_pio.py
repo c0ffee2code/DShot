@@ -103,8 +103,12 @@ def dshot_bidir_tx():
 # captured too, giving software an unambiguous 0 to anchor against.
 #
 # 128 samples are packed by autopush at push_thresh=32 (the maximum, which keeps
-# the word count down): exactly 4 words per reply, equal to the RX FIFO depth,
-# so a single capture can never stall waiting for the CPU mid-frame.
+# the word count down): exactly 4 words per reply. This state machine never uses
+# its TX FIFO, so fifo_join gives the RX FIFO that depth as well: 8 words, room
+# for a capture the CPU has not taken yet plus the next one. With the default
+# 4-word FIFO a capture the CPU was late to take left no room for the next: that
+# capture's first word blocked on the full FIFO, its sampling paused mid-reply,
+# and it came back as a short burst followed by idle-level words.
 #
 # What the program does, in order:
 #
@@ -132,7 +136,7 @@ def dshot_bidir_tx():
 #    boundaries reloading y and looping x costs 2 extra cycles, so those gaps
 #    are 4. The seam is deterministic, and gcr_decode.sample_cycle() accounts
 #    for it.
-@asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=32)
+@asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=32, fifo_join=PIO.JOIN_RX)
 def dshot_bidir_rx():
     wrap_target()
     irq(clear, rel(0))               # step 1: drop any stale release signal...
