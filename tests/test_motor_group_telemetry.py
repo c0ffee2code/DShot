@@ -1,4 +1,4 @@
-# Test: MotorThrottleGroup's arm-gated raw telemetry accessor
+# Test: MotorGroup's arm-gated raw telemetry accessor
 #
 # Purpose: exercises the whole bidirectional data flow through the public
 # facade - the group's update() drains each bidirectional motor's RX FIFO into
@@ -11,7 +11,7 @@
 #      machine, and two motors on one pin; arm() is rejected while armed.
 #   2. raw_telemetry() on a unidirectional motor raises
 #      UnsupportedOperationException, on a bidirectional one returns None
-#      while disarmed, on a bad index raises MotorThrottleGroupException.
+#      while disarmed, on a bad index raises MotorGroupException.
 #   3. raw_telemetry() returns None for the whole ARMING window - captures
 #      taken before the ESC arms are echoes of our own transmit.
 #   4. After arming, at a settled throttle, sequence numbers only advance,
@@ -30,7 +30,7 @@ from array import array
 from machine import Pin
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot,
                        UnsupportedOperationException, DSHOT_SPEEDS)
-from motor_throttle_group import MotorThrottleGroup, MotorThrottleGroupException
+from motor_group import MotorGroup, MotorGroupException
 from core1_runner import Core1Runner
 import utime
 
@@ -63,27 +63,27 @@ def expect_raises(exception_type, fn, label):
 
 
 def test_motor_group_telemetry():
-    print("=== MotorThrottleGroup Telemetry Test ===")
+    print("=== MotorGroup Telemetry Test ===")
 
     print("Construction checks...")
-    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([]), "0 motors rejected")
-    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([object()] * 5), "5 motors rejected")
-    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([
+    expect_raises(MotorGroupException, lambda: MotorGroup([]), "0 motors rejected")
+    expect_raises(MotorGroupException, lambda: MotorGroup([object()] * 5), "5 motors rejected")
+    expect_raises(MotorGroupException, lambda: MotorGroup([
         UnidirectionalDShot(0, Pin(6), DSHOT_SPEED),
         UnidirectionalDShot(0, Pin(7), DSHOT_SPEED),
     ]), "two motors on one state machine rejected")
-    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([
+    expect_raises(MotorGroupException, lambda: MotorGroup([
         UnidirectionalDShot(0, Pin(6), DSHOT_SPEED),
         BidirectionalDShot(2, Pin(7), DSHOT_SPEED, rx_state_machine_id=3),
         UnidirectionalDShot(3, Pin(8), DSHOT_SPEED),
     ]), "a state machine used as another motor's RX rejected")
-    expect_raises(MotorThrottleGroupException, lambda: MotorThrottleGroup([
+    expect_raises(MotorGroupException, lambda: MotorGroup([
         UnidirectionalDShot(0, Pin(6), DSHOT_SPEED),
         UnidirectionalDShot(2, Pin(6), DSHOT_SPEED),
     ]), "two motors on one pin rejected")
 
     bidir = BidirectionalDShot(0, Pin(6), DSHOT_SPEED, rx_state_machine_id=1)
-    motors = MotorThrottleGroup([
+    motors = MotorGroup([
         bidir,
         UnidirectionalDShot(2, Pin(7), DSHOT_SPEED),
         UnidirectionalDShot(4, Pin(8), DSHOT_SPEED),
@@ -93,7 +93,7 @@ def test_motor_group_telemetry():
 
     print("Accessor checks while disarmed...")
     expect_raises(UnsupportedOperationException, lambda: motors.raw_telemetry(1), "unidirectional motor raises")
-    expect_raises(MotorThrottleGroupException, lambda: motors.raw_telemetry(9), "bad index raises")
+    expect_raises(MotorGroupException, lambda: motors.raw_telemetry(9), "bad index raises")
     if motors.raw_telemetry(0) is not None:
         raise Exception("FAIL raw_telemetry(0) should be None while disarmed")
     print("  OK   bidirectional motor returns None while disarmed")
@@ -115,7 +115,7 @@ def test_motor_group_telemetry():
             arm_polls += 1
             utime.sleep_ms(1)
         print("  OK   armed; None on all " + str(arm_polls) + " polls during arming")
-        expect_raises(MotorThrottleGroupException, lambda: motors.arm(), "arm() while armed rejected")
+        expect_raises(MotorGroupException, lambda: motors.arm(), "arm() while armed rejected")
 
         motors.set_throttle(0, THROTTLE)
         utime.sleep_ms(SETTLE_MS)

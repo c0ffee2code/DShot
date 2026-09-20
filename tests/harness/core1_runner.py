@@ -10,7 +10,7 @@
 #
 # Copy this into your own project and adapt it - a project using a timer IRQ,
 # uasyncio, or a cooperative main loop would write something different and
-# still drive the same MotorThrottleGroup.update().
+# still drive the same MotorGroup.update().
 
 import _thread
 import utime

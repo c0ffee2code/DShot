@@ -4,7 +4,7 @@
 # mounted, but AM32 firmware won't complete its arm handshake ("3 short
 # beeps" power-check -> "2 longer beeps" armed) until all 4 channels see
 # valid DShot signal, not just one - so all 4 get armed together via
-# MotorThrottleGroup; only channel 1 (motor index 0) gets nonzero throttle.
+# MotorGroup; only channel 1 (motor index 0) gets nonzero throttle.
 #
 # Arming is 3000ms here, explicitly, rather than the library default - the
 # window these tests have been run with when checking that the motor spins.
@@ -17,7 +17,7 @@
 
 from machine import Pin
 from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
-from motor_throttle_group import MotorThrottleGroup
+from motor_group import MotorGroup
 from core1_runner import Core1Runner
 import utime
 
@@ -42,7 +42,7 @@ def test_slow_spin():
     print(f"Speed: {DSHOT_SPEED}")
     print()
 
-    motors = MotorThrottleGroup([
+    motors = MotorGroup([
         UnidirectionalDShot(i, Pin(p), DSHOT_SPEED) for i, p in enumerate(MOTOR_PINS)
     ])
     runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)

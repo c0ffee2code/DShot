@@ -1,6 +1,6 @@
 Run `python scripts/deploy.py [test_script.py]` and report the result.
 
-Uploads the DShot driver, MotorThrottleGroup facade, and Core1Runner to the
+Uploads the DShot driver, MotorGroup facade, and Core1Runner to the
 Pico (flat filesystem, matching their `from dshot_pio import ...` style
 imports), then runs the given test script from `tests/` directly via
 `mpremote run` and streams its output live. With no argument, runs

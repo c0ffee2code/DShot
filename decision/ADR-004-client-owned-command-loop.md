@@ -8,7 +8,7 @@
 
 ADR-001 solved a real problem. Arming previously succeeded roughly half the time, with one motor left beeping, because Core 0 activity (display rendering, button polling, sleeps in the main loop) opened gaps in DShot transmission and the ESCs reset their arming counters. Dedicating Core 1 to a 1kHz command loop eliminated the failures completely, and that finding still holds.
 
-But it placed the decision in the wrong layer. `MotorThrottleGroup` called `_thread.start_new_thread()` itself, so *the library* chose the threading topology of every application that imported it:
+But it placed the decision in the wrong layer. `MotorGroup` called `_thread.start_new_thread()` itself, so *the library* chose the threading topology of every application that imported it:
 
 - An application that wants Core 1 for its own control algorithm, and the DShot loop on a timer IRQ, cannot have it.
 - An application built around `uasyncio` gets a raw thread it did not ask for.
@@ -23,7 +23,7 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 
 **The library exposes `update()`. The application decides when and where it is called.**
 
-`MotorThrottleGroup` remains a facade over the motors it is given and their throttle state. It knows *what* to transmit and *when it is due*; it does not know, and does not ask, which core it is running on.
+`MotorGroup` remains a facade over the motors it is given and their throttle state. It knows *what* to transmit and *when it is due*; it does not know, and does not ask, which core it is running on.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -117,7 +117,7 @@ Unchanged and still in force:
 
 - **Three-layer separation** — application, facade, driver. Only the core assignment moves.
 - **Lock-free shared state.** `array('H')` throttles with atomic per-element writes, no mutex. This matters *more* now: the library no longer knows which core writes throttles versus which calls `update()`, so the guarantee has to hold unconditionally.
-- **The timing figures** - 1kHz command rate, 500ms arming duration, minimum usable throttle 70 - were verified in ADR-001 on the original BLHeli_S ESC. The library's current values are `UPDATE_INTERVAL_US` and `DEFAULT_ARM_DURATION_MS` in `driver/motor_throttle_group.py`.
+- **The timing figures** - 1kHz command rate, 500ms arming duration, minimum usable throttle 70 - were verified in ADR-001 on the original BLHeli_S ESC. The library's current values are `UPDATE_INTERVAL_US` and `DEFAULT_ARM_DURATION_MS` in `driver/motor_group.py`.
 - **`DShotPIO` stays scheduling-unaware.**
 
 Reversed:
@@ -161,7 +161,7 @@ The original test hardware and pass criteria are those of ADR-001 — in particu
 | Check | Purpose |
 |---|---|
 | `test_dshot_single_motor.py` | Low-level driver plus the new `stop()` |
-| `test_motor_throttle_group.py` | Both motors arm reliably via an application-owned Core 1 loop |
+| `test_motor_group.py` | Both motors arm reliably via an application-owned Core 1 loop |
 | Signal cut on disarm | Motors stop and the ESC beeps its lost-signal tone |
 | Stop latency from a spun-up motor | Confirms `disarm()`'s zeros land: the motor should wind down at once, not after the ESC's 100-250ms timeout |
 | Signal line after `disarm()` | Should read low. Rests on side-set being applied when the `out` instruction stalls — inferred from the PIO program, not yet measured |

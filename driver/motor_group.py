@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MotorThrottleGroup: facade over the PIO state machines and throttle state
+# MotorGroup: facade over the PIO state machines and throttle state
 # of a group of DShot motors.
 #
 # See decision/ADR-004-client-owned-command-loop.md for the threading model
@@ -10,18 +10,18 @@ from array import array
 
 from dshot_pio import DShotPIO, UnsupportedOperationException
 
-# Lifecycle states, as reported by MotorThrottleGroup.state
+# Lifecycle states, as reported by MotorGroup.state
 DISARMED = 0
 ARMING = 1
 ARMED = 2
 
 
-class MotorThrottleGroupException(Exception):
+class MotorGroupException(Exception):
     def __init__(self, message):
         self.message = message
 
 
-class MotorThrottleGroup:
+class MotorGroup:
     """
     Facade for controlling throttle on a group of DShot motors.
 
@@ -38,9 +38,9 @@ class MotorThrottleGroup:
     Usage (application runs the loop on Core 1):
         from machine import Pin
         from dshot_pio import UnidirectionalDShot, BidirectionalDShot, DSHOT_SPEEDS
-        from motor_throttle_group import MotorThrottleGroup
+        from motor_group import MotorGroup
 
-        group = MotorThrottleGroup([
+        group = MotorGroup([
             UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600),
             BidirectionalDShot(2, Pin(5), DSHOT_SPEEDS.DSHOT600, rx_state_machine_id=3),
         ])
@@ -109,7 +109,7 @@ class MotorThrottleGroup:
                 detects bidirectional DShot during arming.
         """
         if len(motors) < self.MIN_MOTORS or len(motors) > self.MAX_MOTORS:
-            raise MotorThrottleGroupException(
+            raise MotorGroupException(
                 "Expected 1 to 4 motors, got " + str(len(motors))
             )
 
@@ -125,12 +125,12 @@ class MotorThrottleGroup:
                 ids.append(motor.rx_state_machine_id)
             for state_machine_id in ids:
                 if state_machine_id in used_state_machines:
-                    raise MotorThrottleGroupException(
+                    raise MotorGroupException(
                         "State machine " + str(state_machine_id) + " is used by more than one motor"
                     )
                 used_state_machines.append(state_machine_id)
             if motor.pin in used_pins:
-                raise MotorThrottleGroupException("Two motors share the same pin")
+                raise MotorGroupException("Two motors share the same pin")
             used_pins.append(motor.pin)
 
         self.motor_count = len(motors)
@@ -167,13 +167,13 @@ class MotorThrottleGroup:
         Only valid while disarmed. Restarting the motors under a live command
         loop would flush their RX FIFOs and reset their published telemetry
         mid-write and snap the throttles to zero, so calling it while ARMING or
-        ARMED raises MotorThrottleGroupException; disarm() first to start over.
+        ARMED raises MotorGroupException; disarm() first to start over.
 
         Args:
             duration_ms: Arming duration (default: DEFAULT_ARM_DURATION_MS)
         """
         if self.state != DISARMED:
-            raise MotorThrottleGroupException("arm() called while already arming or armed")
+            raise MotorGroupException("arm() called while already arming or armed")
 
         for i in range(self.motor_count):
             self.throttles[i] = 0
@@ -336,7 +336,7 @@ class MotorThrottleGroup:
         whatever the state: asking one for telemetry is an application bug.
         """
         if motor_index < 0 or motor_index >= self.motor_count:
-            raise MotorThrottleGroupException(
+            raise MotorGroupException(
                 "Invalid motor index: " + str(motor_index)
             )
 
@@ -359,7 +359,7 @@ class MotorThrottleGroup:
         unidirectional motor.
         """
         if motor_index < 0 or motor_index >= self.motor_count:
-            raise MotorThrottleGroupException(
+            raise MotorGroupException(
                 "Invalid motor index: " + str(motor_index)
             )
 
@@ -388,7 +388,7 @@ class MotorThrottleGroup:
         update(). The write is atomic (see ADR-001).
         """
         if motor_index < 0 or motor_index >= self.motor_count:
-            raise MotorThrottleGroupException(
+            raise MotorGroupException(
                 "Invalid motor index: " + str(motor_index)
             )
 
@@ -405,7 +405,7 @@ class MotorThrottleGroup:
         For flight control this is acceptable (see ADR-001).
         """
         if len(values) != self.motor_count:
-            raise MotorThrottleGroupException(
+            raise MotorGroupException(
                 "Expected " + str(self.motor_count) +
                 " values, got " + str(len(values))
             )

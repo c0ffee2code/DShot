@@ -1,6 +1,6 @@
 # Bidirectional DShot on Raspberry Pi Pico 2 — Conceptual & Implementation Review
 
-**Review basis:** the current project files and ADR material provided in this conversation, especially `dshot_pio.py`, `motor_throttle_group.py`, and `ADR-002-bidirectional-dshot.md`.
+**Review basis:** the current project files and ADR material provided in this conversation, especially `dshot_pio.py`, `motor_group.py`, and `ADR-002-bidirectional-dshot.md`.
 
 **Review status:** 2026-08-25
 
@@ -18,7 +18,7 @@ The hardware evidence is excellent:
 - Repeatability across separate runs/days.
 - No meaningful up/down hysteresis.
 
-The ADR itself correctly states that this proves Phase 3, but that the result is **not yet integrated into `MotorThrottleGroup` / `DShotPIO`'s public API**.
+The ADR itself correctly states that this proves Phase 3, but that the result is **not yet integrated into `MotorGroup` / `DShotPIO`'s public API**.
 
 The main risks are therefore no longer "can the Pico decode the AM32 reply?" but:
 
@@ -323,7 +323,7 @@ Keep these verification levels explicitly separate.
 
 ---
 
-## 7. `MotorThrottleGroup` does not yet integrate bidirectional mode
+## 7. `MotorGroup` does not yet integrate bidirectional mode
 
 The current constructor creates:
 
@@ -486,7 +486,7 @@ This is minor, but worth fixing before treating the API as stable.
 
 ---
 
-## 13. Cross-core `MotorThrottleGroup.disarm()` is not actually synchronized
+## 13. Cross-core `MotorGroup.disarm()` is not actually synchronized
 
 The code comments describe `disarm()` as safe from another core.
 
@@ -789,7 +789,7 @@ rather than relying on an unnumbered PIO IRQ flag to establish correspondence.
 7. **Add sequence/missed-frame/age telemetry state.**
 8. **Integrate explicit PIO SM allocation.**
 9. **Add continuous-rate and RX-starvation stress tests.**
-10. **Only then promote bidirectional mode into the public `MotorThrottleGroup` API.**
+10. **Only then promote bidirectional mode into the public `MotorGroup` API.**
 
 ---
 
@@ -1038,7 +1038,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | — | **Phase 3 gate: continuous transaction engine proven — integration may build on it** | — | — | — |
 | W9 | On-Pico eRPM decoder (returns eRPM, not RPM) | R10, R15 | L | IN PROGRESS — port, offline verification and on-device timing done; now used live via `decode_capture()`; the on-Pico-vs-offline comparison of the same words is still outstanding |
 | W10 | Telemetry health state | R16 | M | TODO |
-| W11 | `MotorThrottleGroup` bidir integration + PIO allocator | R7, R13 | L | DONE (reshaped: motors injected, no allocator; one bidirectional motor verified through the facade) |
+| W11 | `MotorGroup` bidir integration + PIO allocator | R7, R13 | L | DONE (reshaped: motors injected, no allocator; one bidirectional motor verified through the facade) |
 | W12 | Multi-motor simultaneous telemetry test | TD, R7 | M | TODO |
 | — | **Phase 4 gate: bidirectional mode promoted to the public API; ADR-002 flips to Accepted** | — | — | — |
 | W13 | DShot600 bidir calibration (speed matrix) | R4, TE | L | TODO |
@@ -1059,7 +1059,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 turned out to be validating a combination nothing in the repo can currently reach. Checked
 by grep: every existing bidir call site (`test_bidir_rx_raw.py`, `test_bidir_tx_arm.py`,
 `test_bidir_rx_sweep.py`) already hardcodes `DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300`, and
-`MotorThrottleGroup` doesn't expose `bidirectional` at all yet (W11). Per CLAUDE.md, adding
+`MotorGroup` doesn't expose `bidirectional` at all yet (W11). Per CLAUDE.md, adding
 validation for a scenario nothing can currently produce isn't warranted on its own.
 
 Reframed as: measure whether the current dense-oversampling RX design (`dshot_bidir_rx`,
@@ -1158,7 +1158,7 @@ instruction, standardized the entire project (not only bidir mode) on AM32's doc
 speed support. `DSHOT_SPEEDS` no longer carries `DSHOT150`/`DSHOT1200` as constants at all
 (previously present but already unused anywhere in the test suite - confirmed by grep before
 removing them). `DShotPIO.__init__`'s default `dshot_speed` moved from `DSHOT_SPEEDS.DSHOT150`
-to `DSHOT_SPEEDS.DSHOT600`, matching `MotorThrottleGroup`'s own default and removing a
+to `DSHOT_SPEEDS.DSHOT600`, matching `MotorGroup`'s own default and removing a
 pre-existing inconsistency between the two. `CLAUDE.md` and `README.md` updated to state
 DSHOT300/600 only, and `specification/DSHOT_PROTOCOL.md`'s ESC compatibility table's AM32 row
 corrected (see W2's note above) as part of the same pass.
@@ -1506,7 +1506,7 @@ application-side wrapper around `latest_capture()`/`decode_capture()`, using the
 nothing until the group is ARMED - necessary but not sufficient, since ARMED only means the
 group's own arming window elapsed (ADR-005).
 
-**W11 — `MotorThrottleGroup` bidir integration + PIO allocator (R7, R13)** · `driver/motor_throttle_group.py`
+**W11 — `MotorGroup` bidir integration + PIO allocator (R7, R13)** · `driver/motor_group.py`
 Promote bidirectional mode into the facade. Requires an explicit SM allocator: TX/RX pairs
 must share a PIO block (GPIO function-select + IRQ scope, see `DShotPIO.__init__`
 docstring), 4 SMs per block, 3 blocks on RP2350 — stop deriving SM id from motor index
@@ -1515,7 +1515,7 @@ inside `update()` or a separate call?) has user-facing decision points: sketch o
 confirm with the user before building. Define cross-core ownership for the new RX/IRQ/FIFO
 state (R13): one core owns PIO lifecycle, the other writes command state; document what
 `disarm()` guarantees in bidir mode.
-**Done when:** the ADR-002 sweep scenario runs through the public `MotorThrottleGroup` API
+**Done when:** the ADR-002 sweep scenario runs through the public `MotorGroup` API
 (arm → throttle steps → telemetry per motor → disarm) on hardware with the W7-level
 association invariant holding, and the allocator rejects impossible placements with clear
 errors.
@@ -1637,7 +1637,7 @@ user-directed architecture change, run in parallel with the R-driven backlog abo
 ESC communication from data logging the same way the sister test rig (Flight-Benchy) already
 does: **Core 1** owns all ESC communication (send commands, drain raw RX words via
 `BidirCaptureRunner`, a lock-free single-producer/single-consumer ring buffer using the same
-atomic-write discipline as `MotorThrottleGroup`'s shared throttle array, ADR-001); **Core 0**
+atomic-write discipline as `MotorGroup`'s shared throttle array, ADR-001); **Core 0**
 only orchestrates and writes each raw 4-word capture to a timestamped session on the
 PicoBell Adalogger's SD card (`BidirCaptureSink`). No GCR decoding happens on-device at all
 in this path — decode moved entirely to a PC-side pipeline (`scripts/dshot_bidir_decode.py`,

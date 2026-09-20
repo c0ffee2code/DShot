@@ -1,7 +1,7 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library.
 #
 # Writes raw scenario capture records (as produced by
-# tests/harness/run_scenario.py from MotorThrottleGroup.raw_telemetry()) to a
+# tests/harness/run_scenario.py from MotorGroup.raw_telemetry()) to a
 # timestamped session folder on the PicoBell Adalogger's SD card. The SD/RTC
 # mount and session-folder lifecycle are in capture_sink.py; this adds the
 # scenario record format and copies the scenario's own JSON into the session

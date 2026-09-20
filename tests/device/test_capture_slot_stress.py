@@ -1,6 +1,6 @@
 # Test: cross-core consistency of BidirectionalDShot's one-slot capture
 #
-# Purpose: MotorThrottleGroup.update() (Core 1) publishes each completed
+# Purpose: MotorGroup.update() (Core 1) publishes each completed
 # telemetry capture into a single slot (CaptureMailbox) via drain_rx(), and the
 # application (Core 0) reads it with latest_capture(). The slot is guarded by a
 # seqlock made of plain attribute and array writes, and MicroPython on the RP2350 runs the

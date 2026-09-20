@@ -63,7 +63,7 @@ requirements that drive it.
                    │ set_throttle()
                    ▼
 ┌─────────────────────────────────────┐
-│    MotorThrottleGroup Facade        │
+│    MotorGroup Facade        │
 │  Throttle state, arming sequence,   │
 │  PIO lifecycle. Core-agnostic.      │
 └──────────────────┬──────────────────┘
@@ -113,13 +113,13 @@ motor.stop()  # Deactivate - the ESC times out and the motor cannot spin
 ```python
 from machine import Pin
 from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
-from motor_throttle_group import MotorThrottleGroup
+from motor_group import MotorGroup
 from core1_runner import Core1Runner  # your code - see tests/harness/core1_runner.py
 import utime
 
 # One motor object per motor (1-4). You pick the state machine and pin for each;
 # use BidirectionalDShot instead where you want eRPM telemetry.
-motors = MotorThrottleGroup([
+motors = MotorGroup([
     UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600),
     UnidirectionalDShot(1, Pin(5), DSHOT_SPEEDS.DSHOT600),
 ])
@@ -163,7 +163,7 @@ while True:
 
 Timing requirements are ESC-firmware-dependent, not just protocol-dependent -
 the two ESCs tested needed meaningfully different arming behavior. The
-library's defaults (`MotorThrottleGroup.UPDATE_INTERVAL_US`,
+library's defaults (`MotorGroup.UPDATE_INTERVAL_US`,
 `DEFAULT_ARM_DURATION_MS`) target the more demanding of the two, since a
 faster/longer hold is always safe for the less demanding one too.
 
@@ -172,7 +172,7 @@ faster/longer hold is always safe for the less demanding one too.
 | Protocol | DShot600 | DShot300 |
 | Minimum throttle | 70 (50-69 unreliable) | 100 confirmed working |
 | Command interval | 1ms (1kHz) tolerant | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
-| Arming duration | 500ms | 500ms - an earlier finding claimed 500ms never completed the ESC's own arm confirmation and set this to 3000ms, but that test predated a board-reset bug fix (see `driver/motor_throttle_group.py`'s `DEFAULT_ARM_DURATION_MS`); re-tested 2026-09-12 with the corrected workflow and 500ms (down to 300ms) armed cleanly, confirmed via genuine telemetry replies |
+| Arming duration | 500ms | 500ms - an earlier finding claimed 500ms never completed the ESC's own arm confirmation and set this to 3000ms, but that test predated a board-reset bug fix (see `driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`); re-tested 2026-09-12 with the corrected workflow and 500ms (down to 300ms) armed cleanly, confirmed via genuine telemetry replies |
 
 The AM32 ESC gave no indication via its beep pattern alone that arming was
 failing - it decodes individual commands correctly (confirmed via the DShot
@@ -187,11 +187,11 @@ confirming signal.
 ```
 ├── driver/                          # the library - core-agnostic
 │   ├── dshot_pio.py                 # Low-level PIO driver
-│   └── motor_throttle_group.py      # Multi-motor facade
+│   └── motor_group.py      # Multi-motor facade
 ├── tests/                           # application code
 │   ├── core1_runner.py              # Example Core 1 loop (copy into your project)
 │   ├── test_dshot_single_motor.py   # Single motor test
-│   ├── test_motor_throttle_group.py # Multi-motor test
+│   ├── test_motor_group.py # Multi-motor test
 │   └── demo_manual_control.py       # Interactive demo with display
 ├── specification/
 │   └── DSHOT_PROTOCOL.md     # Protocol documentation

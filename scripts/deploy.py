@@ -49,7 +49,7 @@ LIBRARY_FILES = [
     ("driver/capture_mailbox.py", "capture_mailbox.py"),
     ("driver/dshot_profiles.py", "dshot_profiles.py"),
     ("driver/gcr_decode.py", "gcr_decode.py"),
-    ("driver/motor_throttle_group.py", "motor_throttle_group.py"),
+    ("driver/motor_group.py", "motor_group.py"),
     ("tests/harness/core1_runner.py", "core1_runner.py"),
     ("tests/harness/throttle_profile.py", "throttle_profile.py"),
     ("tests/harness/scenario.py", "scenario.py"),

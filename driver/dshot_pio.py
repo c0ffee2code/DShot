@@ -165,7 +165,7 @@ class DShotPIO:
     # Words the PIO TX FIFO holds before put() starts blocking
     TX_FIFO_DEPTH = 4
 
-    # Exposed for applications and MotorThrottleGroup; see the module constant
+    # Exposed for applications and MotorGroup; see the module constant
     MAX_THROTTLE = MAX_THROTTLE
 
     # Each subclass overrides this. send_throttle_command() inverts the CRC
@@ -331,7 +331,7 @@ class BidirectionalDShot(DShotPIO):
                 start() activates both state machines. From then on RX
                 synchronises itself to each TX frame with no further calls -
                 the application only has to drain it (see drain_rx(), which
-                MotorThrottleGroup.update() calls every tick).
+                MotorGroup.update() calls every tick).
         """
         # Validate before claiming any hardware: a constructor that raises
         # partway through shouldn't leave a stray, half-configured state
@@ -395,7 +395,7 @@ class BidirectionalDShot(DShotPIO):
         # `publish` is true and is dropped otherwise. It takes at most
         # RX_DRAIN_LIMIT captures per call, does no decoding (that is the
         # application's job, on its own schedule - see decode_capture()), and
-        # must be called from one place only (MotorThrottleGroup.update()):
+        # must be called from one place only (MotorGroup.update()):
         # while the loop runs it is the only writer of the published capture.
         #
         # It is the mailbox's own method, bound here, rather than a method of

@@ -52,9 +52,9 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 3. **`DShotPIO` base class, with `UnidirectionalDShot` and `BidirectionalDShot` subclasses**: Main driver. Creates a PIO state machine on the specified pin (inactive until `start()`), provides `send_throttle_command(throttle)` to send 16-bit packets (11-bit throttle + 1-bit telemetry + 4-bit CRC), and `stop()` to deactivate. `BidirectionalDShot` additionally owns the RX state machine that captures the ESC's telemetry reply, and a `CaptureMailbox` (`driver/capture_mailbox.py`, pure Python) that assembles replies from the RX FIFO and holds the latest one for another core to read.
 
-**`driver/motor_throttle_group.py`** - Multi-motor facade (see ADR-004):
+**`driver/motor_group.py`** - Multi-motor facade (see ADR-004):
 
-1. **`MotorThrottleGroup` class**: Takes 1-4 already-built `UnidirectionalDShot`/`BidirectionalDShot` motors (the application picks their state machines and pins) and owns the throttle values and lifecycle for the group. Provides `arm()` (only valid while disarmed), `disarm()`, `update()`, `is_armed()`, `set_throttle()`, `raw_telemetry(index)` and `decode_telemetry(index, words)`. It rejects motors that share a state machine or a pin. `update()` also drains every bidirectional motor's RX FIFO into that motor's one-slot latest capture (discarded while arming); `raw_telemetry()` hands the latest capture out only once armed and holds no data itself. Decoding (`decode_telemetry()`) and retry-on-CRC-failure are the application's business, on its own schedule.
+1. **`MotorGroup` class**: Takes 1-4 already-built `UnidirectionalDShot`/`BidirectionalDShot` motors (the application picks their state machines and pins) and owns the throttle values and lifecycle for the group. Provides `arm()` (only valid while disarmed), `disarm()`, `update()`, `is_armed()`, `set_throttle()`, `raw_telemetry(index)` and `decode_telemetry(index, words)`. It rejects motors that share a state machine or a pin. `update()` also drains every bidirectional motor's RX FIFO into that motor's one-slot latest capture (discarded while arming); `raw_telemetry()` hands the latest capture out only once armed and holds no data itself. Decoding (`decode_telemetry()`) and retry-on-CRC-failure are the application's business, on its own schedule.
 
 2. **Core-agnostic by design**: The library does **not** spawn threads or pick a core. The application calls `update()` at least every 1ms from wherever its architecture dictates. Do not add `_thread` to anything under `driver/` — that inversion is the whole point of ADR-004.
 
@@ -82,11 +82,11 @@ See `specification/DSHOT_PROTOCOL.md` for complete protocol documentation includ
 ```python
 from machine import Pin
 from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
-from motor_throttle_group import MotorThrottleGroup
+from motor_group import MotorGroup
 from core1_runner import Core1Runner  # application code, see tests/
 import utime
 
-motors = MotorThrottleGroup([
+motors = MotorGroup([
     UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600),
     UnidirectionalDShot(1, Pin(5), DSHOT_SPEEDS.DSHOT600),
 ])

@@ -1,5 +1,5 @@
 # Runs a JSON-defined scenario (see tests/harness/scenarios/) against all 4
-# DShot channels through MotorThrottleGroup, exactly the way an application
+# DShot channels through MotorGroup, exactly the way an application
 # uses the library: the group's update() runs on Core 1 (core1_runner.py), and
 # Core 0 arms the group, follows each motor's throttle profile with
 # set_throttle(), and reads telemetry with raw_telemetry(). Raw captures go to
@@ -33,7 +33,7 @@
 
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot
-from motor_throttle_group import MotorThrottleGroup
+from motor_group import MotorGroup
 from core1_runner import Core1Runner
 from scenario import load_scenario
 from bidir_capture_sink import BidirCaptureSink
@@ -155,7 +155,7 @@ def test_scenario_capture():
     outcome = "failed"
 
     try:
-        group = MotorThrottleGroup([build_motor(spec, scenario.dshot_speed) for spec in scenario.motors])
+        group = MotorGroup([build_motor(spec, scenario.dshot_speed) for spec in scenario.motors])
         runner = Core1Runner(group.update, group.UPDATE_INTERVAL_US)
         runner.start()
 

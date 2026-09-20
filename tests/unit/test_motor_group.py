@@ -1,4 +1,4 @@
-# MotorThrottleGroup: construction checks, lifecycle, throttle handling and the
+# MotorGroup: construction checks, lifecycle, throttle handling and the
 # telemetry accessors, against fake state machines and a hand-moved clock.
 #
 # The lifecycle checks are about what the group transmits and when: nothing
@@ -13,7 +13,7 @@ import fakes
 from fakes import Clock, Pin
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, UnsupportedOperationException,
                        DSHOT_SPEEDS)
-from motor_throttle_group import (MotorThrottleGroup, MotorThrottleGroupException,
+from motor_group import (MotorGroup, MotorGroupException,
                                   DISARMED, ARMING, ARMED)
 
 SPEED = DSHOT_SPEEDS.DSHOT300
@@ -38,7 +38,7 @@ class GroupTestCase(unittest.TestCase):
         Clock.reset()
 
     def make(self, motors):
-        return MotorThrottleGroup(motors)
+        return MotorGroup(motors)
 
     def arm_fully(self, group):
         group.arm(ARM_MS)
@@ -55,9 +55,9 @@ class GroupTestCase(unittest.TestCase):
 
 class ConstructionTest(GroupTestCase):
     def test_zero_and_five_motors_are_rejected(self):
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             self.make([])
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             self.make([uni(0, 6), uni(1, 7), uni(2, 8), uni(3, 9), uni(4, 10)])
 
     def test_one_to_four_motors_are_accepted(self):
@@ -66,15 +66,15 @@ class ConstructionTest(GroupTestCase):
             self.assertEqual(group.motor_count, count)
 
     def test_two_motors_on_one_state_machine_are_rejected(self):
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             self.make([uni(0, 6), uni(0, 7)])
 
     def test_a_state_machine_used_as_another_motors_receiver_is_rejected(self):
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             self.make([uni(0, 6), bidir(2, 7), uni(3, 8)])
 
     def test_two_motors_on_one_pin_are_rejected(self):
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             self.make([uni(0, 6), uni(2, 6)])
 
     def test_state_machines_stay_inactive_until_armed(self):
@@ -104,10 +104,10 @@ class ArmingTest(GroupTestCase):
     def test_arm_while_arming_or_armed_is_rejected(self):
         group = self.make([uni(0, 6)])
         group.arm(ARM_MS)
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             group.arm(ARM_MS)
         self.run_until_armed(group)
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             group.arm(ARM_MS)
 
     def test_arming_window_sends_literal_zeros_even_if_a_throttle_is_set(self):
@@ -214,14 +214,14 @@ class ThrottleTest(GroupTestCase):
     def test_set_throttle_rejects_a_bad_index(self):
         group = self.make([uni(0, 6)])
         for index in (-1, 1):
-            with self.assertRaises(MotorThrottleGroupException):
+            with self.assertRaises(MotorGroupException):
                 group.set_throttle(index, 10)
 
     def test_set_all_throttles_needs_one_value_per_motor(self):
         group = self.make([uni(0, 6), uni(1, 7)])
         group.set_all_throttles([10, 3000])
         self.assertEqual(group.get_all_throttles(), [10, group.MAX_THROTTLE])
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             group.set_all_throttles([1])
 
     def test_update_age_counts_from_the_last_transmission(self):
@@ -245,7 +245,7 @@ class TelemetryTest(GroupTestCase):
             self.group.raw_telemetry(1)
 
     def test_raw_telemetry_rejects_a_bad_index(self):
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             self.group.raw_telemetry(9)
 
     def test_no_capture_is_handed_out_while_disarmed_or_arming(self):
@@ -317,7 +317,7 @@ class TelemetryTest(GroupTestCase):
             self.group.decode_telemetry(1, self.CAPTURE)
 
     def test_decode_telemetry_rejects_a_bad_index(self):
-        with self.assertRaises(MotorThrottleGroupException):
+        with self.assertRaises(MotorGroupException):
             self.group.decode_telemetry(5, self.CAPTURE)
 
 

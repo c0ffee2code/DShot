@@ -139,7 +139,7 @@ self._throttles[motor_index] = value
 ### Implementation Pattern
 
 ```python
-class MotorThrottleGroup:
+class MotorGroup:
     def __init__(self, pins, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         # pins: list of Pin objects, e.g. [Pin(4), Pin(5)]
         # Create DShotPIO instances internally
@@ -233,7 +233,7 @@ This is safe because each write is atomic and Core 1 will pick up the zeros with
 | Test | Result | Notes |
 |------|--------|-------|
 | `test_dshot_single_motor.py` | Pass | Low-level driver, 1ms command interval |
-| `test_motor_throttle_group.py` | Pass | Facade, both motors arm reliably |
+| `test_motor_group.py` | Pass | Facade, both motors arm reliably |
 
 ### Verified Parameters
 
@@ -248,7 +248,7 @@ Tested with specific hardware (JHEMCU 40A ESC + test bench motors). Not tested w
 
 ### Key Finding
 
-The dual-core architecture completely eliminated arming failures. Previously, arming succeeded ~50% of the time with one motor often failing. After implementing `MotorThrottleGroup`, both motors arm reliably every time.
+The dual-core architecture completely eliminated arming failures. Previously, arming succeeded ~50% of the time with one motor often failing. After implementing `MotorGroup`, both motors arm reliably every time.
 
 ## References
 

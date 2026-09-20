@@ -3,7 +3,7 @@
 **Status:** Deferred — superseded by the 2026-08 implementation work below (RX
 capture + eRPM decode verified on hardware, 100% CRC-valid across two
 independent confirmation sweeps). The driver now exposes bidirectional
-telemetry through `BidirectionalDShot` and `MotorThrottleGroup` (see
+telemetry through `BidirectionalDShot` and `MotorGroup` (see
 [ADR-005](ADR-005-bidirectional-telemetry-data-flow.md)); the formal flip to
 Accepted is still pending, as decoding non-eRPM frames (extended telemetry, the
 stopped-motor value) and the motor pole count are still open. The
@@ -36,7 +36,7 @@ row's evidence is in the dated sections below.
 | Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing); corruption after a stall under the production command loop not re-tested |
 | RX FIFO management | Drained on every command-loop tick, capped per call (ADR-005); steady operation verified, deliberate consumer stalls not re-tested |
 | Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4 fails and is parked, cause unknown; four bidirectional motors through the facade not verified |
-| Public API integration | Implemented (`BidirectionalDShot`, `MotorThrottleGroup`); one bidirectional motor verified through the facade, several not yet |
+| Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one bidirectional motor verified through the facade, several not yet |
 | DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
 | Non-eRPM frames (extended telemetry, stopped-motor value) | Not handled |
 | Telemetry loss and health tracking | Not implemented |
@@ -377,7 +377,7 @@ If pursuing bidirectional DShot in the future:
 ### Phase 4: Telemetry Processing
 1. GCR decoding in Python
 2. eRPM calculation
-3. Integration with `MotorThrottleGroup` facade
+3. Integration with `MotorGroup` facade
 
 ## Decision
 
@@ -474,7 +474,7 @@ candidates so they survive context resets, not a final decision.
   substitute for actually running the decode + CRC check: it can't
   distinguish real capture from coincidence. Do this arithmetic before
   declaring an RX capture path verified, not after.
-- `MotorThrottleGroup`/`DShotPIO`'s `rx_resync()` (`StateMachine.restart()`)
+- `MotorGroup`/`DShotPIO`'s `rx_resync()` (`StateMachine.restart()`)
   was independently confirmed correct at the PC level - MicroPython's own
   docs state `restart()` "restarts the state machine and jumps to the
   beginning of the program," equivalent to the Pico C-SDK's
@@ -813,12 +813,12 @@ clean bits from it.
   200/200 simulation result as evidence for a 22-bit frame - it's
   disproven.
 
-**Status: Phase 3 verified. Not yet integrated into `MotorThrottleGroup` or
+**Status: Phase 3 verified. Not yet integrated into `MotorGroup` or
 `DShotPIO`'s public API** (Phase 4/5 per the original plan) - the decode
 pipeline currently lives only in the offline `scripts/decode_bidir_capture.py`
 tool. *(As of 2026-09: the decode now also runs on the device in
 `driver/gcr_decode.py`, and telemetry is exposed through `BidirectionalDShot`
-and `MotorThrottleGroup` - see ADR-005. This paragraph describes the state on
+and `MotorGroup` - see ADR-005. This paragraph describes the state on
 2026-08-23.)* The 128-sample/4-word capture width and `MAX_SNAPSHOT_WORDS` in
 `tests/test_bidir_rx_raw.py` are still sized for investigation (generous
 margin for finding period/alignment), not necessarily final production
@@ -1143,7 +1143,7 @@ bundled draining and decoding and has been removed. `BidirectionalDShot` now
 drains in `drain_rx()`, hands out the latest capture via `latest_capture()`,
 and decodes on request via `decode_capture()` (see ADR-005); the decode
 algorithm and its timing findings below are unchanged. The remark that no
-telemetry consumer exists yet is also out of date: `MotorThrottleGroup`
+telemetry consumer exists yet is also out of date: `MotorGroup`
 integration has since been done.*
 
 The two characterization sections above ("Unpaced continuous send/drain
@@ -1240,7 +1240,7 @@ sweep itself is optimized. This project's own regressions produce
 every viable option lands in the same regime: a periodically sampled
 validity signal somewhere between the ~10-24/sec now shipped and a
 theoretical ~100/sec. With no telemetry consumer built yet
-(`MotorThrottleGroup` integration remains deferred, as before), nothing
+(`MotorGroup` integration remains deferred, as before), nothing
 currently needs more than what's shipped now, so this is where the
 optimization work stops - not because a faster version isn't possible
 (the bare-constant measurement proves one is, exactly), but because
