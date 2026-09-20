@@ -1,4 +1,5 @@
-# Test: the run-length PIO receiver (dshot_bidir_rx_rle) against a real ESC
+# The run-length PIO receiver (dshot_bidir_rx_rle) against a real ESC. Shared by
+# test_rle_receiver_300.py and test_rle_receiver_600.py, which pick the speed.
 #
 # Purpose: dshot_bidir_rx_rle rebuilds the ESC's reply in the state machine and
 # hands the CPU one 21-bit frame per reply, instead of 128 raw samples that the
@@ -25,14 +26,13 @@
 from array import array
 from machine import Pin
 from rp2 import StateMachine
-from dshot_pio import (DShotPIO, BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS,
+from dshot_pio import (DShotPIO, BidirectionalDShot, UnidirectionalDShot,
                        dshot_bidir_tx, dshot_bidir_rx_rle, rle_rx_speed)
 from motor_group import MotorGroup
 from core1_runner import Core1Runner
 import gcr_decode
 import utime
 
-DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300  # DSHOT600 also passes: change this line to run it
 THROTTLE = 100
 ARM_DURATION_MS = 3000
 ARM_TIMEOUT_MS = ARM_DURATION_MS + 1000
@@ -69,9 +69,10 @@ class RunLengthDShot(BidirectionalDShot):
         DShotPIO.start(self)
 
 
-def test_rle_receiver():
+def run(dshot_speed):
+    """Run the bench check at `dshot_speed` (a DSHOT_SPEEDS value); any failure raises."""
     print("=== Run-length receiver test ===")
-    print("receiver clock: " + str(rle_rx_speed(DSHOT_SPEED)) + " Hz")
+    print("receiver clock: " + str(rle_rx_speed(dshot_speed)) + " Hz")
 
     frames = array('I', [0] * RING)
     written = array('I', [0])
@@ -85,13 +86,13 @@ def test_rle_receiver():
                 frames[written[0] & (RING - 1)] = word
                 written[0] += 1
 
-    bidir = RunLengthDShot(0, Pin(6), DSHOT_SPEED, 1, drain)
+    bidir = RunLengthDShot(0, Pin(6), dshot_speed, 1, drain)
     rx.append(bidir.rx_sm)
     motors = MotorGroup([
         bidir,
-        UnidirectionalDShot(4, Pin(7), DSHOT_SPEED),
-        UnidirectionalDShot(5, Pin(8), DSHOT_SPEED),
-        UnidirectionalDShot(6, Pin(9), DSHOT_SPEED),
+        UnidirectionalDShot(4, Pin(7), dshot_speed),
+        UnidirectionalDShot(5, Pin(8), dshot_speed),
+        UnidirectionalDShot(6, Pin(9), dshot_speed),
     ])
     runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
 
@@ -200,5 +201,3 @@ def test_rle_receiver():
     print()
     print("=== Test Complete ===")
 
-
-test_rle_receiver()

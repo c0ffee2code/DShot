@@ -59,6 +59,7 @@ LIBRARY_FILES = [
     ("tests/harness/capture_sink.py", "capture_sink.py"),
     ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
     ("tests/harness/decode_tally.py", "decode_tally.py"),
+    ("tests/experimental/rle_bench.py", "rle_bench.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "run_scenario.py"
