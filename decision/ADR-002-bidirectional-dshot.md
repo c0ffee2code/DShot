@@ -254,6 +254,45 @@ constrained channel 1 vs channels 2-4's PIO block placement.
 | **B. Dual SM (TX+RX)** | 2 | 4 | 8 |
 | **C. Shared RX** | 1.5 | 3 | 9 |
 
+### State machines and instruction memory (2026-09-20)
+
+A PIO block has two separate resources, and it helps to keep them apart:
+
+- **4 state machines**, the workers. Each has its own clock divider, FIFOs and
+  registers, and runs one program at a time. The chip has 3 blocks, so 12.
+- **32 instruction slots**, shared by the 4 state machines of that block. A
+  program takes its slots once per block, however many state machines run it: two
+  state machines running the same program use the same copy. (Confirmed on hardware
+  on 2026-08-30: two bidirectional pairs on one block, each pair needing 23 slots,
+  ran and answered - two separate copies would have been 46 slots and would not
+  have loaded.)
+
+What the programs take:
+
+| Program | Slots |
+|---|---|
+| `dshot` (unidirectional transmit) | 4 |
+| `dshot_bidir_tx` (bidirectional transmit) | 13 |
+| `dshot_bidir_rx` (receive, oversampling) | 10 |
+
+A bidirectional motor is one transmit and one receive state machine on the same
+block, the receiver one id above the transmitter (see the synchronisation
+sections below), so a pair needs 23 slots and 2 state machines, and every further
+pair on that block adds 2 state machines and no slots. Four bidirectional motors,
+one pair each:
+
+| Block | State machines | Programs loaded | Slots used |
+|---|---|---|---|
+| PIO0 | sm0 TX + sm1 RX (motor 1), sm2 TX + sm3 RX (motor 2) | `dshot_bidir_tx` + `dshot_bidir_rx` | 23 of 32 |
+| PIO1 | sm4 TX + sm5 RX (motor 3), sm6 TX + sm7 RX (motor 4) | `dshot_bidir_tx` + `dshot_bidir_rx` | 23 of 32 |
+| PIO2 | free (sm8 to sm11) | none | 0 of 32 |
+
+That is 8 of the 12 state machines. The bench's present layout (channels 1 and 3
+bidirectional, 2 and 4 unidirectional) puts a bidirectional pair and one
+unidirectional state machine on each of PIO0 and PIO1: 23 + 4 = 27 slots. Each
+pair's two state machines have their own synchronisation flag (see the per-pair
+sections below), so pairs on one block do not interfere.
+
 ### Recommended: Option B (Dual SM per Motor)
 
 *The dual-SM-per-motor direction was validated: the implemented design
