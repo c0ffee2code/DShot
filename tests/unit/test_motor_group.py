@@ -158,6 +158,42 @@ class ArmingTest(GroupTestCase):
         self.assertEqual(group.motors[1].sm.sent, [(500 << 4 | ((500 ^ (500 >> 4) ^ (500 >> 8)) & 0xF)) << 16])
 
 
+class UpdateOrderTest(GroupTestCase):
+    """Every bidirectional motor is drained before any command is sent."""
+
+    def logged_group(self):
+        log = []
+        motors = [bidir(0, 6), uni(2, 7), bidir(4, 8), uni(6, 9)]
+        for i, motor in enumerate(motors):
+            def send(throttle, i=i, real=motor.send_throttle_command):
+                log.append(("send", i))
+                real(throttle)
+            motor.send_throttle_command = send
+            if motor.bidirectional:
+                def drain(publish, i=i, real=motor.drain_rx):
+                    log.append(("drain", i, publish))
+                    real(publish)
+                motor.drain_rx = drain
+        return self.make(motors), log
+
+    def assert_drains_come_first(self, log, publish):
+        self.assertEqual(log, [("drain", 0, publish), ("drain", 2, publish),
+                               ("send", 0), ("send", 1), ("send", 2), ("send", 3)])
+
+    def test_while_arming(self):
+        group, log = self.logged_group()
+        group.arm(ARM_MS)
+        group.update()
+        self.assert_drains_come_first(log, False)
+
+    def test_while_armed(self):
+        group, log = self.logged_group()
+        self.arm_fully(group)
+        del log[:]
+        group.update()
+        self.assert_drains_come_first(log, True)
+
+
 class DisarmTest(GroupTestCase):
     def test_disarm_transmits_zeros_then_deactivates(self):
         group = self.make([uni(0, 6), uni(1, 7)])

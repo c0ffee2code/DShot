@@ -245,8 +245,8 @@ class MotorGroup:
 
     def update(self):
         """
-        Send one DShot command to each motor, drain each bidirectional
-        motor's reply FIFO, and advance the arming sequence.
+        Drain each bidirectional motor's reply FIFO, send one DShot command to
+        each motor, and advance the arming sequence.
 
         The application calls this at least every UPDATE_INTERVAL_US, from
         whichever core or scheduling arrangement it chooses. Draining here is
@@ -254,6 +254,13 @@ class MotorGroup:
         the captures that follow, so it must not depend on the application
         remembering a second call. Replies drained while ARMING are discarded
         (before the ESC arms, what the receiver hears is our own transmit).
+
+        The drain comes first, before any command is queued. A reply capture
+        fills the RX FIFO exactly, and the next command starts the next capture
+        within tens of microseconds; if the old capture were still in the FIFO
+        by then, the receiver would stall on its first new word and the reply
+        after it would be lost. With several bidirectional motors the one
+        drained last was the one that suffered.
 
         Does nothing while disarmed, so it is always safe to call - including
         before arm() or after disarm(), when the state machines are inactive
@@ -271,14 +278,14 @@ class MotorGroup:
             if utime.ticks_diff(now, self.last_update_ms) > self.ARM_GAP_TOLERANCE_MS:
                 self.arm_started_ms = now
 
+            for motor in self.bidir_motors:
+                motor.drain_rx(False)
+
             # Send literal zeros rather than the throttle array, so the arming
             # window stays genuinely at zero even if the application sets a
             # throttle early
             for motor in self.motors:
                 motor.send_throttle_command(0)
-
-            for motor in self.bidir_motors:
-                motor.drain_rx(False)
 
             if utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms:
                 # Re-read rather than promoting from the snapshot above: a
@@ -288,13 +295,13 @@ class MotorGroup:
                 if self.state == ARMING:
                     self.state = ARMED
         else:
+            for motor in self.bidir_motors:
+                motor.drain_rx(True)
+
             throttles = self.throttles
             motors = self.motors
             for i in range(self.motor_count):
                 motors[i].send_throttle_command(throttles[i])
-
-            for motor in self.bidir_motors:
-                motor.drain_rx(True)
 
         self.last_update_ms = now
 
