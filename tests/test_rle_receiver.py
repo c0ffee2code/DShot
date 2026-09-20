@@ -32,7 +32,7 @@ from core1_runner import Core1Runner
 import gcr_decode
 import utime
 
-DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300
+DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300  # DSHOT600 also passes: change this line to run it
 THROTTLE = 100
 ARM_DURATION_MS = 3000
 ARM_TIMEOUT_MS = ARM_DURATION_MS + 1000

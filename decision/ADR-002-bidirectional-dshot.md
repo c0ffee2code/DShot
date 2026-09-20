@@ -1838,9 +1838,11 @@ a frame never has to be detected.
   100% CRC-valid and 21.4k to 21.8k). Decoding a frame - `decode()` and
   `check_crc()`, all that is left for the CPU - took 214us on average and 345us at
   most, against 1.27ms for the raw path. No frame was lost from a 64-frame ring
-  drained by the application core.
+  drained by the application core. At DSHOT600 (receiver clock 12.40MHz) the same
+  bench gave 10,009 replies in 5 seconds, all valid, eRPM 21.6k to 21.8k, decode
+  212us on average and 298us at most.
 
-Not settled by the spike: DSHOT600 on hardware; behaviour when the ESC does not
+Not settled by the spike: behaviour when the ESC does not
 reply, replies partially or before arming (the program waits for a falling edge
 like the raw receiver, so it can take the transmitter's own waveform for a reply
 in the same way, and nothing has checked how that looks in a 21-bit frame); a

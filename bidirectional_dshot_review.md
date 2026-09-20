@@ -1081,7 +1081,7 @@ but not a squash).
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
 | W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | IN PROGRESS |
-| W19 | Run-length capture in the PIO receiver | — | L | SPIKE DONE on branch `feature/pio-run-length-capture` (2026-09-20): 100% CRC-valid on the bench, decode 214us; not adopted, several checks open |
+| W19 | Run-length capture in the PIO receiver | — | L | SPIKE DONE on branch `feature/pio-run-length-capture` (2026-09-20): 100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us; not adopted, several checks open |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
 | W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | DONE (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — bench-confirmed on `telemetry_settled_300/600`, `two_channel_divergent_300/600`, `test_bidir_restart_cycles.py` (x2, 6/6 cycles), `smoke_unidirectional` (x2); the disarm-hang bug is fixed for both single and multi-bidirectional-motor cases and re-arming works |
@@ -1932,7 +1932,7 @@ speed up the command loop, since decode is already off it.
 Spike outcome: step 1 and parts of 2 and 3 are done - the program exists (`dshot_bidir_rx_rle`, 19 of the block's
 32 slots, which fills the block with the transmit program), a PC model matches the current decoder on
 10,867 stored replies, and the bench shows 9,971 of 9,971 replies CRC-valid at DSHOT300 with a decode of
-214us (raw path 1.27ms). Still open: DSHOT600 on hardware, no-reply/partial/pre-arming behaviour, a
+214us (raw path 1.27ms); DSHOT600 on the bench: 10,009 of 10,009, 212us. Still open: no-reply/partial/pre-arming behaviour, a
 stalled drain, frame-for-frame agreement on live replies, and fitting it into `CaptureMailbox`.
 
 Steps, if picked up:
