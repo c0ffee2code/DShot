@@ -15,7 +15,8 @@ were silently counted as expected divergences rather than flagged. The
 check never failed, but for those sessions it also was not actually
 checking anything.
 
-1. Stress-harness format ("<IBBB4I", tests/harness/stress_capture_sink.py):
+1. Stress-harness format ("<IBBB4I"; written by a stress harness that has since
+   been removed, and kept here so its stored sessions can still be read):
    (ticks_us, channel, phase, word_count, w0, w1, w2, w3) - one record per
    sampled tick; word_count==4 means this record IS a complete group.
    meta.txt for these sessions has no "record_fmt" field at all (predates
@@ -23,14 +24,15 @@ checking anything.
    the time) - default to this format when record_fmt is absent.
 
 2. Main scenario-capture format ("<I4H16I",
-   tests/harness/bidir_capture_sink.py / scenario_runner.py): (ticks_us,
-   throttle0..3, motor0_w0..w3, motor1_w0..w3, motor2_w0..w3,
-   motor3_w0..w3) - one record per completed telemetry group from ANY
-   motor, carrying all 4 motors' throttle plus whichever motor(s) actually
-   completed a group this tick; a non-completing motor's word slot is
-   explicitly zeroed for that record (see scenario_runner.py's loop()), so
-   a real capture is never all-zero and "all zero" reliably means "this
-   motor didn't complete this tick." Which motor indices are even
+   tests/harness/bidir_capture_sink.py, written by tests/harness/run_scenario.py):
+   (ticks_us, throttle0..3, motor0_w0..w3, motor1_w0..w3, motor2_w0..w3,
+   motor3_w0..w3) - one record per pass in which ANY motor had a capture it
+   had not shown before, carrying all 4 motors' throttle plus whichever
+   motor(s) had a new capture; a motor without one has its word slot zeroed
+   for that record, so a real capture is never all-zero and "all zero"
+   reliably means "no new capture from this motor in this record." (Sessions
+   from before 2026-09-20 recorded every completed group instead, one record
+   per group; the layout is the same.) Which motor indices are even
    bidirectional-capable is recorded in meta.txt's bidir_motor_indices
    (comma-separated).
 """

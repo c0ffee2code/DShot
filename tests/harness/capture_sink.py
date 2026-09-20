@@ -1,14 +1,14 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library.
 #
 # The SD card, RTC and session-folder lifecycle shared by the capture sinks
-# (bidir_capture_sink.py, stress_capture_sink.py). Each sink adds only what
-# differs: its record format, what it writes as provenance, and its meta fields.
+# (bidir_capture_sink.py today; other sinks would add only what differs: their
+# record format, what they write as provenance, and their meta fields).
 #
 # PicoBell Adalogger for Pico pinout (learn.adafruit.com/
 # adafruit-picowbell-adalogger-for-pico/pinouts): SD card on SPI0
 # (MISO=GPIO16, CS=GPIO17, SCK=GPIO18, MOSI=GPIO19), PCF8523 RTC on I2C
 # (SDA=GPIO4, SCL=GPIO5, address 0x68). All four DShot channels in
-# tests/test_scenario_capture.py sit on a contiguous GPIO6-9 block, clear of
+# tests/harness/run_scenario.py sit on a contiguous GPIO6-9 block, clear of
 # both this board's I2C pins and its SD card's GPIO16-19.
 #
 # Mirrors the SdSink lifecycle proven on the sister test rig (Flight-Benchy,

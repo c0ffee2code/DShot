@@ -1,7 +1,7 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library.
 #
 # Loads and validates a scenario JSON file (see tests/harness/scenarios/ and
-# tests/test_scenario_capture.py) into a Scenario/MotorSpec object graph.
+# tests/harness/run_scenario.py) into a Scenario/MotorSpec object graph.
 #
 # Every check here is fail-fast and raises ValueError before any hardware is
 # touched - a scenario with a bad throttle curve or an impossible PIO wiring

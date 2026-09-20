@@ -3,10 +3,10 @@ deploy.py - upload the DShot driver + test harness to the Pico, then run a
 test script live (streams output for the duration of the test).
 
 Run from project root:
-  python scripts/deploy.py                       # runs the default test script
+  python scripts/deploy.py --scenario tests/harness/scenarios/two_channel_divergent_300.json
+                                                   # runs the scenario runner (the default script)
   python scripts/deploy.py test_capture_slot_stress.py   # runs another script from tests/harness or tests/device
-  python scripts/deploy.py run_scenario.py --scenario tests/harness/scenarios/two_channel_divergent_300.json
-                                                   # also uploads the scenario file as scenario.json
+                                                   # --scenario uploads the file as scenario.json
 
 Pico must be connected on COM10. mpremote interrupts any running script on connect.
 
@@ -60,11 +60,11 @@ LIBRARY_FILES = [
     ("tests/harness/decode_tally.py", "decode_tally.py"),
 ]
 
-DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
+DEFAULT_TEST_SCRIPT = "run_scenario.py"
 
 # Where a script named on the command line is looked for, in order. tests/unit is
 # not here: those tests run on a PC, not on the Pico.
-SCRIPT_DIRS = ["tests/harness", "tests/device", "tests"]
+SCRIPT_DIRS = ["tests/harness", "tests/device"]
 
 # Fixed device-side name run_scenario.py opens - mpremote's `run`
 # has no mechanism to pass an extra file/argument into the running script,

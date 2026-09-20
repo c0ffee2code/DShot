@@ -4,7 +4,7 @@ hardware involved. Prints each motor's compiled throttle waypoints so a
 ramp/repeat expansion can be eyeballed before ever touching hardware.
 
 Run from project root:
-  python scripts/check_scenario.py tests/harness/scenarios/dual_motor_divergent.json
+  python scripts/check_scenario.py tests/harness/scenarios/two_channel_divergent_300.json
 
 Reuses tests/harness/scenario.py and throttle_profile.py unmodified - they
 avoid MicroPython-only APIs, so the exact same validation this script runs

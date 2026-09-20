@@ -45,8 +45,8 @@ session where the ESC never replied at all naturally has zero groups to
 check and would otherwise pass with "0 groups, 0 mismatches" looking
 identical to a real, clean result. See capture_session.py's
 expects_bidir_groups(). A session whose own on-device runtime check (the
-reply failsafe - see tests/test_scenario_capture.py's
-_check_reply_failsafe - or any other expect-block violation) already
+reply failsafe - see tests/harness/run_scenario.py's
+check_reply_failsafe - or any other expect-block violation) already
 tripped and recorded outcome=failed is a known, self-diagnosed failure and
 is skipped outright rather than flagged - the anomaly path is specifically
 for a zero-group session that still claims outcome=completed, i.e. one the
@@ -152,7 +152,7 @@ def verify_session(session_dir):
     meta = load_meta(session_dir)
 
     # A session whose own reply failsafe already tripped (see
-    # tests/test_scenario_capture.py's _check_reply_failsafe) is a known,
+    # tests/harness/run_scenario.py's check_reply_failsafe) is a known,
     # self-diagnosed failure - skip it rather than counting it against the
     # regression bar. The alternative (still flagging it) would make this
     # check permanently red for as long as any failed run sits in

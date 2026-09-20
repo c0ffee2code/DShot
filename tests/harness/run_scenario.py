@@ -148,7 +148,7 @@ def arm_group(group, scenario, runner, bidir_indices):
     print()
 
 
-def test_scenario_capture():
+def run_scenario():
     print("=== Scenario Capture ===")
 
     scenario = load_scenario(SCENARIO_PATH)
@@ -303,4 +303,4 @@ def test_scenario_capture():
         raise RuntimeError("decode expectations missed: " + "; ".join(failures))
 
 
-test_scenario_capture()
+run_scenario()
