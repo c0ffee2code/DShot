@@ -186,16 +186,15 @@ def dshot_bidir_rx():
 # a nop where the high path spends a jump, so a bit is 16 cycles at either level
 # and a run of low bits does not drift against a run of high bits.
 #
-# It takes 20 of a PIO block's 32 instruction slots; dshot_bidir_tx takes 12.
-# A block that carries this pair has no room for another program.
+# It takes 19 of a PIO block's 32 instruction slots and dshot_bidir_tx takes 13,
+# so a block that carries this pair is full: no other program fits beside it,
+# not even dshot_bidir_rx.
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=21)
 def dshot_bidir_rx_rle():
     wrap_target()
     irq(clear, rel(0))               # step 1: as dshot_bidir_rx
     wait(1, irq, rel(0))
-    set(x, 1)
-    label("predelay")
-    jmp(x_dec, "predelay")     [6]
+    nop()                      [26]  # 27 cycles: the same 4.2us / 2.2us lower bound dshot_bidir_rx waits (its step 2)
     wait(0, pin, 0)                  # the marker edge: the pin is now low
     set(y, 20)                       # 21 reads: y counts 20..0
     label("flip_low")
