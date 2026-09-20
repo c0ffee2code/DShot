@@ -65,7 +65,7 @@ DEFAULT_TEST_SCRIPT = "run_scenario.py"
 
 # Where a script named on the command line is looked for, in order. tests/unit is
 # not here: those tests run on a PC, not on the Pico.
-SCRIPT_DIRS = ["tests/harness", "tests/device"]
+SCRIPT_DIRS = ["tests/harness", "tests/device", "tests/experimental"]
 
 # Fixed device-side name run_scenario.py opens - mpremote's `run`
 # has no mechanism to pass an extra file/argument into the running script,

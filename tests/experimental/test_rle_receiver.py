@@ -3,13 +3,13 @@
 # Purpose: dshot_bidir_rx_rle rebuilds the ESC's reply in the state machine and
 # hands the CPU one 21-bit frame per reply, instead of 128 raw samples that the
 # CPU turns into a frame. This runs it on the bench, on the same wiring and at
-# the same settled throttle as tests/test_motor_group_telemetry.py, which is the
+# the same settled throttle as the telemetry_settled scenarios, which are the
 # baseline for the raw receiver (>=98% CRC-valid, eRPM around 21k at throttle
 # 100), so the two can be compared.
 #
 # The bidirectional motor uses the run-length receiver and its own drain in
-# place of the CaptureMailbox: the mailbox takes 4-word captures, this receiver produces one word per reply. The drain keeps
-# every frame in a ring for Core 0 to decode at its own pace, which also gives
+# place of the CaptureMailbox: the mailbox takes 4-word captures, this receiver
+# produces one word per reply. The drain keeps every frame in a ring for Core 0 to decode at its own pace, which also gives
 # a per-frame count (the mailbox keeps only the latest).
 #
 # Reports: frames received, how many decode to a valid GCR frame and pass the
@@ -27,7 +27,7 @@ from machine import Pin
 from rp2 import StateMachine
 from dshot_pio import (DShotPIO, BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS,
                        dshot_bidir_tx, dshot_bidir_rx_rle, rle_rx_speed)
-from motor_throttle_group import MotorThrottleGroup
+from motor_group import MotorGroup
 from core1_runner import Core1Runner
 import gcr_decode
 import utime
@@ -87,7 +87,7 @@ def test_rle_receiver():
 
     bidir = RunLengthDShot(0, Pin(6), DSHOT_SPEED, 1, drain)
     rx.append(bidir.rx_sm)
-    motors = MotorThrottleGroup([
+    motors = MotorGroup([
         bidir,
         UnidirectionalDShot(4, Pin(7), DSHOT_SPEED),
         UnidirectionalDShot(5, Pin(8), DSHOT_SPEED),
