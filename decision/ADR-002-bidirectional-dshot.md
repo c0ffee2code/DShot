@@ -423,8 +423,8 @@ bench and is out of date.*
 ## Implementation Update (2026-08-23)
 
 The blocker above is gone: a Skystar KM55A2 (4-in-1, AM32 firmware) is now on the
-bench and already proven for unidirectional DShot300 (see `tests/test_slow_spin.py`
-and README's "Verified Parameters"). AM32 supports bidirectional DShot natively -
+bench and already proven for unidirectional DShot300 (the unidirectional group scenario `smoke_unidirectional.json`, formerly
+`tests/test_slow_spin.py`, and README's "Verified Parameters"). AM32 supports bidirectional DShot natively -
 no ESC programmer or Bluejay flash needed. Implementation is underway on
 `feature/bidirectional-dshot`; this section records findings and open design
 candidates so they survive context resets, not a final decision.
@@ -820,13 +820,13 @@ tool. *(As of 2026-09: the decode now also runs on the device in
 `driver/gcr_decode.py`, and telemetry is exposed through `BidirectionalDShot`
 and `MotorGroup` - see ADR-005. This paragraph describes the state on
 2026-08-23.)* The 128-sample/4-word capture width and `MAX_SNAPSHOT_WORDS` in
-`tests/test_bidir_rx_raw.py` are still sized for investigation (generous
+`tests/test_bidir_rx_raw.py` (since removed) are still sized for investigation (generous
 margin for finding period/alignment), not necessarily final production
 values - revisit if/when integrating into the driver proper.
 
 ### Confirmation sweep: full throttle range, gradual ramp (2026-08-23)
 
-A longer, wider-coverage run (`tests/test_bidir_rx_sweep.py`) to confirm
+A longer, wider-coverage run (`tests/test_bidir_rx_sweep.py`, since removed) to confirm
 the 17/17 result generalizes beyond the original short test, not just a
 fluke of one throttle range. 12 throttle levels, 50-600 in steps of 50
 (this ESC's power protection trips on sharp increases, not gradual ones -
@@ -879,7 +879,7 @@ A further run addressing two things the previous sweep didn't cover:
 throttle 50 was too low to be a usable base (audibly rough/unstable spin,
 confirmed by ear, not just the wide RPM range above), and the previous
 sweep never tested ramping back down. Same script
-(`tests/test_bidir_rx_sweep.py`), updated profile: 60 as a brief 3s
+(`tests/test_bidir_rx_sweep.py`, since removed), updated profile: 60 as a brief 3s
 post-arm settle throttle (avoids the throttle-50 roughness), then
 measured steps starting at 100, up in 50-unit increments to 600, then back
 down in 100-unit increments to 100 (larger steps are safe on the way down
@@ -1330,7 +1330,7 @@ expected polarity divergences), and the new fixed path is clean (4,743
 groups checked against `captures/2026-09-12_13-04-36`, 0 real mismatches).
 
 **On-device timing, measured, not projected:** `tests/test_gcr_decode_timing.py`
-now benchmarks both paths side by side. Sweep (DSHOT300@4MHz, the old path):
+(since removed) now benchmarked both paths side by side. Sweep (DSHOT300@4MHz, the old path):
 min=45,020µs mean=70,331µs max=108,063µs. Fixed (DSHOT300@3.375MHz, K=9):
 min=9,737µs mean=10,852µs max=21,064µs - a **6.5x mean speedup**, and the
 worst-case implied sustainable rate rose from 9 to 47 decodes/sec,
@@ -1344,8 +1344,8 @@ group still decodes correctly on both paths (7/7 OK, no mismatches).
   (`scripts/capture_session.py`) and both distinguish a session that
   legitimately has no bidir groups from one that declares a bidir motor
   but never got a real reply (an anomaly, not a silent pass).
-- `tests/test_scenario_capture.py` gained a runtime reply failsafe
-  (`_check_reply_failsafe`): any scenario with a bidirectional motor now
+- `tests/harness/run_scenario.py` (then `tests/test_scenario_capture.py`) gained a runtime reply failsafe
+  (`check_reply_failsafe`): any scenario with a bidirectional motor now
   fails fast (~2s grace) if not one single captured record carries a
   real, non-all-zero reply, rather than running to completion and only
   revealing a dead ESC/bench in a post-hoc tally. This is what caught the
@@ -1401,7 +1401,7 @@ anomalies** - 24 sessions correctly skipped as self-diagnosed failures
 (`outcome=failed`), 25 correctly skipped as recorded at a now-untuned rate.
 
 **On-device timing, both speeds, post-retirement:** `tests/test_gcr_decode_timing.py`
-was rewritten to drop the sweep arm entirely (there is nothing left to
+(since removed) was rewritten to drop the sweep arm entirely (there is nothing left to
 benchmark it against) and now benchmarks both speeds' fixed-ratio paths
 side by side. Period search (`estimate_bit_period_fixed`) costs ~55-56µs
 either way - about 1% of total decode cost - down from the sweep's 79-88%
@@ -1419,7 +1419,7 @@ PC-side reference and regression check are both updated and passing
 clean. Adding bidirectional support for any DShot speed beyond these two
 would need the same measure-K-candidates-on-hardware method repeated from
 scratch - the tooling built for it (`tests/harness/scenarios/
-period_tally_short*.json`, `scripts/tally_period_cycles.py`,
+period_tally_short*.json` (since removed), `scripts/tally_period_cycles.py`,
 `scripts/capture_session.py`, `scripts/deploy.py`'s reset-before-run) is
 all reusable as-is.
 
@@ -1499,8 +1499,9 @@ three channels.
 
 Measured on the bench board (MicroPython v1.28.0, 150MHz, no global interpreter
 lock) with no ESC or motor: state machines on unused pins, the transmitter's own
-waveform captured as stand-in replies. The benchmarks are `tests/bench_cpu_costs.py`,
-`bench_loop_gaps.py`, `bench_drain_real.py` and `bench_decode.py`.
+waveform captured as stand-in replies. The benchmarks were `tests/bench_cpu_costs.py`,
+`bench_loop_gaps.py`, `bench_drain_real.py` and `bench_decode.py`, removed once their figures
+were recorded here (they remain in git history).
 
 **Where the time goes.** The interpreter is slow on this build - an empty loop
 iteration takes 1.7us - and cost follows bytecode and call count, not the work
@@ -1538,7 +1539,8 @@ has not been shown on a real ESC.
 - `send_throttle_command` passes the 16-bit packet to `put(packet, 16)` and lets
   the C side do the shift. Shifting in Python made a heap integer per frame at
   higher throttle. The words put on the FIFO were checked to be identical for
-  every throttle in both CRC polarities (`tests/test_put_shift.py`), and sends
+  every throttle in both CRC polarities (`tests/test_put_shift.py`, since replaced by the packet unit test in
+  `tests/unit/test_dshot_packet.py`), and sends
   now allocate nothing.
 - The decoder works on integers: the edges come from XOR-ing each half-word with
   itself shifted by one, the frame is built as an integer and differential
@@ -1549,7 +1551,8 @@ has not been shown on a real ESC.
   mismatch against the PC-side reference over 690,901 groups.
 
 **How the integer decoder works, on a real capture.** The example is the first
-DSHOT300 capture in `tests/test_gcr_decode_timing.py`, taken from the bench ESC
+DSHOT300 capture in `tests/test_gcr_decode_timing.py` (its captures now live in
+`tests/unit/test_gcr_decode.py`), taken from the bench ESC
 with a slowly turning motor. The wire is read 128 times and the readings are
 packed into four 32-bit words; the decoder has to recover the 21-bit reply from
 them. The old decoder expanded all 128 readings into a list of (cycle, value)
@@ -1681,7 +1684,7 @@ overhead per tick; a lookup table of packets and a flattened loop measured about
 10 times faster in a prototype but restructure the hot path and move the
 throttle validation, so they were left. When to collect garbage - for example at
 points where a stall is harmless - is a scheduling matter for the application.
-The scenario harness's `ScenarioRunner` still reads words one at a time.
+The scenario harness no longer reads words itself: it runs through `MotorGroup` and samples the latest capture (ADR-005).
 
 ### Idea, not built: run-length capture in the PIO receiver (2026-09-20)
 

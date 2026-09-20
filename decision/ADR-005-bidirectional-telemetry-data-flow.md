@@ -48,13 +48,16 @@ The measurements taken on hardware changed what the decision has to solve:
 
 ## Verification
 
-On the AM32 4-in-1 bench ESC, channel 1 (and channel 3 for the two-motor run), DSHOT300, with the arm window set to 3000ms:
+On the AM32 4-in-1 bench ESC (channels 1 and 3 mounted), with the arm window set to 3000ms. Every run below goes through `MotorGroup` (`tests/harness/run_scenario.py`): the group's `update()` on Core 1, Core 0 sampling `raw_telemetry()`, every 20th new capture decoded on the device and every logged capture decoded again on a PC. In each run the device's tally and the PC's replay of the same sampling were identical.
 
-| Check | Result |
+| Scenario | Result |
 |---|---|
-| `tests/test_motor_group_telemetry.py` | No capture handed out for the whole arming window; 260 of 260 decoded captures CRC-valid; eRPM 21.2k-21.6k (median 21.4k) at throttle 100; no capture after disarm. |
-| `tests/test_capture_slot_stress.py` (no motor) | Core 1 publishing at full speed against a tight-loop reader on Core 0: 26,472 valid reads, 0 inconsistent, 0 out of order, 4,479 reads landing mid-update. Evidence for the ordering assumption, not proof. |
-| `two_channel_divergent.json` | Both bidirectional motors 28,706 of 28,706 CRC-valid, 0 dropped. |
-| `single_channel_baseline.json` (186s) | 100,998 of 100,998 CRC-valid, 0 dropped. |
+| `telemetry_settled_300` / `_600` (channel 1, throttle 100, 8s) | 102 of 102 sampled decodes CRC-valid at each speed, median 21,490 eRPM; 2,058 (DSHOT300) and 2,049 (DSHOT600) logged captures, all CRC-valid on the PC. No capture was handed out for the whole arming window (checked on every poll). |
+| `two_channel_divergent_300` / `_600` (channels 1 and 3, 60s, opposing ramps) | Both motors CRC-valid throughout: 654 of 654 (DSHOT300) and 676 of 676 (DSHOT600) sampled decodes each, and 13,094 / 13,522 logged captures each on the PC. Median eRPM 57.9k and 35.4k at DSHOT300, 58.1k and 34.4k at DSHOT600. |
+| `single_channel_baseline` (channel 1, 186s, throttle 100-300) | 2,308 of 2,308 sampled decodes and 46,166 of 46,166 logged captures CRC-valid; median 76.3k eRPM. |
+| `smoke_unidirectional` (4 unidirectional motors, 20s) | Arms, sustains the command stream and disarms through the group; nothing is read back. |
+| `tests/device/test_capture_slot_stress.py` (no motor) | Core 1 publishing at full speed against a tight-loop reader on Core 0: 27,756 valid reads, 0 inconsistent, 0 out of order, 278 reads landing mid-update (rerun 2026-09-20 with the current driver). Evidence for the ordering assumption, not proof. |
+
+The harness records the latest capture Core 0 sees, not every reply: about 255 records a second with one bidirectional motor and 225 with two, against well over a thousand captures a second published per motor. The first version of these runs (two bidirectional motors, send-then-drain, 4-word FIFO) is what exposed the FIFO problem in the Consequences above.
 
 Still to do: a run that stalls the application's consumer for a few milliseconds, several times, and compares the CRC-valid rate of the captures after each stall against their neighbours.

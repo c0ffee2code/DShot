@@ -154,7 +154,7 @@ Reversed:
 
 ## Verification
 
-**Status:** Partly verified. Arming, running and disarming through the facade with an application-owned Core 1 loop has been exercised repeatedly on the AM32 bench ESC (`tests/test_slow_spin.py`, `tests/test_motor_group_telemetry.py`). The other checks below have not been re-run individually, and the scripts named in the table were retired.
+**Status:** Partly verified. Arming, running and disarming through the facade with an application-owned Core 1 loop has been exercised repeatedly on the AM32 bench ESC, most recently through the scenario harness (`tests/harness/run_scenario.py`), which drives every scenario through `MotorGroup` with `update()` on an application-owned Core 1 loop. The other checks below have not been re-run individually, and the scripts named in the table were retired.
 
 The original test hardware and pass criteria are those of ADR-001 — in particular, **both motors must arm reliably every time**, which is the regression this refactor must not introduce.
 

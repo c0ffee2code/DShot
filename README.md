@@ -186,21 +186,25 @@ confirming signal.
 
 ```
 ├── driver/                          # the library - core-agnostic
-│   ├── dshot_pio.py                 # Low-level PIO driver
-│   └── motor_group.py      # Multi-motor facade
-├── tests/                           # application code
-│   ├── core1_runner.py              # Example Core 1 loop (copy into your project)
-│   ├── test_dshot_single_motor.py   # Single motor test
-│   ├── test_motor_group.py # Multi-motor test
-│   └── demo_manual_control.py       # Interactive demo with display
+│   ├── dshot_pio.py                 # PIO programs and the UnidirectionalDShot / BidirectionalDShot motors
+│   ├── motor_group.py               # MotorGroup: multi-motor facade (arm, update, telemetry)
+│   ├── capture_mailbox.py           # One-slot latest-capture store shared between cores
+│   ├── gcr_decode.py                # On-device decoder for the ESC's GCR telemetry reply
+│   └── dshot_profiles.py            # DShot speeds and the tuned receiver profile for each
+├── tests/
+│   ├── harness/                     # bench regression suite: scenario runner + JSON scenarios,
+│   │                                # plus core1_runner.py, an example Core 1 loop to copy
+│   ├── unit/                        # PC unit tests (python -m unittest discover -s tests/unit)
+│   └── device/                      # on-Pico check that needs no ESC (two-core mailbox stress)
+├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
 ├── specification/
-│   └── DSHOT_PROTOCOL.md     # Protocol documentation
+│   └── DSHOT_PROTOCOL.md            # Protocol documentation
 └── decision/
-    └── ADR-00N-*.md          # Architecture decision records
+    └── ADR-00N-*.md                 # Architecture decision records
 ```
 
 Nothing under `driver/` imports `_thread` or picks a core. `core1_runner.py`
-lives in `tests/` because it is an application concern, not a DShot one.
+lives in `tests/harness/` because it is an application concern, not a DShot one.
 
 ## DShot Protocol
 

@@ -957,20 +957,23 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
    in the commit body.
 4. After completing an item: flip its status-table row, and note any deviations directly
    under the item.
-5. Verification: hardware tests deploy via `python scripts/deploy.py <name>.py` (the
-   `/deploy` skill; filename only, resolved against `tests/` internally). Scenario-driven
-   tests (see W18) additionally need `--scenario <path>`, e.g.
-   `python scripts/deploy.py test_scenario_capture.py --scenario tests/harness/scenarios/two_channel_divergent.json`.
+5. Verification: hardware runs go through the scenario harness (W18, W20):
+   `python scripts/deploy.py --scenario tests/harness/scenarios/<file>.json` (the `/deploy`
+   skill), then `python scripts/pull_captures.py` and `python scripts/analyze_bidir_capture_log.py`.
+   The run prints its own verdict. PC unit tests: `python -m unittest discover -s tests/unit`.
+   Every test script and scenario file named in the notes below that no longer exists is
+   historical provenance for a finding (see W20 for what was removed and why).
    The bench is live, motors bolted down, GPIO 6-9 (moved 2026-08-30 from the original
    GPIO 2/3/4/5 block to free GPIO4/5 (I2C) and GPIO16-19 (SPI0) for the PicoBell Adalogger
    SD+RTC breakout, see W17) — **any pre-2026-08-30 note or archived test in this document
    that says GPIO2/3/4/5 reflects the old wiring, not the current bench.**
    **Current scope (as of 2026-08-31): only channels 1 and 3 have motors mounted on this ESC
-   instance, and are the only channels in active scope.** `tests/harness/scenarios/` was
-   cleaned up to hold just the two canonical regression scenarios: `single_channel_baseline.json`
-   (channel 1 alone, 186s) and `two_channel_divergent.json` (channels 1+3 with opposing
-   accelerate/decelerate throttle, 60s — see "Combined channel 1+3 divergent-throttle run"
-   below). Rerun both after any driver/scenario-runner change touching bidirectional DShot.
+   instance, and are the only channels in active scope.** `tests/harness/scenarios/` holds the
+   regression set (W20): `smoke_unidirectional`, `telemetry_settled_300` / `_600`,
+   `single_channel_baseline` (channel 1 alone, 186s), and `two_channel_divergent_300` / `_600`
+   (channels 1+3 with opposing accelerate/decelerate throttle, 60s — see "Combined channel 1+3
+   divergent-throttle run" below). Rerun them after any driver or harness change touching
+   bidirectional DShot.
    The various channel-2/3/4 bring-up files and the all-4-channel `dual_motor_divergent.json`
    that were used to establish this were deleted once their findings were captured here and in
    memory — their results still stand (see below), just not as live scenario files.
@@ -1000,7 +1003,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
    2026-08-30; `test_bidir_rx_capture.py` and its `bidir_capture_runner.py` runner superseded
    by W18's JSON-scenario engine) — treat every such reference below as historical
    provenance for a finding, not as a script you can still run. App/bench infrastructure
-   (`core1_runner.py`, `scenario.py`, `scenario_runner.py`, and friends) lives under
+   (`core1_runner.py`, `scenario.py`, `run_scenario.py`, and friends) lives under
    `tests/harness/`, not `tests/` directly; scenario JSON files live under
    `tests/harness/scenarios/`.
 6. Ground truth: ADR-002 "Implementation Update" (authoritative); AM32 firmware source
@@ -1048,6 +1051,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
 | W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | IN PROGRESS |
 | W19 | Run-length capture in the PIO receiver (idea) | — | L | IDEA - not started, optional; needs a go-ahead |
+| W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 
 ### Work items
 
@@ -1904,3 +1908,35 @@ Steps, if picked up:
    diagnostic profile either way.
 **Done when:** the spike's frames agree with the current decoder over the replies above, and the
 decision to adopt, keep as an option or drop it is recorded in ADR-002 with the measured decode cost.
+
+**W20 — Tests restructured; harness on `MotorGroup`; multi-motor RX stall fixed** · `tests/`, `driver/motor_group.py`, `driver/dshot_pio.py`, `scripts/`
+
+**DONE 2026-09-20.** `tests/` had grown into hardware scripts, one-off benchmarks, PC-runnable
+checks and harness support code. It is now three parts: `tests/harness/` (the bench regression
+suite: `run_scenario.py` plus JSON scenarios), `tests/unit/` (PC unit tests with fake hardware,
+`python -m unittest discover -s tests/unit`) and `tests/device/` (`test_capture_slot_stress.py`,
+which needs two real cores but no ESC).
+
+- **Harness on the facade.** The old harness drove the motors itself and read `rx_read()` word by
+  word, so `MotorGroup`'s arm/update/disarm, the mailbox and `raw_telemetry()` were only exercised
+  by `test_motor_group_telemetry.py`. `run_scenario.py` now runs every scenario through
+  `MotorGroup` (`update()` on Core 1, Core 0 following throttle profiles and sampling
+  `raw_telemetry()`). A record is a capture Core 0 saw for the first time; captures published but
+  never seen are counted as missed. Every 20th capture is decoded on the device and tallied as a
+  real reply, a CRC failure or not a reply; `min_crc_valid_pct` and `min_median_erpm` are judged
+  on that sample, so a run prints its own verdict, and the PC analyser replays the same sampling
+  to check the MicroPython and CPython decoders agree on the same words.
+- **Removed:** `test_slow_spin.py` and `test_motor_group_telemetry.py` (now scenarios plus unit
+  tests), the four `bench_*.py` benchmarks and `test_gcr_decode_timing.py` (figures are in
+  ADR-002), `test_put_shift.py` (packet arithmetic is a unit test; a wrong `put()` shift would
+  stop every scenario arming), `test_bidir_rx_stress.py` with its sink and analyser
+  (characterisation), and seven probe scenarios. `MotorThrottleGroup` became `MotorGroup`.
+- **Found by the new harness:** with two bidirectional motors driven through the group, one
+  channel returned no valid replies (0 of 6 runs on channel 3). Cause: the RX FIFO was exactly
+  one capture deep and `update()` drained after sending. Fixed by joining the RX FIFO to 8 words
+  and draining before sending (ADR-002, ADR-005). After the fixes both channels were 100%
+  CRC-valid in every run at DSHOT300 and DSHOT600, including the 60-second divergent scenario.
+- **Still open:** a run that deliberately stalls the consumer (the fix makes one late drain
+  harmless, not any number); the eRPM plausibility check (a CRC-valid frame with 30,000,000 eRPM
+  appears about once in 56,000); `scripts/run_regression.py`, one command that runs the set and
+  prints a single pass/fail table.
