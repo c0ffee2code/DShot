@@ -34,7 +34,7 @@ def main():
     print(f"dshot_speed={scenario.dshot_speed} duration_ms={scenario.duration_ms} "
           f"bidir_motors={scenario.bidir_indices}")
     print(f"arm_duration_ms={scenario.arm_duration_ms} "
-          f"stop_duration_ms={scenario.stop_duration_ms} poll_ms={scenario.poll_ms}")
+          f"poll_ms={scenario.poll_ms}")
     if scenario.expect:
         print(f"expect={scenario.expect}")
     print()

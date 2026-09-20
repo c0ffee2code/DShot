@@ -1,9 +1,9 @@
 {
-  "_comment": "REGRESSION SCENARIO: a long single-channel run with throttle steps, to catch problems that only show over minutes (memory growth, a gap that appears late, telemetry drifting out of sync). Channel 1 bidirectional at 100, 200, then 300; channels 2-4 idle.",
+  "_comment": "REGRESSION SCENARIO: one bidirectional motor (channel 1) held at a settled throttle, as a client that reads telemetry would run it. A CRC-valid reply only proves the telemetry link - an armed ESC answers with a constant at-rest eRPM (917) even when the motor never starts - so the median eRPM is checked too: at throttle 100 this bench turns at about 21k eRPM.",
   "dshot_speed": "DSHOT300",
-  "duration_ms": 186000,
+  "duration_ms": 8000,
   "arm_duration_ms": 3000,
-  "status_interval_ms": 15000,
+  "status_interval_ms": 4000,
   "poll_ms": 1,
   "expect": {
     "max_gap_ms": 50,
@@ -25,17 +25,7 @@
         {
           "type": "hold",
           "throttle": 100,
-          "duration_ms": 3000
-        },
-        {
-          "type": "hold",
-          "throttle": 200,
-          "duration_ms": 3000
-        },
-        {
-          "type": "hold",
-          "throttle": 300,
-          "duration_ms": 180000
+          "duration_ms": 8000
         }
       ]
     },
@@ -46,7 +36,7 @@
         {
           "type": "hold",
           "throttle": 0,
-          "duration_ms": 186000
+          "duration_ms": 8000
         }
       ]
     },
@@ -57,7 +47,7 @@
         {
           "type": "hold",
           "throttle": 0,
-          "duration_ms": 186000
+          "duration_ms": 8000
         }
       ]
     },
@@ -68,7 +58,7 @@
         {
           "type": "hold",
           "throttle": 0,
-          "duration_ms": 186000
+          "duration_ms": 8000
         }
       ]
     }

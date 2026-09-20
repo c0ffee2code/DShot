@@ -1,7 +1,7 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library.
 #
 # Writes raw scenario capture records (as produced by
-# tests/harness/scenario_runner.py's ScenarioRunner.drain()) to a
+# tests/harness/run_scenario.py from MotorThrottleGroup.raw_telemetry()) to a
 # timestamped session folder on the PicoBell Adalogger's SD card. The SD/RTC
 # mount and session-folder lifecycle are in capture_sink.py; this adds the
 # scenario record format and copies the scenario's own JSON into the session
@@ -18,10 +18,9 @@ COPY_CHUNK_SIZE = 512
 
 class BidirCaptureSink(CaptureSinkBase):
     # ticks_us, throttle0..3, then one 4-word GCR capture group per motor
-    # (motor0_w0..w3, motor1_w0..w3, motor2_w0..w3, motor3_w0..w3) - matches the
-    # 21-field tuple shape ScenarioRunner.drain() returns, so
-    # write_record(*record) works directly. A non-bidirectional motor's word
-    # group is always zero.
+    # (motor0_w0..w3, motor1_w0..w3, motor2_w0..w3, motor3_w0..w3). A motor
+    # that had no new capture for this record, and a non-bidirectional motor, has
+    # an all-zero word group.
     RECORD_FMT = "<I4H16I"
 
     def init_session(self, scenario, scenario_path):
@@ -51,30 +50,29 @@ class BidirCaptureSink(CaptureSinkBase):
 
         self.open_capture()
 
-    def finalize(self, outcome, total_records, dropped, largest_gap_us):
+    def finalize(self, outcome, total_records, missed, largest_gap_us, published):
         """Record how the run ended and its final device-side stats in meta.txt.
 
-        Lets the analyzer re-check the scenario's own `expect` thresholds
-        against the actual on-device dropped/gap counts rather than
-        recomputing an approximation from capture.bin alone.
+        `missed` is the number of captures the group published that the run
+        never saw, and `published` maps each bidirectional motor's index to the
+        sequence number of its last capture, so the analyzer can relate the
+        records in capture.bin to what the ESC actually sent.
         """
-        self.finalize_meta(outcome, {
+        fields = {
             "total_records": str(total_records),
-            "dropped": str(dropped),
+            "captures_missed": str(missed),
             "largest_gap_us": str(largest_gap_us),
-        })
+        }
+        for index in published:
+            fields["motor" + str(index) + "_captures_published"] = str(published[index])
+        self.finalize_meta(outcome, fields)
 
-    def write_record(self, ticks_us, t0, t1, t2, t3,
-                      m0w0, m0w1, m0w2, m0w3,
-                      m1w0, m1w1, m1w2, m1w3,
-                      m2w0, m2w1, m2w2, m2w3,
-                      m3w0, m3w1, m3w2, m3w3):
-        struct.pack_into(
-            self.RECORD_FMT, self.pack_buf, 0,
-            ticks_us, t0, t1, t2, t3,
-            m0w0, m0w1, m0w2, m0w3,
-            m1w0, m1w1, m1w2, m1w3,
-            m2w0, m2w1, m2w2, m2w3,
-            m3w0, m3w1, m3w2, m3w3,
-        )
+    def write_record(self, ticks_us, throttles, words):
+        """Write one record: `throttles` is the 4 motors' throttle values, `words`
+        the 4 motors' 4-word capture groups (a tuple of 4 ints each)."""
+        fields = [ticks_us]
+        fields.extend(throttles)
+        for group in words:
+            fields.extend(group)
+        struct.pack_into(self.RECORD_FMT, self.pack_buf, 0, *fields)
         self.file.write(self.pack_buf)

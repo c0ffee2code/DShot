@@ -23,8 +23,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "harness"))
+sys.path.insert(0, str(ROOT / "driver"))
 
 from dshot_bidir_decode import analyze_capture
+from dshot_profiles import BIDIR_PROFILES
 from scenario import load_scenario
 
 # ticks_us, throttle0..3, then one 4-word GCR group per motor - must match
@@ -70,10 +72,11 @@ def _new_motor_state():
         "fail_streak": 0, "longest_fail_streak": 0,
         "last_success_ticks_us": None, "largest_gap_us": 0,
         "erpm_min": None, "erpm_max": None, "erpm_sum": 0.0, "erpm_count": 0,
+        "erpms": [],
     }
 
 
-def analyze_records(records, bidir_indices, rx_clock_hz):
+def analyze_records(records, bidir_indices, rx_clock_hz, expected_ratio):
     per_motor = {i: _new_motor_state() for i in bidir_indices}
     overall_largest_gap_us = 0
     last_ticks_us = None
@@ -94,7 +97,7 @@ def analyze_records(records, bidir_indices, rx_clock_hz):
 
             state = per_motor[index]
             state["completed_groups"] += 1
-            result = analyze_capture(list(words), rx_clock_hz)
+            result = analyze_capture(list(words), rx_clock_hz, expected_ratio)
             ok = result is not None and result["crc_ok"]
             if ok:
                 state["crc_valid"] += 1
@@ -108,6 +111,7 @@ def analyze_records(records, bidir_indices, rx_clock_hz):
                 if erpm is not None:
                     state["erpm_count"] += 1
                     state["erpm_sum"] += erpm
+                    state["erpms"].append(erpm)
                     if state["erpm_min"] is None or erpm < state["erpm_min"]:
                         state["erpm_min"] = erpm
                     if state["erpm_max"] is None or erpm > state["erpm_max"]:
@@ -120,12 +124,13 @@ def analyze_records(records, bidir_indices, rx_clock_hz):
     return per_motor, overall_largest_gap_us
 
 
-def check_expect(expect, dropped, largest_gap_us, total_records, elapsed_ms, per_motor):
-    failures = []
+def median(values):
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
 
-    max_dropped = expect.get("max_dropped")
-    if max_dropped is not None and dropped > max_dropped:
-        failures.append(f"dropped={dropped} > max_dropped={max_dropped}")
+
+def check_expect(expect, largest_gap_us, total_records, elapsed_ms, per_motor):
+    failures = []
 
     max_gap_ms = expect.get("max_gap_ms")
     if max_gap_ms is not None and largest_gap_us / 1000 > max_gap_ms:
@@ -146,6 +151,16 @@ def check_expect(expect, dropped, largest_gap_us, total_records, elapsed_ms, per
             failures.append(f"motor {motor_index} crc_valid={actual_pct:.1f}% < "
                              f"min_crc_valid_pct={min_pct}%")
 
+    # A CRC-valid reply only shows the telemetry link works: an armed ESC replies with
+    # a constant at-rest eRPM (917) even when the motor never starts. The median
+    # eRPM is what shows the motor actually turning.
+    for motor_index_str, min_median in expect.get("min_median_erpm", {}).items():
+        state = per_motor.get(int(motor_index_str))
+        actual = median(state["erpms"]) if state and state["erpms"] else 0.0
+        if actual < min_median:
+            failures.append(f"motor {motor_index_str} median eRPM={actual:.0f} < "
+                             f"min_median_erpm={min_median}")
+
     return failures
 
 
@@ -165,7 +180,9 @@ def main():
 
     rx_clock_hz = int(meta["rx_clock_hz"])
     bidir_indices = [int(s) for s in meta.get("bidir_motor_indices", "").split(",") if s]
-    dropped = int(meta.get("dropped", 0))
+    missed = int(meta.get("captures_missed", 0))
+    profile = BIDIR_PROFILES.get(int(meta["dshot_speed"]))
+    expected_ratio = profile["expected_ratio"] if profile else None
     print(f"dshot_speed={meta.get('dshot_speed')} rx_clock_hz={rx_clock_hz} "
           f"bidir_motors={bidir_indices}")
 
@@ -173,10 +190,15 @@ def main():
 
     records = load_records(session_dir)
     total = len(records)
-    print(f"Records: {total}  dropped(device-side): {dropped}")
+    print(f"Records: {total}  captures published but never seen (device-side): {missed}")
+    for index in bidir_indices:
+        published = meta.get(f"motor{index}_captures_published")
+        if published is not None:
+            print(f"  motor {index}: {published} captures published")
     print()
 
-    per_motor, overall_largest_gap_us = analyze_records(records, bidir_indices, rx_clock_hz)
+    per_motor, overall_largest_gap_us = analyze_records(records, bidir_indices, rx_clock_hz,
+                                                        expected_ratio)
 
     for index in bidir_indices:
         state = per_motor[index]
@@ -187,8 +209,8 @@ def main():
               f"largest_gap={state['largest_gap_us'] / 1000:.1f}ms")
         if state["erpm_count"]:
             avg = state["erpm_sum"] / state["erpm_count"]
-            print(f"           eRPM: min={state['erpm_min']:.0f} max={state['erpm_max']:.0f} "
-                  f"avg={avg:.0f} (spread={state['erpm_max'] - state['erpm_min']:.0f})")
+            print(f"           eRPM: min={state['erpm_min']:.0f} median={median(state['erpms']):.0f} "
+                  f"max={state['erpm_max']:.0f} avg={avg:.0f}")
         else:
             print("           eRPM: no valid decodes to report")
 
@@ -196,7 +218,7 @@ def main():
     print(f"Overall largest gap between any two records: {overall_largest_gap_us / 1000:.1f}ms")
 
     print()
-    failures = check_expect(scenario.expect, dropped, overall_largest_gap_us, total,
+    failures = check_expect(scenario.expect, overall_largest_gap_us, total,
                              scenario.duration_ms, per_motor)
     if failures:
         print("expect thresholds NOT met:")

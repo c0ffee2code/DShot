@@ -39,12 +39,11 @@ class MotorSpec:
 
 
 class Scenario:
-    def __init__(self, dshot_speed, duration_ms, arm_duration_ms, stop_duration_ms,
+    def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
                  status_interval_ms, poll_ms, expect, motors):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
-        self.stop_duration_ms = stop_duration_ms
         self.status_interval_ms = status_interval_ms
         self.poll_ms = poll_ms
         self.expect = expect
@@ -147,31 +146,28 @@ def build_scenario(data):
 
         motors.append(MotorSpec(pin, sm_id, bidirectional, rx_sm_id, profile))
 
-    # NOTE: expect.min_crc_valid_pct is validated here (shape + motor index)
-    # but is NOT enforced on-device - test_scenario_capture.py deliberately
-    # does no GCR/CRC decoding during capture (that cost, 42-103ms/decode
-    # worst case measured on-device, would wreck the achieved record rate).
-    # It's PC-side, post-run provenance only: run scripts/
-    # verify_gcr_decode_port.py or scripts/tally_period_cycles.py against
-    # the pulled session afterward to actually check this threshold. The
-    # one on-device runtime check that DOES exist is a coarser, cheap
-    # proxy: check_reply_failsafe in test_scenario_capture.py, which only
-    # asserts "at least one non-all-zero reply appeared" - not a CRC-valid
-    # percentage.
+    # NOTE: expect.min_crc_valid_pct and expect.min_median_erpm are validated
+    # here (shape + motor index) but NOT enforced on-device - run_scenario.py
+    # deliberately does no GCR/CRC decoding during the run, because decoding on
+    # the device costs milliseconds per capture. They are checked PC-side on the
+    # pulled session by scripts/analyze_bidir_capture_log.py. The one on-device
+    # reply check is a coarser, cheap proxy: check_reply_failsafe in
+    # run_scenario.py, which only asserts "at least one non-all-zero reply
+    # appeared".
     expect = data.get("expect", {})
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
-    for key in expect.get("min_crc_valid_pct", {}):
-        if int(key) not in bidir_indices:
-            raise ValueError(
-                "expect.min_crc_valid_pct references motor " + str(key) +
-                ", which is not declared bidirectional"
-            )
+    for name in ("min_crc_valid_pct", "min_median_erpm"):
+        for key in expect.get(name, {}):
+            if int(key) not in bidir_indices:
+                raise ValueError(
+                    "expect." + name + " references motor " + str(key) +
+                    ", which is not declared bidirectional"
+                )
 
     return Scenario(
         dshot_speed=dshot_speed,
         duration_ms=duration_ms,
         arm_duration_ms=data.get("arm_duration_ms", 500),
-        stop_duration_ms=data.get("stop_duration_ms", 300),
         status_interval_ms=data.get("status_interval_ms", 15000),
         poll_ms=data.get("poll_ms", 10),
         expect=expect,

@@ -5,7 +5,7 @@ test script live (streams output for the duration of the test).
 Run from project root:
   python scripts/deploy.py                       # runs the default test script
   python scripts/deploy.py test_capture_slot_stress.py   # runs another script from tests/harness or tests/device
-  python scripts/deploy.py test_scenario_capture.py --scenario tests/harness/scenarios/dual_motor_divergent.json
+  python scripts/deploy.py run_scenario.py --scenario tests/harness/scenarios/two_channel_divergent_300.json
                                                    # also uploads the scenario file as scenario.json
 
 Pico must be connected on COM10. mpremote interrupts any running script on connect.
@@ -53,7 +53,6 @@ LIBRARY_FILES = [
     ("tests/harness/core1_runner.py", "core1_runner.py"),
     ("tests/harness/throttle_profile.py", "throttle_profile.py"),
     ("tests/harness/scenario.py", "scenario.py"),
-    ("tests/harness/scenario_runner.py", "scenario_runner.py"),
     ("tests/harness/sdcard.py", "sdcard.py"),
     ("tests/harness/pcf8523.py", "pcf8523.py"),
     ("tests/harness/capture_sink.py", "capture_sink.py"),
@@ -66,7 +65,7 @@ DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
 # not here: those tests run on a PC, not on the Pico.
 SCRIPT_DIRS = ["tests/harness", "tests/device", "tests"]
 
-# Fixed device-side name test_scenario_capture.py opens - mpremote's `run`
+# Fixed device-side name run_scenario.py opens - mpremote's `run`
 # has no mechanism to pass an extra file/argument into the running script,
 # so a chosen scenario file has to land at this fixed name instead.
 SCENARIO_REMOTE_NAME = "scenario.json"
@@ -104,6 +103,10 @@ def main():
     test_script = next((ROOT / d / name for d in SCRIPT_DIRS if (ROOT / d / name).exists()), None)
     if test_script is None:
         print(f"MISSING test script {name}: looked in {', '.join(SCRIPT_DIRS)}")
+        sys.exit(1)
+
+    if test_script.name == "run_scenario.py" and scenario_path is None:
+        print("run_scenario.py needs --scenario <path to a scenario JSON>")
         sys.exit(1)
 
     print(f"Deploying to Pico on {COM_PORT}...")

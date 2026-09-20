@@ -1,0 +1,94 @@
+{
+  "_comment": "REGRESSION SCENARIO for the two motor-mounted channels (1 and 3), on separate PIO blocks (channel 1 sm0/rx1 on PIO0, channel 3 sm4/rx5 on PIO1): both start at throttle 60, hold 5s, ramp together to 200 over 5s, then diverge for 50s - motor 1 accelerates to 300, motor 3 decelerates to 100. Two bidirectional replies at once show concurrent telemetry does not cross-talk: each motor's eRPM must follow its own command. Channels 2 and 4 idle (no motor mounted).",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 60000,
+  "arm_duration_ms": 3000,
+  "status_interval_ms": 15000,
+  "poll_ms": 1,
+  "expect": {
+    "max_gap_ms": 50,
+    "min_record_rate_hz": 100,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "2": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "2": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 60,
+          "duration_ms": 5000
+        },
+        {
+          "type": "ramp",
+          "to": 200,
+          "step": 14,
+          "duration_ms": 5000
+        },
+        {
+          "type": "ramp",
+          "to": 300,
+          "step": 5,
+          "duration_ms": 50000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 2,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 60000
+        }
+      ]
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "bidirectional": true,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 60,
+          "duration_ms": 5000
+        },
+        {
+          "type": "ramp",
+          "to": 200,
+          "step": 14,
+          "duration_ms": 5000
+        },
+        {
+          "type": "ramp",
+          "to": 100,
+          "step": 5,
+          "duration_ms": 50000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 6,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 60000
+        }
+      ]
+    }
+  ]
+}

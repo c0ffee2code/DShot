@@ -104,9 +104,17 @@ class ScenarioValidationTest(unittest.TestCase):
     def test_a_crc_threshold_needs_a_bidirectional_motor(self):
         self.rejected(lambda d: d.update(expect={"min_crc_valid_pct": {"1": 99.0}}), "not declared bidirectional")
 
+    def test_a_median_erpm_threshold_needs_a_bidirectional_motor(self):
+        self.rejected(lambda d: d.update(expect={"min_median_erpm": {"1": 10000}}), "not declared bidirectional")
+
+    def test_thresholds_for_a_bidirectional_motor_are_accepted(self):
+        data = valid_scenario()
+        data["expect"] = {"min_crc_valid_pct": {"0": 99.0}, "min_median_erpm": {"0": 10000}}
+        self.assertEqual(build_scenario(data).expect["min_median_erpm"], {"0": 10000})
+
     def test_defaults(self):
         scenario = build_scenario(valid_scenario())
-        self.assertEqual((scenario.arm_duration_ms, scenario.stop_duration_ms, scenario.poll_ms), (500, 300, 10))
+        self.assertEqual((scenario.arm_duration_ms, scenario.poll_ms), (500, 10))
         self.assertEqual(scenario.expect, {})
 
 
