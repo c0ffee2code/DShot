@@ -1,6 +1,8 @@
 """
-pull_captures.py — copy new bidir capture sessions from the PicoBell's SD
-card to captures/ on the PC. Read-only on the SD card (nothing is deleted).
+pull_captures.py — move new bidir capture sessions from the PicoBell's SD
+card to captures/ on the PC. A session is deleted from the SD card once every
+one of its files has arrived on the PC with the size the card reported; a
+session that arrived incompletely stays on the card.
 
 Run from project root:
   python scripts/pull_captures.py
@@ -26,7 +28,11 @@ PYTHON = sys.executable
 COM_PORT = "COM10"
 REMOTE_DIR = "/sd/dshot_captures"
 LOCAL_DIR = Path("captures")
-SESSION_FILES = ("meta.txt", "capture.bin", "scenario.json")
+
+# Sessions moved per transfer. Each batch is downloaded, checked and deleted from the
+# SD card before the next starts, so an interrupted pull loses one batch of progress,
+# not all of it.
+BATCH_SIZE = 3
 
 # PicoBell Adalogger for Pico SD pins - see tests/harness/bidir_capture_sink.py
 _SD_MOUNT = """\
@@ -55,7 +61,7 @@ def _transfer_script(session_ids):
 import ubinascii
 try:
     for sid in {session_ids!r}:
-        for fname in {SESSION_FILES!r}:
+        for fname in sorted(os.listdir('{REMOTE_DIR}/' + sid)):
             path = '{REMOTE_DIR}/' + sid + '/' + fname
             try:
                 size = os.stat(path)[6]
@@ -110,6 +116,9 @@ def _parse_transfer(output):
             b64_lines = []
         elif line.startswith('PICO_ERROR '):
             print(f"  {line}")
+            # a file the card could not read must count against its session, even
+            # when the error came before its BEGIN_FILE line
+            expected_sizes[line.split(' ', 2)[1]] = -1
         elif current_key is not None:
             b64_lines.append(line.strip())
 
@@ -127,36 +136,51 @@ def list_local():
     return {p.name for p in LOCAL_DIR.iterdir() if p.is_dir()}
 
 
+def _delete_script(session_ids):
+    return _SD_MOUNT + f"""try:
+    for sid in {session_ids!r}:
+        d = '{REMOTE_DIR}/' + sid
+        for fname in os.listdir(d):
+            os.remove(d + '/' + fname)
+        os.rmdir(d)
+        print('DELETED ' + sid)
+finally:
+    os.umount('/sd')
+"""
+
+
 def fetch(new_ids, transfer_timeout=120):
-    print(f"\nTransferring {len(new_ids)} session(s)...")
+    """Download the sessions and write the complete ones to captures/.
+
+    Returns (ok, failed) session ids. A session is complete when the card listed
+    at least one file for it and every listed file arrived with its listed size.
+    """
     output = _run_on_pico(_transfer_script(new_ids), timeout=transfer_timeout)
     files, expected = _parse_transfer(output)
 
     ok, failed = [], []
     for sid in new_ids:
-        file_data = {}
-        for fname in SESSION_FILES:
-            key = f"{sid}/{fname}"
-            data = files.get(key)
-            if data is None:
-                print(f"  MISSING  {key}")
-            elif len(data) != expected.get(key, -1):
-                print(f"  MISMATCH {key}: expected {expected[key]}B got {len(data)}B")
-            else:
-                file_data[fname] = data
-
-        if len(file_data) == len(SESSION_FILES):
+        keys = [k for k in expected if k.startswith(sid + "/")]
+        problems = [k for k in keys if k not in files or len(files[k]) != expected[k]]
+        if keys and not problems:
             dest = LOCAL_DIR / sid
             dest.mkdir(parents=True, exist_ok=True)
-            for fname, data in file_data.items():
-                (dest / fname).write_bytes(data)
+            for key in keys:
+                (dest / key.split("/", 1)[1]).write_bytes(files[key])
             ok.append(sid)
             print(f"  OK   {sid}")
         else:
             failed.append(sid)
             print(f"  FAIL {sid}")
+            for key in problems:
+                print(f"         {key}: missing or wrong size")
 
     return ok, failed
+
+
+def delete_remote(session_ids):
+    out = _run_on_pico(_delete_script(session_ids))
+    return [line.split(" ", 1)[1].strip() for line in out.splitlines() if line.startswith("DELETED ")]
 
 
 def main():
@@ -175,19 +199,24 @@ def main():
     for sid in new_ids:
         print(f"  {sid}")
 
-    # 30s/session was sized for the old ~2.5MB single-channel captures.
-    # W18's wider 76-byte record format (vs 22 bytes) makes a full 3-minute
-    # capture ~8MB+ - base64-over-serial at that size can take several
-    # minutes on its own, so this needs real headroom, not a per-session
-    # count-based guess. Generous on purpose: this is a one-off pull, not a
-    # hot path, so waiting longer costs nothing but time.
-    transfer_timeout = max(120, len(new_ids) * 240)
-    ok_ids, failed_ids = fetch(new_ids, transfer_timeout=transfer_timeout)
+    # Base64 over serial is slow (a 60-second scenario is ~2MB and takes minutes), so
+    # the timeout is sized per batch and generous: waiting longer costs nothing.
+    all_ok, all_failed, deleted = [], [], []
+    for start in range(0, len(new_ids), BATCH_SIZE):
+        batch = new_ids[start:start + BATCH_SIZE]
+        print(f"\nBatch {start // BATCH_SIZE + 1}: {len(batch)} session(s)...", flush=True)
+        ok_ids, failed_ids = fetch(batch, transfer_timeout=max(120, len(batch) * 240))
+        all_ok += ok_ids
+        all_failed += failed_ids
+        if ok_ids:
+            gone = delete_remote(ok_ids)
+            deleted += gone
+            print(f"  deleted from the SD card: {len(gone)}", flush=True)
 
-    print(f"\nDone: {len(ok_ids)} pulled, {len(failed_ids)} failed.")
-    if failed_ids:
-        print("Failed sessions remain on SD card:")
-        for sid in failed_ids:
+    print(f"\nDone: {len(all_ok)} pulled, {len(all_failed)} failed, {len(deleted)} deleted from the SD card.")
+    if all_failed:
+        print("Failed sessions remain on the SD card:")
+        for sid in all_failed:
             print(f"  {sid}")
 
 
