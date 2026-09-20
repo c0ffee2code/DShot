@@ -1824,7 +1824,17 @@ a frame never has to be detected.
   counted loop. Together they fill the block: it cannot also hold the raw
   receiver (replacing the raw receiver of a constructed `BidirectionalDShot`
   fails with ENOMEM), nor the unidirectional program. A unidirectional motor has
-  to sit on another block.
+  to sit on another block. Four bidirectional motors with this receiver, one pair
+  each (see "State machines and instruction memory"; identical programs are loaded
+  once per block, so a second pair on a block adds state machines but no slots):
+
+  | Block | State machines | Programs loaded | Slots used |
+  |---|---|---|---|
+  | PIO0 | sm0 TX + sm1 RX (motor 1), sm2 TX + sm3 RX (motor 2) | `dshot_bidir_tx` + `dshot_bidir_rx_rle` | 32 of 32 |
+  | PIO1 | sm4 TX + sm5 RX (motor 3), sm6 TX + sm7 RX (motor 4) | `dshot_bidir_tx` + `dshot_bidir_rx_rle` | 32 of 32 |
+  | PIO2 | free (sm8 to sm11): unidirectional motors go here | `dshot` | 4 of 32 |
+
+  Two of these pairs on one exactly-full block has not been run on hardware.
 - **Model.** A PC model of the program (`scripts/simulate_rle_receiver.py`)
   replays stored captures with the pin's waveform rebuilt from the raw samples.
   At the profile's clock it rebuilds the frame `gcr_decode` builds for all 10,867
