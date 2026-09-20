@@ -40,13 +40,14 @@ class MotorSpec:
 
 class Scenario:
     def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
-                 status_interval_ms, poll_ms, decode_every, expect, motors):
+                 status_interval_ms, poll_ms, decode_every, gc_every_ms, expect, motors):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
         self.status_interval_ms = status_interval_ms
         self.poll_ms = poll_ms
         self.decode_every = decode_every
+        self.gc_every_ms = gc_every_ms
         self.expect = expect
         self.motors = motors
 
@@ -165,6 +166,13 @@ def build_scenario(data):
     if not isinstance(decode_every, int) or decode_every < 0:
         raise ValueError("decode_every must be a whole number >= 0, got " + str(decode_every))
 
+    # Core 0 forces a garbage collection this often (0 = never). A collection
+    # pauses both cores, which is what heap churn does to a real application: it
+    # shows whether a stall leaves lost or corrupted replies behind it.
+    gc_every_ms = data.get("gc_every_ms", 0)
+    if not isinstance(gc_every_ms, int) or gc_every_ms < 0:
+        raise ValueError("gc_every_ms must be a whole number >= 0, got " + str(gc_every_ms))
+
     expect = data.get("expect", {})
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     for name in ("min_crc_valid_pct", "min_median_erpm"):
@@ -182,6 +190,7 @@ def build_scenario(data):
         status_interval_ms=data.get("status_interval_ms", 15000),
         poll_ms=data.get("poll_ms", 10),
         decode_every=decode_every,
+        gc_every_ms=gc_every_ms,
         expect=expect,
         motors=motors,
     )

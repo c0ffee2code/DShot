@@ -50,7 +50,8 @@ class BidirCaptureSink(CaptureSinkBase):
 
         self.open_capture()
 
-    def finalize(self, outcome, total_records, missed, largest_gap_us, published, tallies, verdict):
+    def finalize(self, outcome, total_records, missed, largest_gap_us, published, tallies, verdict,
+                 extra=None):
         """Record how the run ended and its final device-side stats in meta.txt.
 
         `missed` is the number of captures the group published that the run
@@ -78,6 +79,9 @@ class BidirCaptureSink(CaptureSinkBase):
             fields[prefix + "crc_fail"] = str(tally.crc_fail)
             fields[prefix + "invalid"] = str(tally.invalid)
         fields["verdict"] = verdict
+        if extra:
+            for key in extra:
+                fields[key] = str(extra[key])
         self.finalize_meta(outcome, fields)
 
     def write_record(self, ticks_us, throttles, words):

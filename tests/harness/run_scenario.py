@@ -45,7 +45,9 @@ from core1_runner import Core1Runner
 from scenario import load_scenario
 from bidir_capture_sink import BidirCaptureSink
 from decode_tally import DecodeTally, is_sampled
+import gc
 import utime
+from array import array
 
 SCENARIO_PATH = "scenario.json"
 
@@ -86,9 +88,17 @@ def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
         )
 
 
-def check_expect(expect, largest_gap_us, records, elapsed_ms):
+def check_expect(expect, largest_gap_us, records, elapsed_ms, loop_gap_us):
     if not expect:
         return
+
+    # The longest gap between two update() calls, measured on Core 1 itself. The
+    # ESC disarms on its own after 100-250ms without a frame.
+    max_loop_gap_ms = expect.get("max_loop_gap_ms")
+    if max_loop_gap_ms is not None and loop_gap_us > max_loop_gap_ms * 1000:
+        raise RuntimeError(
+            "command loop gap " + str(loop_gap_us / 1000) + "ms > max_loop_gap_ms=" + str(max_loop_gap_ms)
+        )
 
     max_gap_ms = expect.get("max_gap_ms")
     if max_gap_ms is not None and largest_gap_us > max_gap_ms * 1000:
@@ -120,6 +130,30 @@ def check_decode_expect(expect, tallies):
         for message in tallies[index].check(crc.get(str(index)), erpm.get(str(index))):
             failures.append("motor " + str(index) + ": " + message)
     return failures
+
+
+def measured(update, times):
+    """
+    Wrap `update` so Core 1 records the longest gap between two calls into
+    times[1] (times[0] is the last call's time). It costs one extra Python call
+    and a few integer operations per tick, and allocates nothing. Measuring on
+    Core 1 is the point: a garbage collection pauses both cores, so Core 0 only
+    ever sees the loop after it has caught up.
+    """
+    ticks_us = utime.ticks_us
+    ticks_diff = utime.ticks_diff
+
+    def wrapper():
+        now = ticks_us()
+        last = times[0]
+        if last:
+            gap = ticks_diff(now, last)
+            if gap > times[1]:
+                times[1] = gap
+        times[0] = now
+        update()
+
+    return wrapper
 
 
 def build_motor(spec, dshot_speed):
@@ -171,6 +205,10 @@ def run_scenario():
     last_record_us = None
     largest_gap_us = 0
     max_age_us = 0
+    loop_times = array('I', [0, 0])  # Core 1's last update() time, and the longest gap between calls
+    last_gc_ms = 0
+    gc_runs = 0
+    gc_max_us = 0
     outcome = "failed"
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
@@ -178,7 +216,7 @@ def run_scenario():
 
     try:
         group = MotorGroup([build_motor(spec, scenario.dshot_speed) for spec in scenario.motors])
-        runner = Core1Runner(group.update, group.UPDATE_INTERVAL_US)
+        runner = Core1Runner(measured(group.update, loop_times), group.UPDATE_INTERVAL_US)
         runner.start()
 
         arm_group(group, scenario, runner, bidir_indices)
@@ -186,6 +224,7 @@ def run_scenario():
         print("Running scenario for {}ms...".format(scenario.duration_ms))
         run_start = utime.ticks_ms()
         last_status_ms = run_start
+        last_gc_ms = run_start
 
         while True:
             elapsed_ms = utime.ticks_diff(utime.ticks_ms(), run_start)
@@ -237,7 +276,16 @@ def run_scenario():
                 last_record_us = record_us
 
             check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
-            check_expect(scenario.expect, largest_gap_us, total_records, elapsed_ms)
+            check_expect(scenario.expect, largest_gap_us, total_records, elapsed_ms, loop_times[1])
+
+            if scenario.gc_every_ms and utime.ticks_diff(utime.ticks_ms(), last_gc_ms) >= scenario.gc_every_ms:
+                gc_start_us = utime.ticks_us()
+                gc.collect()
+                gc_us = utime.ticks_diff(utime.ticks_us(), gc_start_us)
+                gc_runs += 1
+                if gc_us > gc_max_us:
+                    gc_max_us = gc_us
+                last_gc_ms = utime.ticks_ms()
 
             now = utime.ticks_ms()
             if utime.ticks_diff(now, last_status_ms) >= scenario.status_interval_ms:
@@ -275,7 +323,8 @@ def run_scenario():
             verdict = "fail: " + "; ".join(failures)
         else:
             verdict = "pass"
-        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict)
+        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict,
+                      {"max_loop_gap_us": loop_times[1], "gc_runs": gc_runs, "gc_max_us": gc_max_us})
         sink.close()
         print("SD card flushed and unmounted.")
 
@@ -292,6 +341,9 @@ def run_scenario():
         print("Captures published but never seen:", missed)
         print("Largest gap between records: {:.1f}ms".format(largest_gap_us / 1000))
         print("Oldest capture at the moment it was read: {:.1f}ms".format(max_age_us / 1000))
+        print("Longest gap between update() calls (measured on Core 1): {:.1f}ms".format(loop_times[1] / 1000))
+        if gc_runs:
+            print("Forced garbage collections: {} (longest {:.1f}ms)".format(gc_runs, gc_max_us / 1000))
         for index in tallies:
             print("Motor {} decoded on the device (every {}th capture): {}".format(
                 index, scenario.decode_every, tallies[index].summary()))

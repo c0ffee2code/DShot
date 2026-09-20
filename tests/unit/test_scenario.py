@@ -125,6 +125,16 @@ class ScenarioValidationTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_scenario(data)
 
+    def test_gc_every_ms_defaults_to_never_and_must_be_a_non_negative_whole_number(self):
+        self.assertEqual(build_scenario(valid_scenario()).gc_every_ms, 0)
+        data = valid_scenario()
+        data["gc_every_ms"] = 100
+        self.assertEqual(build_scenario(data).gc_every_ms, 100)
+        for bad in (-5, 1.5, "100"):
+            data["gc_every_ms"] = bad
+            with self.assertRaises(ValueError):
+                build_scenario(data)
+
     def test_defaults(self):
         scenario = build_scenario(valid_scenario())
         self.assertEqual((scenario.arm_duration_ms, scenario.poll_ms), (500, 10))

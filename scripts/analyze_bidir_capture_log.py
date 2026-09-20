@@ -249,6 +249,9 @@ def main():
 
     print()
     print(f"Device verdict: {meta.get('verdict', 'not recorded')}")
+    if "max_loop_gap_us" in meta:
+        print(f"Command loop: longest gap between update() calls {int(meta['max_loop_gap_us']) / 1000:.1f}ms; "
+              f"forced GCs {meta.get('gc_runs', '0')} (longest {int(meta.get('gc_max_us', 0)) / 1000:.1f}ms)")
     for index in bidir_indices:
         if f"motor{index}_decode_sampled" in meta:
             tally = per_motor[index]["sample"]
