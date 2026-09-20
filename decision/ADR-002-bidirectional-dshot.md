@@ -1548,6 +1548,133 @@ has not been shown on a real ESC.
   400,000 random captures, and `scripts/verify_gcr_decode_port.py` reports no
   mismatch against the PC-side reference over 690,901 groups.
 
+**How the integer decoder works, on a real capture.** The example is the first
+DSHOT300 capture in `tests/test_gcr_decode_timing.py`, taken from the bench ESC
+with a slowly turning motor. The wire is read 128 times and the readings are
+packed into four 32-bit words; the decoder has to recover the 21-bit reply from
+them. The old decoder expanded all 128 readings into a list of (cycle, value)
+tuples and walked it. The new one notices that only a handful of readings matter:
+the ones where the signal flips.
+
+*Step 0 - the raw material.* The first two words:
+
+```
+word 0:  0000000111110000 | 0000111111111000
+word 1:  0000000001111000 | 0000000000111111
+```
+
+*Step 1 - find the flips by XOR-ing with a shifted copy.* `find_edges()` takes one
+16-bit half of a word at a time. Shifting a copy right by one place lines every
+reading up with the reading before it, and XOR marks where the two differ:
+
+```
+readings          0000000111110000
+shifted right     0000000011111000     (the reading before each one)
+XOR               0000000100001000
+                         ^    ^
+                         |    +-- reading 12: flipped high -> low
+                         +------- reading 7:  flipped low -> high
+```
+
+A 1 in the XOR row means "this reading differs from the one just before it". The
+second half works the same way:
+
+```
+readings          0000111111111000
+shifted right     0000011111111100
+XOR               0000100000000100     -> flips at readings 20 and 29
+```
+
+Across the whole capture only 9 of the 128 readings are flips:
+
+```
+readings: 00000001111100000000111111111000000000000111100000000000001111111111110000...
+flips:    .......^....^.......^........^...........^...^............^...........^......
+```
+
+*Step 2 - visit only the 1s.* `d & -d` isolates the lowest 1 in a number, and
+XOR-ing it back out clears it:
+
+```
+d      = 0000000100001000
+-d     = 1111111011111000     (negating flips everything above the lowest 1)
+d & -d = 0000000000001000     <- only the lowest 1 survives
+
+d = 0000000100001000   lowest is bit 3 -> reading 12
+d = 0000000100000000   lowest is bit 8 -> reading 7
+d = 0000000000000000   done
+```
+
+The flips come out newest first, so the list is sorted at the end. A dictionary
+maps the isolated bit to its position, because this MicroPython has no
+`int.bit_length()`.
+
+*Step 3 - turn the stretches into bits.* Each flip ends a stretch of constant
+value. Its length in cycles divided by the profile's bit period (8.7069 cycles
+here) is the number of bits it holds:
+
+```
+readings   0..6    low   14 cycles / 8.7 = 1.6 -> 2 bits of 0
+readings   7..11   high  10 cycles / 8.7 = 1.1 -> 1 bit  of 1
+readings  12..19   low   16 cycles / 8.7 = 1.8 -> 2 bits of 0
+readings  20..28   high  18 cycles / 8.7 = 2.1 -> 2 bits of 1
+readings  29..40   low   26 cycles / 8.7 = 3.0 -> 3 bits of 0
+readings  41..44   high   8 cycles / 8.7 = 0.9 -> 1 bit  of 1
+readings  45..57   low   26 cycles / 8.7 = 3.0 -> 3 bits of 0
+readings  58..69   high  26 cycles / 8.7 = 3.0 -> 3 bits of 1
+readings  70..82   low   26 cycles / 8.7 = 3.0 -> 3 bits of 0
+```
+
+The nine stretches give 20 bits. The reply has 21: the last data bit is a 1 that
+merged into the idle-high line and has no flip of its own, so `reconstruct_frame()`
+pads idle-valued 1s up to 21 bits. That padding is load-bearing.
+
+*Step 4 - build the reply as one number by shifting.* Each stretch is shifted onto
+a single integer instead of being appended to a list of 21 bit objects:
+
+```
+start                  0
+append 2 x 0        ->  00
+append 1 x 1        ->  001
+append 2 x 0        ->  00100
+append 2 x 1        ->  0010011
+append 3 x 0        ->  0010011000
+append 1 x 1        ->  00100110001
+append 3 x 0        ->  00100110001000
+append 3 x 1        ->  00100110001000111
+append 3 x 0        ->  00100110001000111000
+pad the idle 1      ->  001001100010001110001    (21 bits)
+```
+
+The first bit is the marker, always 0; the 20 after it are the data.
+
+*Step 5 - undo the differential encoding with another XOR-shift.* The ESC sends
+each bit as "did the signal flip?", so recovering the data is the same trick as
+step 1, and the shift brings in a 0 at the front, the marker's own value:
+
+```
+data20             01001100010001110001
+data20 shifted     00100110001000111000
+XOR                01101010011001001001
+```
+
+*Step 6 - look up the 5-bit groups.* The 20 decoded bits are four 5-bit GCR
+symbols, and a 16-entry table turns each into a nibble:
+
+```
+01101   01001   10010   01001
+  D       9       2       9      ->  0xD929
+```
+
+The last four bits are the CRC, which checks out. The other 12 bits are the
+payload: mantissa 402, exponent 6, so the period is 402 << 6 = 25,728us and the
+eRPM is 60,000,000 / 25,728, about 2,332.
+
+*Why 16-bit halves.* A MicroPython integer above about 30 bits is a heap object
+and needs an allocation. Scanning 16 bits at a time keeps every intermediate
+value small, so `find_edges()` allocates almost nothing, and that matters because
+garbage is what triggers the collection that pauses both cores.
+
 **Not addressed.** `send_throttle_command` still costs about 53us per motor, of
 which the packet arithmetic is about 7us, and `update()` has about 87us of fixed
 overhead per tick; a lookup table of packets and a flattened loop measured about
@@ -1555,6 +1682,87 @@ overhead per tick; a lookup table of packets and a flattened loop measured about
 throttle validation, so they were left. When to collect garbage - for example at
 points where a stall is harmless - is a scheduling matter for the application.
 The scenario harness's `ScenarioRunner` still reads words one at a time.
+
+### Idea, not built: run-length capture in the PIO receiver (2026-09-20)
+
+The receiver today records the pin 128 times at a fixed rate and leaves all the
+interpretation to the CPU. The integer decoder above made that interpretation
+cheap, but the work it does - find where the signal flips, measure the stretch
+between flips, turn each stretch into bits - is exactly what a counter and a
+small state machine do in PIO, with no CPU involved. This records the idea and
+what would have to be settled; nothing here has been built or measured on
+hardware.
+
+*Level 1 - the PIO measures the stretches.* A down-counter loop that runs while
+the pin holds its level and stops at the next flip. The length of the stretch is
+the count:
+
+```
+    mov x, ~null        ; x = all ones, used as a down-counter
+low:
+    jmp pin, done       ; the pin went high? the stretch is over
+    jmp x--, low        ; otherwise count one more (2 cycles per loop)
+done:
+    mov isr, ~x         ; ~x is how many loops the low stretch lasted
+    push                ; hand that length to the CPU
+```
+
+A mirror-image loop measures the high stretches. Each count is 2 cycles, the same
+resolution as the current sampling, so nothing is lost. A reply has about 9 to 15
+stretches and each count is a few bits, so they pack several to a word and a reply
+takes two or three words instead of four. The CPU no longer needs `find_edges()`
+(about 0.44ms of the 1.27ms decode).
+
+*Level 2 - the PIO builds the frame.* PIO has no divide, but it can subtract in a
+loop. Preload a second counter with the bit period, count it down while the
+stretch counter runs, and every time it reaches zero shift one bit of the current
+level into the input shift register and reload it. A 26-cycle stretch then yields
+3 bits directly, and the receiver hands the CPU the finished 21-bit frame. The CPU
+is left with the differential XOR, the table lookup and the CRC check, roughly
+0.3ms by the measured stage costs (`find_edges` 0.44ms, `reconstruct_frame`
+0.54ms, period estimate 0.1ms, `decode` 0.15ms, `check_crc` 0.09ms), and
+`estimate_bit_period_fixed` disappears as a CPU step.
+
+The counters restart at every flip, which is how a hardware UART receiver stays in
+step with a sender whose clock is slightly off. The early point-sampling designs
+in this ADR failed because they sampled at an assumed bit period and never
+re-synchronised, so a few percent of error accumulated across the frame; re-syncing
+at each flip bounds the error to one stretch.
+
+*What would need settling before building it:*
+
+- **Program space.** A PIO block has 32 instructions shared by every state machine
+  on it. The bidirectional transmit program uses 12 and the current receiver about
+  a dozen, so the new receiver would replace the oversampling one rather than sit
+  beside it, and it has to fit.
+- **The bit period.** With no fractional subtraction, either the receiver's clock
+  divider is tuned so a bit is a whole number of cycles (the divider is fractional,
+  so this is reachable per ESC oscillator, but it must be measured per unit), or
+  an integer period is accepted with a few percent of error. Re-syncing at each flip
+  keeps that error inside the half-bit rounding margin for the 3-bit stretches
+  GCR frames contain.
+- **The end of a frame and silence.** Today the capture is a fixed 128-reading
+  window. A run-length receiver has to recognise "idle long enough, the frame is
+  over", and cope with an ESC that does not reply or replies partially, without
+  stalling the FIFO - an undrained or stalled receiver is the condition this ADR
+  ties to corrupted captures.
+- **Diagnostics.** The raw 128 readings are what exposed the transmit echoes, the
+  stall corruption and the bit-period drift. Compressing them hides that, so the
+  raw receiver would stay available as a diagnostic profile.
+- **Echoes and noise before arming.** The receiver must reject or flag frames that
+  are the transmitter's own waveform, as the raw receiver is checked for today.
+
+*How it could be validated.* Several state machines can read one pin, so the new
+receiver can run beside the existing one on the same motor, using a spare state
+machine, and every frame it produces can be compared with the current decoder's
+result on the same reply. Agreement over many thousands of real replies, including
+during arming and after a stall, is the bar before it replaces anything.
+
+*What it would buy.* About a millisecond of application-core time per decode, a
+smaller FIFO payload, and no oversampling density to tune per DShot speed. The
+decode is already off the command loop, so this is application headroom, not
+command-loop speed. It has to be weighed against replacing a receiver that is
+verified on hardware for both supported speeds.
 
 ## References
 

@@ -1047,6 +1047,7 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
 | W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | IN PROGRESS |
+| W19 | Run-length capture in the PIO receiver (idea) | — | L | IDEA - not started, optional; needs a go-ahead |
 
 ### Work items
 
@@ -1878,3 +1879,28 @@ hung Pico are not observable from here). The default is 500ms as decided; the be
 for 3000ms explicitly and check eRPM, the code comment says what is and is not established, and
 the minimum window that reliably starts the motor has not been measured. Lesson recorded in
 `tests/test_motor_group_telemetry.py`: CRC-valid replies do not prove the motor spun.
+
+**W19 — Run-length capture in the PIO receiver (idea)** · `driver/dshot_pio.py` (`dshot_bidir_rx`), `driver/gcr_decode.py`, `driver/dshot_profiles.py`, `decision/ADR-002-bidirectional-dshot.md`
+
+**IDEA, added 2026-09-20 - not started, optional.** Raised while explaining the integer
+decoder: measuring the stretches between signal flips, and even turning them into bits, is a
+counter plus a small state machine, which PIO does natively. The idea, its two levels and the
+open questions are written up in ADR-002's "Idea, not built: run-length capture in the PIO
+receiver". In short: level 1 has the PIO push the length of each stretch (drops `find_edges`, about
+0.44ms of the 1.27ms decode); level 2 has it also subtract the bit period in a loop and shift the
+bits into the ISR, so the CPU receives the finished 21-bit frame (decode about 0.3ms). It would buy
+Core 0 headroom, a smaller FIFO payload and no per-speed oversampling density to tune; it does not
+speed up the command loop, since decode is already off it.
+
+Steps, if picked up:
+1. Spike: a run-length receiver written as a standalone program on a spare state machine beside the
+   existing receiver on the same pin (several state machines can read one pin), no driver change.
+2. Settle the open questions from the ADR: fitting in the block's 32 instructions, how the bit period
+   is handled (tuned clock divider vs integer period with re-sync at every flip), how a frame's end
+   and an ESC's silence are detected without stalling the FIFO, and echo rejection before arming.
+3. Validate against the current decoder on the same replies: agreement over >=10,000 real replies,
+   including the arming window and after a deliberate stall, and for both DSHOT300 and DSHOT600.
+4. Only then decide whether it replaces the oversampling receiver; keep the raw capture as a
+   diagnostic profile either way.
+**Done when:** the spike's frames agree with the current decoder over the replies above, and the
+decision to adopt, keep as an option or drop it is recorded in ADR-002 with the measured decode cost.
