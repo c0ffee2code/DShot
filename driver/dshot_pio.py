@@ -9,7 +9,7 @@ from rp2 import PIO, StateMachine, asm_pio
 
 import gcr_decode
 from capture_mailbox import CaptureMailbox
-from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES
+from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES, RLE_CYCLES_PER_BIT, rle_rx_speed
 
 # Highest value the 11-bit throttle field of a DShot packet can carry. A module
 # constant rather than a class attribute lookup because send_throttle_command()
@@ -153,6 +153,72 @@ def dshot_bidir_rx():
     jmp(y_dec, "inner")              # 1 cycle - 2 cycles/sample within a pass
     jmp(x_dec, "outer")              # 1 cycle - only reached once per pass, after 32 samples
     wrap()
+
+# EXPERIMENTAL alternative to dshot_bidir_rx: the state machine rebuilds the
+# reply itself and hands the CPU one word per reply - the frame's 21 bits with
+# the marker at the top, the same integer gcr_decode.reconstruct_frame() returns
+# - so the CPU is left with gcr_decode.decode() and check_crc().
+#
+# It reads the pin once per bit, at the bit's centre, and starts the count for
+# the next centre afresh at every flip - the way a hardware UART stays in step
+# with a sender whose clock is a little off - so a timing error can grow only
+# within one run of equal bits, not across the frame. That needs a receiver
+# clock at a whole number of cycles per reply bit: 16, see RLE_CYCLES_PER_BIT.
+# It takes exactly 21 bits, so it never has to recognise the end of a frame, and
+# a reply's worth of work always ends: it cannot stall the FIFO mid-frame.
+#
+# What the program does, in order:
+#
+# 1. Wait for the paired TX's release signal and then for the reply's leading
+#    (marker) edge - the same synchronisation as dshot_bidir_rx, see there.
+#
+# 2. Count down from a preset while the pin holds its level: one pass of the
+#    counting loop is 2 cycles (a pin test and a decrement), the loop for the
+#    level the pin is at. When the pin flips, jump to the other level's loop with
+#    the counter set to a short count, so the next read lands about half a bit
+#    after the edge. When the counter runs out with no flip, the read lands one
+#    whole bit after the last one.
+#
+# 3. Read the pin into the input shift register (autopush hands it over after 21
+#    reads), count the bit, and reload the counter for a whole bit.
+#
+# The two levels' paths are made the same length on purpose: the low path spends
+# a nop where the high path spends a jump, so a bit is 16 cycles at either level
+# and a run of low bits does not drift against a run of high bits.
+#
+# It takes 20 of a PIO block's 32 instruction slots; dshot_bidir_tx takes 12.
+# A block that carries this pair has no room for another program.
+@asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=21)
+def dshot_bidir_rx_rle():
+    wrap_target()
+    irq(clear, rel(0))               # step 1: as dshot_bidir_rx
+    wait(1, irq, rel(0))
+    set(x, 1)
+    label("predelay")
+    jmp(x_dec, "predelay")     [6]
+    wait(0, pin, 0)                  # the marker edge: the pin is now low
+    set(y, 20)                       # 21 reads: y counts 20..0
+    label("flip_low")
+    set(x, 0)                        # step 2: the pin just went low - 1 pass, then read
+    jmp("low")
+    label("flip_high")
+    set(x, 0)                        # the pin just went high - 1 pass, then read
+    label("high")
+    jmp(pin, "high_count")           # pin still high: count a pass
+    jmp("flip_low")                  # pin went low
+    label("high_count")
+    jmp(x_dec, "high")               # 2 cycles a pass; falls through when the count is out
+    jmp("emit")
+    label("again")
+    set(x, 4)                  [1]   # step 3: a whole bit - 5 passes, plus the cycles the path around them takes
+    jmp(pin, "high")
+    nop()                            # matches the jump the high path takes to "emit"
+    label("low")
+    jmp(pin, "flip_high")            # pin went high
+    jmp(x_dec, "low")                # 2 cycles a pass; falls through into "emit" when the count is out
+    label("emit")
+    in_(pins, 1)                     # the read
+    jmp(y_dec, "again")              # after the 21st, wraps back to wait for the next reply
 
 # DSHOT_SPEEDS and BIDIR_PROFILES live in dshot_profiles.py (pure data, no
 # hardware imports) so PC-side tooling can read them directly - see that

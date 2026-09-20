@@ -46,3 +46,14 @@ BIDIR_PROFILES = {
     # rx_speed = 9 x the nominal 750kHz reply rate
     DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129, "ratio_tolerance": 0.0},
 }
+
+# Cycles per reply bit that dshot_pio.dshot_bidir_rx_rle's per-bit path takes,
+# fixed by its instructions. Its receiver clock is this many times the reply bit
+# rate, which is expected_ratio's measured rate: rx_speed / expected_ratio.
+RLE_CYCLES_PER_BIT = 16
+
+
+def rle_rx_speed(dshot_speed):
+    """The run-length receiver's clock for a DShot speed, in Hz."""
+    profile = BIDIR_PROFILES[dshot_speed]
+    return round(RLE_CYCLES_PER_BIT * profile["rx_speed"] / profile["expected_ratio"])
