@@ -1775,8 +1775,8 @@ at each flip bounds the error to one stretch.
 *What would need settling before building it:*
 
 - **Program space.** A PIO block has 32 instructions shared by every state machine
-  on it. The bidirectional transmit program uses 12 and the current receiver about
-  a dozen, so the new receiver would replace the oversampling one rather than sit
+  on it. The bidirectional transmit program uses 13 and the current receiver 10,
+  so the new receiver would replace the oversampling one rather than sit
   beside it, and it has to fit.
 - **The bit period.** With no fractional subtraction, either the receiver's clock
   divider is tuned so a bit is a whole number of cycles (the divider is fractional,
@@ -1800,6 +1800,55 @@ receiver can run beside the existing one on the same motor, using a spare state
 machine, and every frame it produces can be compared with the current decoder's
 result on the same reply. Agreement over many thousands of real replies, including
 during arming and after a stall, is the bar before it replaces anything.
+
+*Spike result (2026-09-20).* A level-2 receiver was built as a second receiver
+program, `dshot_bidir_rx_rle`, and run on the bench. It differs from the sketch
+above in how it finds bit boundaries: instead of subtracting the bit period in a
+loop it runs a per-bit timer - a count-down of 2-cycle passes that tests the
+pin on every pass. When the timer runs out with no flip, it reads the pin (one
+bit, one whole bit after the previous read) and reloads the timer. When the pin
+flips, it jumps to the other level's loop with a short count, so the next read is
+half a bit after the edge, at the centre of the new bit. This is the way a
+hardware UART receiver re-synchronises, and it needs no division. It reads
+exactly 21 bits and autopushes them as one word, marker at the top, so the end of
+a frame never has to be detected.
+
+- **Clock.** The bit is 16 receiver cycles at both levels, so the receiver clock
+  is 16 times the reply bit rate: 6.20MHz at DSHOT300 and 12.40MHz at DSHOT600
+  (`rle_rx_speed()`; the rate is `rx_speed / expected_ratio`, the measured value).
+  The two levels' paths are made the same length with a nop; before that, high
+  bits took 15 cycles and low bits 16, and the last read drifted early enough to
+  fail 1.4% of replays.
+- **Program space.** It fits with `dshot_bidir_tx` only at 19 instructions,
+  because the pre-delay is one `nop` with a 26-cycle delay slot instead of a
+  counted loop. Together they fill the block: it cannot also hold the raw
+  receiver (replacing the raw receiver of a constructed `BidirectionalDShot`
+  fails with ENOMEM), nor the unidirectional program. A unidirectional motor has
+  to sit on another block.
+- **Model.** A PC model of the program (`scripts/simulate_rle_receiver.py`)
+  replays stored captures with the pin's waveform rebuilt from the raw samples.
+  At the profile's clock it rebuilds the frame `gcr_decode` builds for all 10,867
+  CRC-valid replies in four sessions (three DSHOT300, one DSHOT600). With the
+  receiver clock 1.5% off it is still 99.5%, 3% off 96.8% (slow) or 85.6% (fast),
+  5% off 74% or 44%. The replayed waveform has more edge jitter than the real
+  signal, so these are pessimistic.
+- **Bench.** On the AM32 ESC (channel 1, DSHOT300, throttle 100, motor spinning):
+  9,971 replies in 5 seconds, every one with the marker bit 0, valid GCR symbols
+  and a valid CRC, eRPM 21.4k to 21.7k (the raw receiver's bench figures are
+  100% CRC-valid and 21.4k to 21.8k). Decoding a frame - `decode()` and
+  `check_crc()`, all that is left for the CPU - took 214us on average and 345us at
+  most, against 1.27ms for the raw path. No frame was lost from a 64-frame ring
+  drained by the application core.
+
+Not settled by the spike: DSHOT600 on hardware; behaviour when the ESC does not
+reply, replies partially or before arming (the program waits for a falling edge
+like the raw receiver, so it can take the transmitter's own waveform for a reply
+in the same way, and nothing has checked how that looks in a 21-bit frame); a
+stalled or slow drain (a word per reply is far less pressure than four, but the
+same undrained-FIFO condition applies); comparison against the raw receiver on
+the very same replies (the bench shows both are valid, not that they agree
+frame for frame - the model does that on stored captures); and integrating it
+with `CaptureMailbox`, which takes whole 4-word captures.
 
 *What it would buy.* About a millisecond of application-core time per decode, a
 smaller FIFO payload, and no oversampling density to tune per DShot speed. The
