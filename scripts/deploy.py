@@ -3,8 +3,8 @@ deploy.py - upload the DShot driver + test harness to the Pico, then run a
 test script live (streams output for the duration of the test).
 
 Run from project root:
-  python scripts/deploy.py                       # runs tests/test_slow_spin.py
-  python scripts/deploy.py test_bidir_tx_arm.py   # runs a different test under tests/
+  python scripts/deploy.py                       # runs the default test script
+  python scripts/deploy.py test_capture_slot_stress.py   # runs another script from tests/harness or tests/device
   python scripts/deploy.py test_scenario_capture.py --scenario tests/harness/scenarios/dual_motor_divergent.json
                                                    # also uploads the scenario file as scenario.json
 
@@ -58,10 +58,13 @@ LIBRARY_FILES = [
     ("tests/harness/pcf8523.py", "pcf8523.py"),
     ("tests/harness/capture_sink.py", "capture_sink.py"),
     ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
-    ("tests/harness/stress_capture_sink.py", "stress_capture_sink.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "test_slow_spin.py"
+
+# Where a script named on the command line is looked for, in order. tests/unit is
+# not here: those tests run on a PC, not on the Pico.
+SCRIPT_DIRS = ["tests/harness", "tests/device", "tests"]
 
 # Fixed device-side name test_scenario_capture.py opens - mpremote's `run`
 # has no mechanism to pass an extra file/argument into the running script,
@@ -97,9 +100,10 @@ def main():
         scenario_path = args[idx + 1]
         del args[idx:idx + 2]
 
-    test_script = ROOT / "tests" / (args[0] if args else DEFAULT_TEST_SCRIPT)
-    if not test_script.exists():
-        print(f"MISSING test script: {test_script}")
+    name = args[0] if args else DEFAULT_TEST_SCRIPT
+    test_script = next((ROOT / d / name for d in SCRIPT_DIRS if (ROOT / d / name).exists()), None)
+    if test_script is None:
+        print(f"MISSING test script {name}: looked in {', '.join(SCRIPT_DIRS)}")
         sys.exit(1)
 
     print(f"Deploying to Pico on {COM_PORT}...")
