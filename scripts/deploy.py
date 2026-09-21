@@ -20,10 +20,11 @@ every captured word came back zero, exactly mimicking a dead ESC. A hard
 reset before the run made it succeed every time; skipping the reset and
 simply re-running failed every time. This is why `main()` below resets the
 board before every run rather than relying on the test script's own
-cleanup - whatever state doesn't get cleanly torn down between runs
-(a leftover Core 1 thread and/or PIO state is the leading suspect, not yet
-root-caused further) survives a clean Python-level exit, so only an actual
-hardware reset is a reliable fix. This also means every hardware capture
+cleanup - only an actual hardware reset was found to fix it. What carried
+over was not root-caused. Checked on 2026-09-21 with no ESC attached: state
+machines left armed and a Core 1 thread left running are both gone by the
+next `mpremote run`, so neither is it; pad configuration (a pull-up set by the
+previous run) does survive a soft reset, and the ESC is not reset by either. This also means every hardware capture
 session from before this fix that immediately followed another `mpremote
 run` invocation (not a fresh reset) is suspect - see decision/
 ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section for which

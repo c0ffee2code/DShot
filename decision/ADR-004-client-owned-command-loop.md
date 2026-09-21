@@ -156,6 +156,10 @@ Reversed:
 
 **Status:** Partly verified. Arming, running and disarming through the facade with an application-owned Core 1 loop has been exercised repeatedly on the AM32 bench ESC, most recently through the scenario harness (`tests/harness/run_scenario.py`), which drives every scenario through `MotorGroup` with `update()` on an application-owned Core 1 loop. The other checks below have not been re-run individually, and the scripts named in the table were retired.
 
+**PIO state machines are deactivated, never released.** `stop()` deactivates and restarts a state machine; nothing frees the state machines or the programs they loaded, and this MicroPython (1.28) has no way to free a state machine (`StateMachine` has no `deinit`), only `PIO.remove_program()` for a program. That is enough for how a `MotorGroup` is used: 30 builds of a group, each armed and disarmed, raised no error and left the heap unchanged, because a new state machine on the same id reuses the program already loaded. It would not be enough for code that puts a different program on the same state machine repeatedly: the replaced program stays loaded and the block's 32 slots run out (an ENOMEM, which is what swapping the receiver program on a constructed motor produced); `remove_program()` should free it, but has not been tried. `disarm()` leaves the receiver's FIFO full of unread words (8 with the joined FIFO); `start()` flushes them.
+
+Between runs: the next `mpremote run` clears the PIO state itself. After a run that exited armed, every state machine was inactive and every FIFO empty, and a Core 1 thread left running did not stop the next run from starting its own (both checked 2026-09-21). What does survive is pad configuration, such as a pull-up set by the previous run.
+
 The original test hardware and pass criteria are those of ADR-001 — in particular, **both motors must arm reliably every time**, which is the regression this refactor must not introduce.
 
 | Check | Purpose |
@@ -164,8 +168,8 @@ The original test hardware and pass criteria are those of ADR-001 — in particu
 | `test_motor_group.py` | Both motors arm reliably via an application-owned Core 1 loop |
 | Signal cut on disarm | Motors stop and the ESC beeps its lost-signal tone |
 | Stop latency from a spun-up motor | Confirms `disarm()`'s zeros land: the motor should wind down at once, not after the ESC's 100-250ms timeout |
-| Signal line after `disarm()` | Should read low. Rests on side-set being applied when the `out` instruction stalls — inferred from the PIO program, not yet measured |
-| `arm()` → `disarm()` → `arm()` | Deactivate-only release is genuinely re-armable |
+| Signal line after `disarm()` | A unidirectional line reads low and a bidirectional line reads high (released and pulled up), measured on the Pico with nothing attached (2026-09-21, `tests/device/test_pio_lifecycle.py`) |
+| `arm()` → `disarm()` → `arm()` | The state machines and the receiver work again each time: 15 re-arms on one group, each capturing afresh with the published sequence starting over (same test, no ESC). Re-arming an actual ESC after a disarm is exercised by every scenario run, not separately |
 | `update()` ×100 while disarmed | Returns immediately; confirms the TX FIFO hang guard |
 | `disarm()` on a never-armed group | Returns immediately and does not block on an inactive state machine |
 | Cooperative single-core loop | Arming completes without a second core — the case blocking `arm()` could not support |
