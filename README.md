@@ -140,10 +140,12 @@ motors.set_throttle(1, 150)  # Motor 2
 # Or update all at once
 motors.set_all_throttles([100, 150])
 
-# Commands zero throttle and then cuts the signal, whether or not the loop
-# is still alive. The only call in the API that blocks - for ~0.3ms.
-motors.disarm()
+# Stop the loop first: while it's running, Core 1 can call update() at the same
+# time disarm() sends/drains/stops on the same state machines from this core,
+# and nothing serialises the two. Then disarm() commands zero throttle and
+# cuts the signal - the only call in the API that blocks, for ~0.3ms.
 runner.stop()
+motors.disarm()
 ```
 
 ### Without a Second Core

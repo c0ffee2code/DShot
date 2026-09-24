@@ -309,10 +309,16 @@ def run_scenario():
 
     finally:
         print("Stopping...")
-        if group is not None:
-            group.disarm()
+        # Stop the loop before disarming: while it's still running, Core 1 can
+        # call update() concurrently with disarm()'s own send/drain/stop calls
+        # on the same state machines, from the other core, with nothing
+        # serialising the two beyond a single state check disarm() makes at its
+        # start. Halting the loop first removes that race entirely, rather than
+        # relying on disarm() to tolerate it.
         if runner is not None:
             runner.stop()
+        if group is not None:
+            group.disarm()
         print("Motors stopped and disarmed.")
         published = {i: last_seq[i] for i in bidir_indices}
         # The thresholds are judged on a run that reached its end; one that was

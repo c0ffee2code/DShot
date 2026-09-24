@@ -62,7 +62,7 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 4. **`update()` is inert while disarmed**: a safety requirement, not an optimisation. Writing to deactivated state machines would fill the TX FIFO and block the calling core forever.
 
-5. **`disarm()` transmits its own zeros**, then drains them, then deactivates — in that order. It is the one method in the facade that blocks (a few hundred microseconds). Deactivating alone is not a stop: the motor keeps spinning at its last throttle until the ESC's own 100-250ms signal-loss timeout expires. Do not "optimise" the transmit away.
+5. **`disarm()` transmits its own zeros**, then drains them, then deactivates — in that order. It is the one method in the facade that blocks (a few hundred microseconds). Deactivating alone is not a stop: the motor keeps spinning at its last throttle until the ESC's own 100-250ms signal-loss timeout expires. Do not "optimise" the transmit away. Its `self.state` check makes it safe to call from a different core than `update()` without corrupting the group's own state, but nothing serialises its FIFO/state-machine calls against a concurrent `update()` still running on that other core — stop the loop first (see the usage example) rather than relying on `disarm()` to tolerate a still-running caller.
 
 6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
 
@@ -106,8 +106,8 @@ while not motors.is_armed():
 motors.set_throttle(0, 100)     # Motor 0
 motors.set_throttle(1, 150)     # Motor 1
 
+runner.stop()                   # stop the loop first - see below
 motors.disarm()                 # commands zero, then cuts the signal
-runner.stop()
 ```
 
 **Low-level (single motor):**
