@@ -99,6 +99,17 @@ class MotorConstructionTest(unittest.TestCase):
         motor.start()
         self.assertEqual(motor.rx_sm.rx_fifo(), 0)
 
+    def test_a_disarm_then_rearm_cycle_still_arms_and_captures(self):
+        # stop() then start() again must leave the motor working, not just inactive
+        motor = bidir()
+        motor.start()
+        motor.send_throttle_command(50)
+        motor.stop()
+        motor.start()
+        self.assertTrue(motor.sm.is_active and motor.rx_sm.is_active)
+        motor.send_throttle_command(75)
+        self.assertEqual(motor.sm.sent[-1], expected_word(75, inverted=True))
+
     def test_unidirectional_motor_has_no_telemetry(self):
         motor = uni()
         for call in (motor.rx_read, motor.latest_capture, lambda: motor.decode_capture((0, 0, 0, 0))):

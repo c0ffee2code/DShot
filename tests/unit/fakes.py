@@ -57,9 +57,10 @@ class Pin:
 
     def __init__(self, pin_id, *args, **kwargs):
         self.id = pin_id
+        self.init_calls = []  # every init(*args, **kwargs) call, in order
 
     def init(self, *args, **kwargs):
-        pass
+        self.init_calls.append((args, kwargs))
 
     # Real pins with the same number are the same object; two motors on one
     # pin must compare equal for the group's collision check
@@ -81,6 +82,7 @@ class StateMachine:
         self.sent = []      # every word ever put(), in order
         self.pending = []   # words the fake transmitter has not yet "sent"
         self.rx = []        # words a test fed for the program to have "captured"
+        self.init_calls = []  # every init(program, freq=..., **kwargs) call, in order
 
     def active(self, value=None):
         if value is None:
@@ -89,6 +91,14 @@ class StateMachine:
 
     def restart(self):
         self.restarts += 1
+
+    def init(self, program=None, freq=None, **kwargs):
+        self.init_calls.append((program, freq, kwargs))
+        if program is not None:
+            self.program = program
+        if freq is not None:
+            self.freq = freq
+        self.kwargs.update(kwargs)
 
     # put(value, shift): the value is shifted left by `shift` bits into a 32-bit word
     def put(self, value, shift=0):
