@@ -40,7 +40,7 @@ row's evidence is in the dated sections below.
 | DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
 | Non-eRPM frames (extended telemetry, stopped-motor value) | Not handled |
 | Telemetry loss and health tracking | Not implemented |
-| Post-disarm line state (bidirectional) | A bidirectional motor's line, merely deactivated and released to its pull-up, leaves some ESC firmware (AM32's own bootloader included, confirmed by reading its source) unable to come back on its own - it waits forever for a UART byte that a permanently-high line never sends. Confirmed on hardware that driving the line low (no reset) recovers it, the same escape a unidirectional motor's frozen-low line already gets. `stop()` now does this itself and `start()` reclaims the pin for PIO; the code change is implemented and passes the PC unit suite, not yet run on hardware
+| Post-disarm line state (bidirectional) | A bidirectional motor's line, merely deactivated and released to its pull-up, leaves some ESC firmware (AM32's own bootloader included, confirmed by reading its source) unable to come back on its own - it waits forever for a UART byte that a permanently-high line never sends. `stop()` now drives the line low itself and `start()` reclaims the pin for PIO. Verified on hardware: single and multiple simultaneous bidirectional motors both recover audibly with no reset needed, and three repeated arm/spin/disarm cycles in one session (run twice) all decode 100% CRC-valid with real spin, confirming `start()`'s reclaim path works, not just the first `start()`
 
 ## Context
 

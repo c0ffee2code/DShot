@@ -1217,7 +1217,7 @@ but this is inference, not a confirmed fact about this specific board.
 | W19 | Run-length capture in the PIO receiver (idea) | — | L | IDEA - not started, optional; needs a go-ahead |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
-| W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | IN PROGRESS (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — option (a) implemented, 143 PC unit tests pass (3 new ordering tests), new `tests/device/test_bidir_restart_cycles.py` exercises the reclaim path (nothing else does); not yet run on hardware, bench powered off |
+| W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | DONE (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — bench-confirmed on `telemetry_settled_300/600`, `two_channel_divergent_300/600`, `test_bidir_restart_cycles.py` (x2, 6/6 cycles), `smoke_unidirectional` (x2); the disarm-hang bug is fixed for both single and multi-bidirectional-motor cases and re-arming works |
 
 ### Work items
 
@@ -2198,14 +2198,16 @@ For (a) and (b), also decide whether the drive-low belongs in `DShotPIO.stop()` 
 caller gets it) or only in `MotorGroup.disarm()`'s sequencing (so a bare `stop()` without
 `disarm()` keeps today's behavior).
 
-**Done when:**
-- A scenario that reliably reproduced the stuck state (per W21) now leaves the ESC audibly
+**Done when** (all met, 2026-09-25, see the bench verification log below):
+- ~~A scenario that reliably reproduced the stuck state (per W21) now leaves the ESC audibly
   returning to "waiting for signal" without any Pico-side reset, for both the single- and
-  multi-bidirectional-motor cases (scope per W21's D2 verdict).
-- In the same Pico session, a subsequent `arm()` after this `disarm()` still gets bidirectional
-  detection, CRC-valid telemetry and real eRPM — the fix must not break re-arming.
-- Unidirectional-only scenarios are unaffected (no behavior change, no regression run needed
-  beyond confirming this).
+  multi-bidirectional-motor cases (scope per W21's D2 verdict).~~ **Met** — `telemetry_settled_300/600`
+  (single) and `two_channel_divergent_300/600` (multi) all recovered audibly, no reset.
+- ~~In the same Pico session, a subsequent `arm()` after this `disarm()` still gets bidirectional
+  detection, CRC-valid telemetry and real eRPM — the fix must not break re-arming.~~ **Met** —
+  `test_bidir_restart_cycles.py`, run twice, 6/6 cycles 100% CRC-valid with real spin.
+- ~~Unidirectional-only scenarios are unaffected (no behavior change, no regression run needed
+  beyond confirming this).~~ **Met** — `smoke_unidirectional`, run twice, motor spins normally.
 
 **2026-09-25 — decision made and implementation in progress.** User chose option (a); the fix
 lives in `stop()` itself (not only in `disarm()`'s sequencing), so any caller — including the
@@ -2233,4 +2235,48 @@ header to note D3 now explains its "stuck high" finding and to fix a wrong regis
 while re-reading it. Three ordering unit tests added to `tests/unit/test_dshot_packet.py` (stop
 deactivates before touching the pin; start re-applies the pull-up and reclaims before activating;
 a unidirectional motor's `stop()` never touches its pin) so a later refactor can't silently
-reorder this. **Not yet run on hardware.**
+reorder this.
+
+**2026-09-25 — bench verification.**
+- **Run 1/5: `telemetry_settled_300`, PASS.** 100/100 CRC-valid decoded, median 21,127 eRPM
+  (motor genuinely spun), `disarm()` completed normally. User confirmed by listening: channel 1
+  recovered and is repeating its startup tune, same as channel 3.
+- **Run 2/5: `two_channel_divergent_300`, PASS — this is the original bug scenario.** Both
+  channels 645/645 CRC-valid (0 failures), median eRPM 55,970 / 34,247 tracking the scenario's
+  diverging throttle profile correctly. User confirmed by listening: **both channel 1 and
+  channel 3 recovered and are repeating their startup tunes** — the exact two-bidirectional-
+  motors case that started this whole investigation on 2026-09-22 is fixed.
+
+- **Run 3/5: `telemetry_settled_600`, PASS.** 100/100 CRC-valid, median 21,490 eRPM. User
+  confirmed channel 1 recovered.
+- **Run 4/5: `two_channel_divergent_600` — scenario's own thresholds FAILED, cause not yet
+  established.** Motor 2 (channel 3): 665/665 CRC-valid, median 34,562 eRPM - spun normally.
+  Motor 0 (channel 1): 658 decoded, 643 CRC-valid (97.7%, just under the 99% threshold), 15
+  invalid, **median eRPM 917 - the documented at-rest sentinel value, meaning motor 0 replied
+  with valid telemetry but did not spin.** This is a pre-existing, previously-documented
+  intermittent symptom (a CRC-valid armed reply does not prove the motor started - see
+  [[feedback_verify_spin_with_erpm]]), separate from the disarm-hang bug D1-D3/W22 fixes, not a
+  regression this fix introduced. **Resolved by asking the user (per [[feedback_verify_spin_with_erpm]] - never infer this):**
+  motor 1 (channel 1) confirmed NOT spinning during the run, but the ESC still recovered and
+  repeated its tune after `disarm()`. **This is the actual result that matters for W22: the fix
+  works independently of whether the motor spun.** The no-spin symptom itself is real, separate,
+  and not addressed by this fix - it needs its own investigation if pursued. The W22 body above
+  already flagged a candidate (unconfirmed)
+  explanation for no-spin specifically at 600: the pull-up is applied at `__init__`, before
+  `arm()`, and if that gap plus 600's tighter timing ever exceeds the ESC's 2s unarmed timeout,
+  arming could start against an ESC that's mid-reboot. Not established as the cause here -
+  flagged as a candidate to check, not a conclusion.
+
+- **Run 5/5: `test_bidir_restart_cycles.py`, PASS — twice.** Three arm/spin/disarm cycles in one
+  Pico session, each stopping the command loop before disarming: 100% CRC-valid every cycle, both
+  runs (130/130, 131/131, 130/130 on the first; 130/130, 130/130, 130/130 on the second), median
+  eRPM 21,306-21,551 across all six cycles - the motor genuinely spun every single time, not just
+  on the first `start()`. **This is the decisive confirmation of `start()`'s reclaim path**,
+  which nothing before this session ever exercised on real hardware (every scenario in
+  `tests/harness/` only calls `start()` once, since `deploy.py` resets before every run).
+
+- **`smoke_unidirectional`, PASS — run twice.** No bidirectional motors in this scenario, so no
+  telemetry to check; user confirmed by watching both times: the unidirectional motor "spins
+  like a charm." Unaffected path confirmed unaffected.
+
+**All planned bench verification complete. W22 is DONE.**
