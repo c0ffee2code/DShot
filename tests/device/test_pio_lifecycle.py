@@ -7,8 +7,10 @@
 #      script or an application that re-creates its motors does) must not use up
 #      the block's instruction slots or its state machines.
 #   2. Disarming must leave everything quiet: state machines inactive, the TX FIFO
-#      empty, and each signal line at the level the ESC should see - released and
-#      pulled up for a bidirectional motor, low for a unidirectional one.
+#      empty, and each signal line at the level the ESC should see - driven low for
+#      both kinds of motor now (a bidirectional line used to be merely released and
+#      pulled up, which left some ESC firmware unable to recover on its own after
+#      disarm - see driver/dshot_pio.py's BidirectionalDShot.stop()).
 #   3. Arming the same group again after a disarm must work as the first time did:
 #      the receiver captures again, and the published capture starts over.
 #
@@ -90,7 +92,7 @@ def test_pio_lifecycle():
     print("  RX FIFO words left after disarm: %d" % bidir.rx_sm.rx_fifo())
     print("  pin levels: bidirectional GPIO%d = %d, unidirectional GPIO%d = %d" % (
         BIDIR_PIN, Pin(BIDIR_PIN).value(), UNI_PIN, Pin(UNI_PIN).value()))
-    check(Pin(BIDIR_PIN).value() == 1, "the bidirectional line is released and pulled up (high)")
+    check(Pin(BIDIR_PIN).value() == 0, "the bidirectional line is handed to SIO, driven low")
     check(Pin(UNI_PIN).value() == 0, "the unidirectional line is parked low")
 
     print("Arming the same group %d more times..." % REARM_CYCLES)

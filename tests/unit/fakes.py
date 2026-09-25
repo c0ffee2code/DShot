@@ -50,6 +50,24 @@ def _install_utime():
     sys.modules["utime"] = module
 
 
+class CallLog:
+    """Global order of state-changing fake calls, across every Pin/StateMachine
+    instance - not a real hardware concept, just what a test checking one
+    object's calls happen before another's (e.g. "stop() deactivates before
+    it touches the pin") needs to see. Reset per test; nothing reads it
+    otherwise."""
+
+    events = []
+
+    @classmethod
+    def reset(cls):
+        cls.events = []
+
+    @classmethod
+    def record(cls, event):
+        cls.events.append(event)
+
+
 class Pin:
     IN = 0
     OUT = 1
@@ -61,6 +79,7 @@ class Pin:
 
     def init(self, *args, **kwargs):
         self.init_calls.append((args, kwargs))
+        CallLog.record(("pin", self.id, "init", args, kwargs))
 
     # Real pins with the same number are the same object; two motors on one
     # pin must compare equal for the group's collision check
@@ -88,12 +107,14 @@ class StateMachine:
         if value is None:
             return self.is_active
         self.is_active = bool(value)
+        CallLog.record(("sm", self.id, "active", self.is_active))
 
     def restart(self):
         self.restarts += 1
 
     def init(self, program=None, freq=None, **kwargs):
         self.init_calls.append((program, freq, kwargs))
+        CallLog.record(("sm", self.id, "init"))
         if program is not None:
             self.program = program
         if freq is not None:

@@ -182,6 +182,11 @@ class DShotPIO:
         self.state_machine_id = state_machine_id
         self.pin = pin
 
+        # Kept so BidirectionalDShot.start() can re-init this state machine
+        # after a stop() that gave the pin to SIO (see BidirectionalDShot.stop())
+        self.dshot_speed = dshot_speed
+        self.program = program
+
         self.sm = StateMachine(state_machine_id, program, freq=dshot_speed,
                                 sideset_base=pin, set_base=pin)
 
@@ -409,6 +414,17 @@ class BidirectionalDShot(DShotPIO):
         self.drain_rx = self.mailbox.drain
 
     def start(self):
+        # Reclaim the pin from stop()'s SIO hand-off (see stop()'s own
+        # comment) before touching either state machine. Re-applying the
+        # pull-up here, not just once at construction, means the very first
+        # start() and every one after a stop() both get it - and the pin's
+        # pull configuration is independent of which peripheral owns it, so
+        # this is safe to redo even on a pin that never left PIO.
+        self.pin.init(Pin.IN, Pin.PULL_UP)
+        self.sm.init(self.program, freq=self.dshot_speed,
+                     sideset_base=self.pin, set_base=self.pin)
+        self.rx_sm.init(dshot_bidir_rx, freq=self.rx_clock_hz, in_base=self.pin)
+
         # Start each run from a clean slate. RX listens before TX can release
         # the pin and raise its first irq(rel(1)) (see dshot_bidir_rx's
         # irq(clear, rel(0)) comment for the other half of this). Leftover
@@ -466,7 +482,30 @@ class BidirectionalDShot(DShotPIO):
         """
         return gcr_decode.analyze_capture(words, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
 
+    # One shutdown-only wait, not on any hot path: the ESC's reply to the last
+    # frame TX sent is still in flight for a while after TX's own last bit -
+    # dshot_bidir_rx's own predelay is explicitly a lower bound on when that
+    # reply starts, not a measured one, so the actual turnaround can't be
+    # computed exactly here. A generous fixed margin, comfortably longer than
+    # a whole reply at either supported speed, before handing the pin to SIO
+    # avoids fighting the ESC's own drive.
+    STOP_REPLY_MARGIN_US = 300
+
     def stop(self):
+        """
+        Deactivate both state machines, then hand the pin to SIO, driven low.
+
+        AM32 ESCs reboot into their bootloader after a signal-loss timeout,
+        and a bootloader that finds the line permanently high never escapes -
+        which is exactly what merely deactivating a released, pulled-up-high
+        BidirectionalDShot line leaves behind. Driving it low instead means
+        that reboot's own bootloader check sees an actively low line and
+        jumps straight back to the application - the same path a
+        unidirectional motor's frozen-low line already takes for free. Call
+        start() to reclaim the pin for PIO and resume.
+        """
         super().stop()
         self.rx_sm.active(0)
         self.rx_sm.restart()
+        utime.sleep_us(self.STOP_REPLY_MARGIN_US)
+        self.pin.init(Pin.OUT, value=0)

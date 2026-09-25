@@ -10,11 +10,37 @@
 # FUNCSEL switches from PIO0 (6) to SIO (5), exactly as documented MicroPython/
 # RP2350 behaviour would predict.
 #
-# What is NOT explained: the pin keeps reading HIGH afterward regardless -
-# confirmed on two independent measurement paths (machine.Pin.value() and a
-# direct read of the SIO GPIO_IN register, which agree, ruling out a stale
+# Update (2026-09-25): the "pin keeps reading HIGH regardless" result below is
+# now explained, not a mystery. It is RP2350 silicon erratum E9 ("increased
+# leakage current on Bank 0 GPIO when pad input is enabled", fixed at stepping
+# A3): a released input pad leaks enough current to hold ~2.2V (reads as
+# HIGH) when nothing pulls it hard enough, and this diagnostic's forced
+# PULL_DOWN is exactly the one configuration weak enough to lose that fight -
+# a PULL_UP (what BidirectionalDShot actually uses in production) is not
+# affected, per the erratum's own text. This file's SIO_GPIO_OE constant was
+# also wrong when this was first run (0xd0000024, corrected below to the SDK's
+# actual 0xd0000030) - a second, independent reason not to trust the "SIO
+# isn't driving it" conclusion this file draws from that reading. None of this
+# explains why a real bidirectional motor's ESC gets stuck after disarm()
+# under a genuine PULL_UP - that turned out to be a different, unrelated
+# mechanism entirely (an ESC-side bootloader that never sees the line go low),
+# fixed in driver/dshot_pio.py's BidirectionalDShot.stop()/start(). Kept below
+# as the original diagnostic and its findings, for the record.
+#
+# What IS true: once a GPIO has been passed to a StateMachine() constructor (as
+# sideset_base/set_base/in_base), stopping the state machine and then calling
+# machine.Pin.init() on that GPIO DOES genuinely change its function-select away
+# from PIO - confirmed by reading the IO_BANK0 GPIOn_CTRL register directly:
+# FUNCSEL switches from PIO0 (6) to SIO (5), exactly as documented MicroPython/
+# RP2350 behaviour would predict.
+#
+# What the erratum above explains: the pin keeps reading HIGH afterward
+# regardless - confirmed on two independent measurement paths (machine.Pin.value()
+# and a direct read of the SIO GPIO_IN register, which agree, ruling out a stale
 # Pin.value() read) and on two independent pin pairs (GPIO10/11 and GPIO14/15,
-# ruling out one GPIO being anomalous). Ruled out as the cause:
+# ruling out one GPIO being anomalous). Ruled out as the cause (all correctly
+# ruled out - none of these is the erratum, which lives entirely in the pad's
+# analog input buffer, not in any of these digital registers):
 #   - Settling time: still high after 20ms - far too long for RC discharge
 #     against a weak pull-down and parasitic capacitance alone.
 #   - SIO's own GPIO_OE/GPIO_OUT registers: both read 0 (not driving) for the
@@ -28,16 +54,14 @@
 #     reproduced the real MotorGroup + Core1Runner architecture and compared
 #     disarm() while the loop was still running against stopping the loop
 #     first - identical result (pin high, TX FIFO empty) either way, in one
-#     comparison. Worth fixing regardless (see driver/motor_group.py's
-#     disarm() and tests/harness/run_scenario.py's shutdown order), but this
-#     comparison found no evidence it explains the stuck pin specifically.
+#     comparison. Was a real bug regardless (see driver/motor_group.py's
+#     disarm() and tests/harness/run_scenario.py's shutdown order, both now
+#     fixed), but this comparison found no evidence it explains the stuck pin.
 #
 # The only thing that restores the true untouched state (FUNCSEL=31, reads low)
 # is machine.reset() - a genuine RP2350 chip reset, not `mpremote ... reset`
 # (confirmed separately to be a lesser, software-level reset that leaves pad
-# configuration - such as a pull-up - intact). Why a plain register-level
-# release does not achieve the same thing is not established; this file
-# documents the fact, not an explanation.
+# configuration - such as a pull-up - intact).
 #
 # Addresses and field positions are from the official RP2350 SDK headers
 # (pico-sdk hardware_regs/include/hardware/regs/{addressmap,io_bank0,pads_bank0,sio}.h),
@@ -56,7 +80,7 @@ IO_BANK0_BASE = 0x40028000
 PADS_BANK0_BASE = 0x40038000
 SIO_GPIO_IN = 0xD0000004
 SIO_GPIO_OUT = 0xD0000010
-SIO_GPIO_OE = 0xD0000024
+SIO_GPIO_OE = 0xD0000030
 
 FUNCSEL_NAMES = {5: "SIO", 6: "PIO0", 31: "NULL(untouched)"}
 

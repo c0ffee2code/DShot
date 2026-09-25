@@ -12,7 +12,7 @@
 import unittest
 
 import fakes
-from fakes import Pin
+from fakes import Pin, CallLog
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, InvalidThrottleException,
                        UnsupportedOperationException, DSHOT_SPEEDS, MAX_THROTTLE)
 
@@ -109,6 +109,44 @@ class MotorConstructionTest(unittest.TestCase):
         self.assertTrue(motor.sm.is_active and motor.rx_sm.is_active)
         motor.send_throttle_command(75)
         self.assertEqual(motor.sm.sent[-1], expected_word(75, inverted=True))
+
+    def test_stop_deactivates_both_state_machines_before_driving_pin_low(self):
+        # A later refactor could reorder this and still pass every other
+        # test - active(False) must happen before the pin is handed to SIO,
+        # or stop() would fight its own state machines for the pin.
+        motor = bidir()
+        motor.start()
+        CallLog.reset()
+        motor.stop()
+        events = CallLog.events
+        tx_off = events.index(("sm", motor.state_machine_id, "active", False))
+        rx_off = events.index(("sm", motor.rx_state_machine_id, "active", False))
+        pin_low = events.index(("pin", motor.pin.id, "init", (Pin.OUT,), {"value": 0}))
+        self.assertLess(tx_off, pin_low)
+        self.assertLess(rx_off, pin_low)
+
+    def test_start_reclaims_pin_and_state_machines_before_activating(self):
+        motor = bidir()
+        motor.start()
+        motor.stop()
+        CallLog.reset()
+        motor.start()
+        events = CallLog.events
+        pullup = events.index(("pin", motor.pin.id, "init", (Pin.IN, Pin.PULL_UP), {}))
+        tx_init = events.index(("sm", motor.state_machine_id, "init"))
+        rx_init = events.index(("sm", motor.rx_state_machine_id, "init"))
+        tx_on = events.index(("sm", motor.state_machine_id, "active", True))
+        rx_on = events.index(("sm", motor.rx_state_machine_id, "active", True))
+        self.assertLess(pullup, tx_init)
+        self.assertLess(pullup, rx_init)
+        self.assertLess(tx_init, tx_on)
+        self.assertLess(rx_init, rx_on)
+
+    def test_unidirectional_stop_does_not_touch_the_pin(self):
+        motor = uni()
+        motor.start()
+        motor.stop()
+        self.assertEqual(motor.pin.init_calls, [])
 
     def test_unidirectional_motor_has_no_telemetry(self):
         motor = uni()

@@ -197,7 +197,8 @@ confirming signal.
 │   ├── harness/                     # bench regression suite: scenario runner + JSON scenarios,
 │   │                                # plus core1_runner.py, an example Core 1 loop to copy
 │   ├── unit/                        # PC unit tests (python -m unittest discover -s tests/unit)
-│   └── device/                      # on-Pico check that needs no ESC (two-core mailbox stress)
+│   └── device/                      # on-Pico checks: two-core mailbox stress (no ESC needed),
+│   │                                # and a multi-cycle arm/disarm restart check (needs one)
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
 ├── specification/
 │   └── DSHOT_PROTOCOL.md            # Protocol documentation

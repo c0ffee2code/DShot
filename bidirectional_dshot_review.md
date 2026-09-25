@@ -1217,7 +1217,7 @@ but this is inference, not a confirmed fact about this specific board.
 | W19 | Run-length capture in the PIO receiver (idea) | — | L | IDEA - not started, optional; needs a go-ahead |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
-| W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | TODO — root cause and fix mechanism confirmed; needs a user decision on shape (options a/b/c, and `stop()` vs `disarm()`) before implementing |
+| W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | IN PROGRESS (2026-09-25) — option (a) chosen by the user; `stop()`/`start()` implemented in `driver/dshot_pio.py`, 143 PC unit tests pass (3 new ordering tests added), new `tests/device/test_bidir_restart_cycles.py` exercises the reclaim path (nothing else does); not yet run on hardware |
 
 ### Work items
 
@@ -2177,11 +2177,14 @@ design note raised earlier this session):**
 - **(a)** Detach from PIO and drive via SIO: `Pin(n, Pin.OUT, value=0)`, and reclaim the pin in
   `start()` via `StateMachine.init(...)`. Two things to get right that the earlier session work
   did not cover: the reclaim was only validated on hardware with no ESC attached (unconnected
-  GPIO 14/15), not through a real re-arm with telemetry; and the pull-up must move from
-  `__init__` into `start()` (re-applied on every reclaim), not stay a construction-time-only
-  call, since `start()` can now run again after a `stop()` that changed the pin's ownership away
-  from PIO — this also closes the pre-arm window above, since the line would no longer be
-  pulled up before the first real `start()`.
+  GPIO 14/15), not through a real re-arm with telemetry; and `start()` needs to re-apply the
+  pull-up on every reclaim, not just rely on a construction-time-only call, since `start()` can
+  now run again after a `stop()` that changed the pin's ownership away from PIO. **As
+  implemented, the pull-up call was kept in `__init__` (unchanged) and the same call was also
+  added to `start()`, redundant but harmless on the very first start — moving it out of
+  `__init__` entirely, which would also close the pre-arm window above, was left alone
+  deliberately to keep this fix scoped to the disarm-hang bug and not also touch the separate,
+  unconfirmed pre-arm hypothesis.**
 - **(b)** Keep PIO ownership throughout: use `sm.exec()` to issue `set(pindirs, 1)` /
   `set(pins, 0)` directly against the TX state machine. No `FUNCSEL` change, no re-`init()`
   needed on the next `start()`.
@@ -2203,3 +2206,31 @@ caller gets it) or only in `MotorGroup.disarm()`'s sequencing (so a bare `stop()
   detection, CRC-valid telemetry and real eRPM — the fix must not break re-arming.
 - Unidirectional-only scenarios are unaffected (no behavior change, no regression run needed
   beyond confirming this).
+
+**2026-09-25 — decision made and implementation in progress.** User chose option (a); the fix
+lives in `stop()` itself (not only in `disarm()`'s sequencing), so any caller — including the
+low-level `motor.stop()` usage example — gets it automatically, matching the same
+"library owns correctness" reasoning that ruled out option (c). Implemented in
+`driver/dshot_pio.py`: `DShotPIO.__init__` now keeps `dshot_speed`/`program` so
+`BidirectionalDShot.start()` can re-`init()` both state machines; `start()` re-applies the
+pull-up before reclaiming (unconditionally, including the very first call — redundant on that
+first call, and the PC unit suite only proves the code calls the fakes in the right order, not
+that this is safe on real silicon; every scenario run on hardware from now on exercises this
+path, since it's now part of every `start()`, not just a `stop()`-then-`start()` cycle); `stop()`
+waits a fixed, honestly-labelled
+margin past drain's own return before handing the pin to SIO driven low (see the contention
+hazard above — the exact turnaround time isn't computable from source, so this is a generous
+fixed wait, not a tight guarantee). Added `tests/device/test_bidir_restart_cycles.py`: three
+arm/spin/disarm cycles in one Pico session on the same wiring `telemetry_settled_300.json` uses
+(channel 1 bidirectional, channels 2-4 unidirectional at zero, so channel 3's line stays driven
+rather than floating during the gaps, same as F3), each cycle stopping the command loop before
+disarming (the documented order) so a race can't be mistaken for a reclaim failure — this is the
+only thing that exercises `start()`'s reclaim path at all: every scenario in `tests/harness/`
+only ever calls `start()` once per session, because `deploy.py` resets the Pico before every run.
+Updated `tests/device/test_pio_lifecycle.py`'s pin-level assertion to match (a bidirectional line
+now reads low after `disarm()`, not high) and `test_pio_pin_stays_driven_after_release.py`'s
+header to note D3 now explains its "stuck high" finding and to fix a wrong register offset found
+while re-reading it. Three ordering unit tests added to `tests/unit/test_dshot_packet.py` (stop
+deactivates before touching the pin; start re-applies the pull-up and reclaims before activating;
+a unidirectional motor's `stop()` never touches its pin) so a later refactor can't silently
+reorder this. **Not yet run on hardware.**
