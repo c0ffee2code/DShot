@@ -941,165 +941,32 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
 
 ## ESC bootloader hang investigation (2026-09-25) — findings D1–D3
 
-Root-cause investigation of the bench finding tracked since 2026-09-22 as "ESC stuck after
-disarm" (see the `project_esc_stuck_after_disarm` memory note for the full session-by-session
-trail). Original symptom: after a scenario finishes and `MotorGroup.disarm()` runs, the ESC
-goes completely silent instead of returning to its normal "waiting for signal" idle tone, and
-stays that way until the Pico is hard-reset. Earlier sessions isolated this to "two
-bidirectional motors running at once" and ruled out several mechanisms (a genuine `disarm()`
-vs `update()` race, real but not causal; an RP2350 silicon erratum, real but explains a
-self-created diagnostic artifact under a forced pull-down, not the production pull-up config;
-wire cross-talk, logically dead — it needs live toggling on both lines, which has already
-stopped by the time the ESC is observed stuck). This sweep, prompted by the user noticing that
-only a Pico-side `machine.reset()` (never an ESC power-cycle) clears the stuck state, traced
-the mechanism into AM32's own source and found a complete, verifiable explanation.
+The bench finding tracked since 2026-09-22 as "ESC stuck after disarm" (a bidirectional motor's
+ESC went silent after `MotorGroup.disarm()` instead of returning to its idle tune, until the
+Pico was hard-reset) is resolved. **Full mechanism, evidence and decision rationale now live in
+`decision/ADR-002-bidirectional-dshot.md`'s "Implementation Update (2026-09-25)" section — this
+is a pointer to that, not a duplicate.** The fix is in `driver/dshot_pio.py`
+(`BidirectionalDShot.stop()`/`start()`); the full investigation and verification trail is
+`git show ffae59d..ca1db7d` on branch `fix/bidir-disarm-line-state` (the range survives a merge
+but not a squash).
 
-**2026-09-25 confirmation (free, no-bench check, per W21 item 0):** the user confirms this
-board's idle/power-up sound is exactly the startup tune repeating every ~2-3 seconds (heard at
-initial power-up and after a Pico hard reset via the reset button) — matching D1.1's prediction
-for AM32's normal idle reboot-loop behavior. This board's firmware matches the reference
-source's behavior on this point; proceed to F3 with that much more confidence in D1.
-
-**Sourcing note:** everything below is read from the `master`/`main` branches of
-`am32-firmware/AM32` and `am32-firmware/AM32-bootloader` on GitHub, fetched and read directly
-(not paraphrased by a tool) on 2026-09-25. The bootloader is built per MCU and per signal pin,
-and which exact build and version is actually flashed on the Skystar KM55A2 is **not verified**
-— treat D1 as "argued from the reference source AM32 firmware, bench-unconfirmed" until W21
-lands. In particular whether this board's bootloader build has `DRONECAN_SUPPORT` enabled is
-unverified (step 3 below); a plain low-cost DShot-only 4-in-1 almost certainly does not, since
-that requires CAN-capable silicon and board wiring a KM55A2-class product is unlikely to carry,
-but this is inference, not a confirmed fact about this specific board.
-
-- **D1 — root cause: a released bidirectional line hangs AM32's bootloader forever, with no
-  timeout; a held-low line has a ~20ms one.** Chain, each link a direct source citation:
-  1. `Src/main.c`: `signaltimeout` increments every main-loop iteration
-     (unconditionally, outside the unrelated `FIXED_DUTY_MODE`/ADC-input branches) and is reset
-     to 0 by `Src/dshot.c`'s `computeDshotDMA()` on *any* plausibly-timed DMA capture
-     (`dshot_frametime_low/high` bounds, line 77) and again specifically on a CRC match (line
-     105) — so it tracks "a well-formed DShot-timed signal was seen," armed or not. Back in
-     `main.c`: `if (signaltimeout > (LOOP_FREQUENCY_HZ >> 1)) { if (armed) { ... 
-     NVIC_SystemReset(); } if (signaltimeout > LOOP_FREQUENCY_HZ << 1) { ... 
-     NVIC_SystemReset(); } }` — 0.5s timeout while armed, 2s while not armed, both ending in a
-     genuine MCU reboot, both quoted verbatim from the raw file. This means a healthy, fully
-     idle AM32 ESC with nothing connected at all is *already* self-rebooting every ~2 seconds as
-     its normal resting behavior — the bug is not "the ESC reboots," it's what happens to it
-     after this particular reboot.
-  2. `AM32-bootloader/bootloader/main.c`, `checkForSignal()` (runs on every boot, this one
-     included). This has two paths, and a released pull-up-only-high line stays in the
-     bootloader either way:
-     - The Pico's pull-up may simply win phase 1 (ESC's own internal pull-down, ~40ms):
-       `low_pin_count` never exceeds the threshold, and phase 2 (ESC's own pull-up, ~5ms) then
-       reads `if (low_pin_count == 0) return;` — the function's own comment: *"pulled high &
-       never low in history — stay in bootloader only"*.
-     - Or the ESC's own pull-down could win phase 1 instead (this resistor fight has not been
-       measured either way): `low_pin_count` passes the threshold, but the jump this would
-       normally trigger is suppressed by `if (!bl_was_software_reset()) jump();`, because this
-       reboot was software-triggered (`CHECK_SOFTWARE_RESET` is unconditionally `#define`d to 1,
-       not gated per target) — exactly the reboot kind step 1 causes. `low_pin_count` is **not**
-       reset going into phase 2, so it is already non-zero and the phase-2 early return does
-       *not* fire this time. Phase 3 (floating, ~5ms) *does* reset the count to 0 first, then
-       reads the Pico's pull-up as a clean high the whole time (nothing is pulling it down
-       anymore, and nothing else fights it), so `low_pin_count` stays 0 and `checkForSignal()`
-       simply falls off the end having called `jump()` nowhere.
-     Either path depends on `bl_was_software_reset()` genuinely reporting a software reset after
-     `NVIC_SystemReset()`; its implementation is per-MCU and was not located in this session's
-     source search — a standard, well-understood pattern (reading the MCU's own reset-cause
-     register), assumed correct here, not independently confirmed.
-  3. Parked in the bootloader, the main loop calls `receiveBuffer()` → `serialreadChar()`.
-     Read directly: the first `while` waits for the line to be idle-**high** and contains the
-     only general timeout (`if (bl_timer_elapsed() > 20000U) { invalid_command = 101; return
-     false; }`, ~20ms) — but that timeout only runs while the loop's own condition
-     (`!gpio_read(input_pin)`) holds, i.e. only while the pin currently reads **low**. On a line
-     that is already high at entry, this loop's body never executes once, so this timeout is
-     never evaluated. Control falls straight to the second `while`, which waits for the pin to
-     go low (a start bit); its only exits are `messagereceived && elapsed > 5*BITTIME` (never
-     true here — `messagereceived` is false until a byte is ever successfully read, which never
-     happens) and a `DRONECAN_SUPPORT`-gated branch that doesn't apply to a plain DShot board
-     (see the sourcing note above). **A permanently-high line has no exit from this loop at
-     all.** Also checked directly: `main()` between `checkForSignal()` and this loop (lines
-     1263–1276) enables no watchdog and starts no other timer that could reset the bootloader out
-     from under this hang, and a whole-file search for "watchdog"/`IWDG`/`WWDG` in this file
-     turned up nothing — no hidden rescue was found.
-  4. `driver/dshot_pio.py`: a bidirectional motor's line, once `drain()`+`stop()`'d, is
-     genuinely **released** (`pindirs` back to input) and held high only by the pull-up
-     resistor `BidirectionalDShot.__init__` configures once, at construction
-     (`pin.init(Pin.IN, Pin.PULL_UP)`). Nothing drives it again until the next `start()`. That
-     is exactly the condition step 3 hangs on.
-  5. By contrast, a unidirectional motor's line (`dshot()`) is always actively driven; stopping
-     it freezes the last driven level rather than releasing it. An actively-driven low, fought
-     against the ESC's own internal pulls in phases 1–3, reads low often enough somewhere in
-     that three-phase test to reach `jump()` even with the software-reset guard active — a
-     unidirectional channel reboots into the application and plays its own tones. (The exact
-     phase this happens through depends on a resistor fight between the Pico's driver and the
-     ESC's weak internal pulls that hasn't been measured; the point that matters is that *some*
-     path in the three-phase test sees a low, unlike a permanently-released high line.)
-  6. **Recovery mechanism, corrected:** a Pico-side reset does not make the ESC re-run
-     `checkForSignal()` — the ESC is still sitting inside step 3's infinite `while`, which
-     never returns to call it again. What actually happens: the Pico's pin goes low (a genuine
-     chip reset's true default state, or a deliberate drive); the `while` exits; the code
-     samples what it thinks is a start bit, gets a framing failure at the stop-bit check
-     (`if (!gpio_read(input_pin))` after `BITTIME`, since our line never returns high) and
-     returns false; on the *next* call to `serialreadChar()`, the line is still low, so this
-     time the **first** `while`'s body finally executes, and its ~20ms idle-high timeout is
-     what actually fires: `invalid_command = 101`, then `if (invalid_command > 100) jump();`
-     in `main()`'s own loop. **Recovery takes roughly 20ms after the line goes low and stays
-     low — via a different timeout path than the one that fails to rescue a stuck-high line —
-     not an instant unstick.** This is also why `machine.reset()` clears the stuck state: a
-     genuine chip reset removes the pull-up along with everything else, so the Pico's own pin
-     goes low. What the ESC's own input pin actually sees at that moment — the Pico's
-     reset-default state against whatever pull the ESC's own `setReceive()` applies — has not
-     been measured with the ESC attached; the earlier register read confirming "goes low" was
-     on an unconnected GPIO (`tests/device/test_pio_pin_stays_driven_after_release.py`'s bench
-     run). Treat "the ESC sees a clean low after a Pico reset" as inferred from the observed
-     recovery, not directly measured. F2 below sidesteps this entirely: it drives the line with
-     an active `Pin.OUT`, not a reset, so its prediction does not depend on this assumption.
-  7. **F2 — DONE and CONFIRMED 2026-09-25.** Ran `telemetry_settled_300.json`, let it complete
-     and `disarm()` normally (channel 1 stuck, per D2 below), then — **no reset issued at any
-     point** — connected fresh and ran `python -m mpremote connect COM10 exec "from machine
-     import Pin; Pin(6, Pin.OUT, value=0)"` to drive channel 1's line (GPIO6) low via SIO and
-     hold it there. User confirmed: **channel 1 recovered, playing its startup tune again.**
-     This is the mechanism directly demonstrated on this exact hardware: a released,
-     pull-up-only-high bidirectional line is what keeps the ESC stuck, and driving it low is
-     sufficient to recover it without any Pico or ESC reset — exactly what W22's fix needs to do
-     on shutdown. Both of D1's falsifiers have now passed.
-- **D2 — CONFIRMED 2026-09-25 via F3: the "two bidirectional motors" framing was an artifact.
-  A single bidirectional motor triggers the exact same hang, every time, alone.** Ran
-  `telemetry_settled_300.json` twice back to back (channel 1 bidirectional at throttle 100,
-  channel 3 unidirectional holding 0), no reset between runs: both runs completed cleanly
-  (101/101 CRC-valid decodes, median 21,614 eRPM, normal `disarm()`). After the second disarm,
-  user confirmed by listening: **channel 1 silent, channel 3 still repeating its startup tune
-  every ~2-3s.** This is decisive — channel 1 never needed a second bidirectional motor to end
-  up stuck; every bidirectional `disarm()` has apparently been doing this the whole time, masked
-  in every earlier "one motor: fine" observation by channel 3's own unidirectional motor
-  covering for it acoustically. The original framing from 2026-09-22 ("two bidirectional motors
-  running together") was never the real trigger — it was just the first time no unidirectional
-  motor was left on the board to mask a bug that was always there. Below is the original
-  reasoning that led to this falsifier, kept for the record:
-
-  Every "one bidirectional motor" bench run on record
-  (`telemetry_settled_300.json`, the channel-3-alone scratch scenario) had a second, physically
-  motor-mounted channel running **unidirectional** DShot throughout, per D1.5 reliably
-  rebooting into the application and playing its own idle tones. It is plausible that the
-  tested bidirectional channel was *also* stuck the entire time in every one of those "it
-  recovered" runs, silently, masked by the other motor's own recovery tone — nobody was
-  listening for two motors' worth of confirmation. If true, this was never a two-motor bug; it
-  is what every bidirectional motor does, every time, and it only became audible once no
-  unidirectional motor was left on the board to mask it.
-
-  - **F3 — DONE 2026-09-25, CONFIRMED (see the result at the top of this finding).**
-  - **F2 — DONE 2026-09-25, CONFIRMED (see D1.7 above).** Driving channel 1's line low via SIO,
-    no reset, recovered the ESC. Both falsifiers now pass — D1 and D2 are bench-confirmed, not
-    just source-argued.
-- **D3 — dead ends from the same investigation, recorded so they are not re-opened.** RP2350
-  erratum E9 ("increased leakage current on Bank 0 GPIO when pad input is enabled," RP2350
-  datasheet Appendix E, fixed at stepping A3): real, and it fully explains why an earlier
-  diagnostic's forced `PULL_DOWN` read kept the pin high — but the erratum's own text says a
-  pull-**up** (what the real driver actually uses) reaches a clean level, so it does not bear
-  on the production symptom. AM32 firmware architecture: confirmed one MCU per channel (AM32
-  README), ruling out any story where two channels contend for one shared ESC CPU. Wire
-  cross-talk between the two signal lines during the bidirectional reply window: requires live
-  transitions on both lines, which have already stopped by the time the ESC is observed
-  stuck — dead on its own logic, independent of any bench test.
+- **D1 — root cause, bench-confirmed:** a bidirectional motor's line was released to its pull-up
+  on `stop()` instead of being driven; AM32's bootloader has no timeout for a line that never
+  goes low, so it hangs after the ESC's own signal-loss reboot. Confirmed on hardware two ways:
+  driving a stuck line low with no reset recovers the ESC (F2), and the fix itself (drive low on
+  `stop()`) recovers every scenario tested (see W22).
+- **D2 — bench-confirmed:** this was never a "two bidirectional motors" bug. A single
+  bidirectional motor, disarmed alone with no other bidirectional motor anywhere, hangs exactly
+  the same way (F3) — every earlier "one motor: fine" result was a companion unidirectional
+  motor's own idle tune masking the same failure.
+- **D3 — dead ends, do not re-open:** an RP2350 silicon erratum (can only hold a pulled-*down*
+  pad high; the driver's pull-up isn't affected — raised only because a side diagnostic happened
+  to use a forced pull-down); two channels contending for one shared ESC CPU, or cross-talk
+  between the two signal lines (both need two bidirectional motors — ruled out by D2's bench
+  result, not by argument: a single motor alone hangs the same way); the `disarm()`/`update()`
+  race (real, fixed in `5342e9c`, but the ESC still got stuck after that fix landed); releasing
+  the line to `Pin.IN, PULL_UP` in `stop()` (tried and reverted 2026-09-24 — a released line is
+  exactly the failing state, so this "fix" changed nothing).
 
 ---
 
@@ -2109,185 +1976,40 @@ which needs two real cores but no ESC).
 
 **W21 — Bench-confirm the ESC bootloader-hang root cause (D1, D2)** · no code change, scenario/diagnostic only
 
-D1 is argued from the reference AM32/AM32-bootloader source read directly (not paraphrased),
-with no bench step yet, and the exact bootloader build flashed on this ESC is unverified. Run
-both falsifiers from D2 before touching `driver/`:
+**DONE 2026-09-25.** First confirmed the user's idle-AM32 sound matches the reboot-loop model
+(startup tune repeating every ~2-3s). Then both falsifiers, bench-confirmed: **F3** — a single
+bidirectional motor, disarmed alone alongside a normal unidirectional motor, hangs the ESC
+exactly the same way (channel 1 silent, channel 3 still repeating its tune) — this was never a
+two-motor bug. **F2** — driving a stuck line low via SIO with no reset recovers the ESC,
+confirming the mechanism directly. See D1/D2 above and ADR-002 for the full trace.
 
-0. **DONE 2026-09-25.** Asked the user what an idle AM32 channel's "waiting for signal" sounds
-   like. Confirmed: the startup tune, repeating every ~2-3 seconds — heard at initial power-up
-   and after a Pico hard reset via the reset button. Matches D1.1's predicted reboot-loop
-   behavior; this board's firmware behaves like the reference source on this point.
-1. **F3 — DONE 2026-09-25.** Ran `telemetry_settled_300.json` twice back to back, no reset
-   between runs (channel 1 bidirectional at throttle 100, channel 3 unidirectional holding 0 —
-   this is the same scenario every past "channel 1 alone" result was based on). Both runs
-   completed cleanly (101/101 CRC-valid, median 21,614 eRPM, normal `disarm()`). User confirmed
-   by listening after the second disarm: **channel 1 silent, channel 3 still repeating its
-   startup tune every ~2-3s.** D2 confirmed — see the finding above for the full result and its
-   consequence (a single bidirectional motor triggers this alone; "two motors" was never the
-   real trigger).
-2. **F2 — DONE 2026-09-25.** Reproduced the stuck state with `telemetry_settled_300.json`
-   (channel 1 disarmed, stuck per F3 above), then — no reset issued — ran
-   `python -m mpremote connect COM10 exec "from machine import Pin; Pin(6, Pin.OUT, value=0)"`
-   to drive channel 1's line low via SIO and hold it. User confirmed: **channel 1 recovered,
-   playing its startup tune again.** Full result recorded as D1.7 above.
+**Done when:** both falsifiers have a bench result. **Met.**
 
-**Done when:** both F2 and F3 have a bench result, recorded in this document's D2 note and in
-the `project_esc_stuck_after_disarm` memory note, with a verdict on which of D1/D2 stands.
-**Both DONE and CONFIRMED 2026-09-25 — D1 and D2 are bench-confirmed, not just source-argued.**
+**W22 — Fix: bidirectional shutdown must not leave the line released-and-floating-high (D1)** · `driver/dshot_pio.py`
 
-**W22 — Fix: bidirectional shutdown must not leave the line released-and-floating-high (D1)** · `driver/dshot_pio.py` (`BidirectionalDShot.stop()`/`start()`, `DShotPIO.drain()`)
+**DONE 2026-09-25** (`git show ffae59d..ca1db7d` on branch `fix/bidir-disarm-line-state`, commit
+`7cdb8cb` for the code itself; the range survives a merge but not a squash).
+`BidirectionalDShot.stop()` now drives the line low via SIO 300µs after `drain()` returns
+(a generous guess, not a computed guarantee); `start()` reclaims the pin for PIO, re-applying the
+pull-up. The decision rationale — why `stop()` over `disarm()`-only sequencing, and why an SIO
+drive over `sm.exec()` or a harness-only fix — is recorded in ADR-002's "Implementation Update
+(2026-09-25)" section, not duplicated here. New `tests/device/test_bidir_restart_cycles.py`
+exercises `start()`'s reclaim path with a real ESC attached — an existing no-ESC test,
+`test_pio_lifecycle.py`, already re-armed 15 times on hardware, but never with telemetry to
+check against. Three ordering unit tests guard the new `stop()`/`start()` sequence against a
+silent reorder.
 
-**Unblocked 2026-09-25 — W21 fully confirmed both D1 (F2) and D2 (F3).** Scope is settled: the
-fix must cover **every** bidirectional motor, not just a multi-motor case (D2 confirmed there
-is no multi-motor-specific trigger). What remains before implementing is a design choice, not a
-falsification — see the options below and the "still needs a decision" note at the end.
+**Done when** (all met, 2026-09-25):
+- A scenario that reliably reproduced the stuck state now recovers audibly with no reset, single
+  and multi-motor. **Met** — `telemetry_settled_300/600` and `two_channel_divergent_300/600`
+  (the latter is the original 2026-09-22 bug scenario) all recovered.
+- A subsequent `arm()` in the same session still gets bidirectional detection and real
+  telemetry. **Met** — `test_bidir_restart_cycles.py`, run twice, 6/6 cycles 100% CRC-valid with
+  real spin.
+- Unidirectional scenarios unaffected. **Met** — `smoke_unidirectional`, run twice.
 
-Shape of the fix, confirmed by W21: `disarm()`/`stop()` must leave a
-bidirectional line **driven low**, not merely released to its pull-up, so AM32's
-`checkForSignal()` takes the same escape path a unidirectional channel already takes for free
-(D1.5). **This is a real API/behavior decision, not a pure bugfix** — it changes what "stopped"
-means for a bidirectional motor's idle line — and it has two hazards beyond the obvious one,
-found while re-checking this plan against the real driver code:
-
-- **New contention hazard.** `DShotPIO.drain()` returns about one `frame_us` after the last
-  queued word leaves the FIFO — which per its own docstring is roughly when the *last
-  transmitted frame* ends, not when the ESC's reply to it has finished. Driving the line low
-  immediately after `drain()` would fight the ESC's own push-pull reply drive on that last
-  frame. The fix must wait past the full turnaround-plus-reply-duration window (figures are in
-  ADR-002) before taking the line, not just past `drain()`'s own return. The current `stop()`
-  never drives the line at all, so this collision does not exist today — it is new with this
-  fix and needs its own bench check, not just an assumption that "longer wait is safer."
-- **Pre-arm window, flagged as a hypothesis only, and weaker than it first looks.**
-  `BidirectionalDShot.__init__` applies the pull-up at construction time, before `arm()` is ever
-  called — and scenario loading plus SD-card init happen in that gap (see the harness
-  description in `CLAUDE.md`). But per D1's own `serialreadChar()` trace, real incoming DShot
-  frames (once `arm()` does start sending) exit the bootloader's start-bit wait immediately and
-  each failed-framing attempt bumps `invalid_command` toward its `>100` jump threshold quickly —
-  so this would not hang indefinitely once frames resume. The plausible effect is a **late
-  application start eating into the arm window** (plus its startup tune playing at an odd time),
-  not a hang — which matters far more against the library's 500ms default arm duration than
-  against the harness's 3000ms one. Worth keeping in mind as a candidate explanation for the
-  separate, previously unexplained "sometimes a motor doesn't spin" intermittent symptom in
-  `project_esc_stuck_after_disarm`'s earlier entries, but not chased further here without the
-  user's go-ahead — it is a different bug from the one W21/W22 are scoped around.
-
-**Options for where the drive-low actually happens, to be picked with the user before
-implementing (not this session's call — see the `machine.reset()`-does-not-belong-in-`driver/`
-design note raised earlier this session):**
-- **(a)** Detach from PIO and drive via SIO: `Pin(n, Pin.OUT, value=0)`, and reclaim the pin in
-  `start()` via `StateMachine.init(...)`. Two things to get right that the earlier session work
-  did not cover: the reclaim was only validated on hardware with no ESC attached (unconnected
-  GPIO 14/15), not through a real re-arm with telemetry; and `start()` needs to re-apply the
-  pull-up on every reclaim, not just rely on a construction-time-only call, since `start()` can
-  now run again after a `stop()` that changed the pin's ownership away from PIO. **As
-  implemented, the pull-up call was kept in `__init__` (unchanged) and the same call was also
-  added to `start()`, redundant but harmless on the very first start — moving it out of
-  `__init__` entirely, which would also close the pre-arm window above, was left alone
-  deliberately to keep this fix scoped to the disarm-hang bug and not also touch the separate,
-  unconfirmed pre-arm hypothesis.**
-- **(b)** Keep PIO ownership throughout: use `sm.exec()` to issue `set(pindirs, 1)` /
-  `set(pins, 0)` directly against the TX state machine. No `FUNCSEL` change, no re-`init()`
-  needed on the next `start()`.
-- **(c)** Harness-only, no driver change: the application drives the affected pins low itself
-  after calling `disarm()`. **Not actually free of driver implications if the same session must
-  re-arm**: the application's own `Pin(n, Pin.OUT)` call moves `FUNCSEL` to SIO, and nothing in
-  `start()` reclaims it — the existing motor objects would need to be torn down and rebuilt
-  before the next `arm()`, not just called again.
-
-For (a) and (b), also decide whether the drive-low belongs in `DShotPIO.stop()` itself (so any
-caller gets it) or only in `MotorGroup.disarm()`'s sequencing (so a bare `stop()` without
-`disarm()` keeps today's behavior).
-
-**Done when** (all met, 2026-09-25, see the bench verification log below):
-- ~~A scenario that reliably reproduced the stuck state (per W21) now leaves the ESC audibly
-  returning to "waiting for signal" without any Pico-side reset, for both the single- and
-  multi-bidirectional-motor cases (scope per W21's D2 verdict).~~ **Met** — `telemetry_settled_300/600`
-  (single) and `two_channel_divergent_300/600` (multi) all recovered audibly, no reset.
-- ~~In the same Pico session, a subsequent `arm()` after this `disarm()` still gets bidirectional
-  detection, CRC-valid telemetry and real eRPM — the fix must not break re-arming.~~ **Met** —
-  `test_bidir_restart_cycles.py`, run twice, 6/6 cycles 100% CRC-valid with real spin.
-- ~~Unidirectional-only scenarios are unaffected (no behavior change, no regression run needed
-  beyond confirming this).~~ **Met** — `smoke_unidirectional`, run twice, motor spins normally.
-
-**2026-09-25 — decision made and implementation in progress.** User chose option (a); the fix
-lives in `stop()` itself (not only in `disarm()`'s sequencing), so any caller — including the
-low-level `motor.stop()` usage example — gets it automatically, matching the same
-"library owns correctness" reasoning that ruled out option (c). Implemented in
-`driver/dshot_pio.py`: `DShotPIO.__init__` now keeps `dshot_speed`/`program` so
-`BidirectionalDShot.start()` can re-`init()` both state machines; `start()` re-applies the
-pull-up before reclaiming (unconditionally, including the very first call — redundant on that
-first call, and the PC unit suite only proves the code calls the fakes in the right order, not
-that this is safe on real silicon; every scenario run on hardware from now on exercises this
-path, since it's now part of every `start()`, not just a `stop()`-then-`start()` cycle); `stop()`
-waits a fixed, honestly-labelled
-margin past drain's own return before handing the pin to SIO driven low (see the contention
-hazard above — the exact turnaround time isn't computable from source, so this is a generous
-fixed wait, not a tight guarantee). Added `tests/device/test_bidir_restart_cycles.py`: three
-arm/spin/disarm cycles in one Pico session on the same wiring `telemetry_settled_300.json` uses
-(channel 1 bidirectional, channels 2-4 unidirectional at zero, so channel 3's line stays driven
-rather than floating during the gaps, same as F3), each cycle stopping the command loop before
-disarming (the documented order) so a race can't be mistaken for a reclaim failure — this is the
-only thing that exercises `start()`'s reclaim path at all: every scenario in `tests/harness/`
-only ever calls `start()` once per session, because `deploy.py` resets the Pico before every run.
-Updated `tests/device/test_pio_lifecycle.py`'s pin-level assertion to match (a bidirectional line
-now reads low after `disarm()`, not high) and `test_pio_pin_stays_driven_after_release.py`'s
-header to note D3 now explains its "stuck high" finding and to fix a wrong register offset found
-while re-reading it. Three ordering unit tests added to `tests/unit/test_dshot_packet.py` (stop
-deactivates before touching the pin; start re-applies the pull-up and reclaims before activating;
-a unidirectional motor's `stop()` never touches its pin) so a later refactor can't silently
-reorder this.
-
-**2026-09-25 — bench verification.**
-- **Run 1/5: `telemetry_settled_300`, PASS.** 100/100 CRC-valid decoded, median 21,127 eRPM
-  (motor genuinely spun), `disarm()` completed normally. User confirmed by listening: channel 1
-  recovered and is repeating its startup tune, same as channel 3.
-- **Run 2/5: `two_channel_divergent_300`, PASS — this is the original bug scenario.** Both
-  channels 645/645 CRC-valid (0 failures), median eRPM 55,970 / 34,247 tracking the scenario's
-  diverging throttle profile correctly. User confirmed by listening: **both channel 1 and
-  channel 3 recovered and are repeating their startup tunes** — the exact two-bidirectional-
-  motors case that started this whole investigation on 2026-09-22 is fixed.
-
-- **Run 3/5: `telemetry_settled_600`, PASS.** 100/100 CRC-valid, median 21,490 eRPM. User
-  confirmed channel 1 recovered.
-- **Run 4/5: `two_channel_divergent_600` — scenario's own thresholds FAILED, cause not yet
-  established.** Motor 2 (channel 3): 665/665 CRC-valid, median 34,562 eRPM - spun normally.
-  Motor 0 (channel 1): 658 decoded, 643 CRC-valid (97.7%, just under the 99% threshold), 15
-  invalid, **median eRPM 917 - the documented at-rest sentinel value, meaning motor 0 replied
-  with valid telemetry but did not spin.** This is a pre-existing, previously-documented
-  intermittent symptom (a CRC-valid armed reply does not prove the motor started - see
-  [[feedback_verify_spin_with_erpm]]), separate from the disarm-hang bug D1-D3/W22 fixes, not a
-  regression this fix introduced. **Resolved by asking the user (per [[feedback_verify_spin_with_erpm]] - never infer this):**
-  motor 1 (channel 1) confirmed NOT spinning during the run, but the ESC still recovered and
-  repeated its tune after `disarm()`. **This is the actual result that matters for W22: the fix
-  works independently of whether the motor spun.** The no-spin symptom itself is real, separate,
-  and not addressed by this fix - it needs its own investigation if pursued. The W22 body above
-  already flagged a candidate (unconfirmed)
-  explanation for no-spin specifically at 600: the pull-up is applied at `__init__`, before
-  `arm()`, and if that gap plus 600's tighter timing ever exceeds the ESC's 2s unarmed timeout,
-  arming could start against an ESC that's mid-reboot. Not established as the cause here -
-  flagged as a candidate to check, not a conclusion.
-
-- **Run 5/5: `test_bidir_restart_cycles.py`, PASS — twice.** Three arm/spin/disarm cycles in one
-  Pico session, each stopping the command loop before disarming: 100% CRC-valid every cycle, both
-  runs (130/130, 131/131, 130/130 on the first; 130/130, 130/130, 130/130 on the second), median
-  eRPM 21,306-21,551 across all six cycles - the motor genuinely spun every single time, not just
-  on the first `start()`. **This is the decisive confirmation of `start()`'s reclaim path**,
-  which nothing before this session ever exercised on real hardware (every scenario in
-  `tests/harness/` only calls `start()` once, since `deploy.py` resets before every run).
-
-- **`smoke_unidirectional`, PASS — run twice.** No bidirectional motors in this scenario, so no
-  telemetry to check; user confirmed by watching both times: the unidirectional motor "spins
-  like a charm." Unaffected path confirmed unaffected.
-
-**All planned bench verification complete. W22 is DONE.**
-
-**2026-09-25, extra confirmation run — `two_channel_divergent_600` repeated once more.** Both
-motors spun cleanly this time: motor 0 (channel 1) 645/645 CRC-valid, median 58,140 eRPM
-(tracking its own accelerating profile); motor 2 (channel 3) 645/645 CRC-valid, median 34,325
-eRPM (tracking its decelerating profile) — every scenario threshold met, unlike the earlier run.
-User confirmed both motors visibly spun normally and **both ESCs returned to "waiting for
-signal" after disarm.** This confirms the earlier no-spin result on channel 1 is intermittent,
-not a consistent regression introduced by this fix — two consecutive runs of the identical
-scenario produced one no-spin and one clean result. Left as an open, separate, pre-existing
-symptom for a future session (see the note above); this fix's own correctness (the ESC recovers
-after disarm) held in both runs regardless of whether the motor spun.
+**Found along the way, not part of this fix.** One `two_channel_divergent_600` run after this
+fix landed showed channel 1 replying with valid telemetry (97.7% CRC-valid) but not spinning; a
+repeat immediately after spun both motors cleanly. The ESC recovered normally after disarm in
+both cases either way. Genuinely intermittent, not caused by this fix, not investigated further
+— see ADR-002's note for an untested lead.

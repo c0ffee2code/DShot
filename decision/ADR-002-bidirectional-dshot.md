@@ -40,7 +40,7 @@ row's evidence is in the dated sections below.
 | DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
 | Non-eRPM frames (extended telemetry, stopped-motor value) | Not handled |
 | Telemetry loss and health tracking | Not implemented |
-| Post-disarm line state (bidirectional) | A bidirectional motor's line, merely deactivated and released to its pull-up, leaves some ESC firmware (AM32's own bootloader included, confirmed by reading its source) unable to come back on its own - it waits forever for a UART byte that a permanently-high line never sends. `stop()` now drives the line low itself and `start()` reclaims the pin for PIO. Verified on hardware: single and multiple simultaneous bidirectional motors both recover audibly with no reset needed, and three repeated arm/spin/disarm cycles in one session (run twice) all decode 100% CRC-valid with real spin, confirming `start()`'s reclaim path works, not just the first `start()`
+| Post-disarm line state (bidirectional) | Verified: `stop()` drives the line low instead of releasing it; the ESC recovers with no reset; re-arm works |
 
 ## Context
 
@@ -1812,6 +1812,69 @@ verified on hardware for both supported speeds.
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
 
 The receiver never uses its TX FIFO, so `fifo_join=PIO.JOIN_RX` gives its RX FIFO the whole 8 words at no cost: room for one capture the CPU has not taken yet plus the next. On the bench (two bidirectional motors, DSHOT300 and DSHOT600, 8-second and 60-second scenarios) it removed the failure: the old send-first order with the joined FIFO was clean in 4 of 4 runs, and with the drain moved before the send (ADR-005) both channels were 100% CRC-valid in the 60-second runs. Stalling the consumer for longer than a capture is still possible and still produces a corrupted capture, but it now takes two late drains in a row rather than one.
+
+## Implementation Update (2026-09-25): post-disarm line state
+
+A bidirectional motor's ESC went silent after `disarm()` instead of returning to its normal
+idle tune, and stayed that way until the Pico was hard-reset. Every bidirectional motor did
+this, not only when two ran together — an unrelated companion unidirectional motor's own idle
+tune had been masking the same failure in every earlier single-motor test.
+
+**Cause.** `stop()` released the line to input, held high only by its pull-up, and never drove
+it again. AM32's own firmware self-reboots after a signal-loss timeout (confirmed from its
+source: 0.5s while armed, 2s while unarmed) — this reboot is normal, constant idle behavior, not
+itself a problem. On that reboot, AM32's bootloader finds no path to the application while the
+Pico holds the line high, and its own receive loop then waits for a UART byte with no timeout
+for a line that never goes low, so it hangs. A line that is actively driven low, as a
+unidirectional motor's frozen line always is, does not hit this: the bootloader finds a path to
+the application on the very next reboot. A stuck ESC can be rescued the same way after the
+fact — forcing the line low (or a genuine chip reset, which removes the pull-up along with
+everything else) gets it out via a different, ~20ms timeout inside the bootloader's own receive
+loop. (Which exact bootloader build is flashed on this Skystar KM55A2 was not independently
+confirmed; the mechanism above is read from AM32's reference source, not this board's binary.)
+
+**Fix.** `stop()` now waits a fixed 300µs after `drain()` returns (a generous guess, not computed
+from the ESC's actual reply timing — nothing guarantees the reply has actually finished by then),
+then drives the line low. `start()` reclaims the pin for PIO before resuming. Considered and
+rejected: keeping the pin under PIO and forcing it low with `sm.exec()` (never tried on hardware,
+so it would need its own verification before trusting it); doing this at the application/harness
+level instead of in the driver (pushes a correctness requirement onto every future caller, and
+doesn't even avoid touching pin ownership once a re-arm is needed). `stop()` was chosen over
+`disarm()`-only sequencing so every caller, including the low-level single-motor usage example,
+gets the fix automatically.
+
+Verified on hardware: `telemetry_settled_300/600` and `two_channel_divergent_300/600` (single
+and multiple bidirectional motors, the latter the scenario that first showed the bug) all
+recover audibly with no reset; three repeated arm/spin/disarm cycles in one session, run twice,
+all decoded 100% CRC-valid with real spin, confirming the pin-reclaim path specifically with a
+real ESC attached (an existing no-ESC test, `test_pio_lifecycle.py`, already re-armed 15 times
+on hardware, but never with telemetry to check against). Full investigation and verification
+trail: `git show ffae59d..ca1db7d` (commits on branch `fix/bidir-disarm-line-state`; the range
+survives a merge but not a squash).
+
+**Ruled out along the way, not the cause:**
+- An RP2350 silicon erratum (E9): can only hold a pulled-*down* pad high through leakage; the
+  driver's pull-up isn't affected by it. Raised only because a side diagnostic happened to use a
+  forced pull-down and read high — that diagnostic's own result, not this symptom.
+- Two channels contending for one shared ESC CPU, or cross-talk between the two signal lines:
+  both require two bidirectional motors running together. A single bidirectional motor,
+  disarmed completely alone, hangs the same way — proven on the bench (see D2) — which rules out
+  both regardless of the argument for or against either.
+- A real `disarm()`/`update()` race on another core: fixed in `5342e9c` regardless, since it was
+  a genuine bug, but the ESC still got stuck after that fix landed, so it wasn't this.
+- Releasing the line to `Pin.IN, PULL_UP` in `stop()` instead of leaving it alone: tried and
+  reverted 2026-09-24 — a released line is exactly the failing state, so this "fix" changed
+  nothing.
+- A hard `machine.reset()` in the harness's own cleanup, considered earlier as a possible
+  workaround, is no longer needed.
+
+**Open, separate issue.** One `two_channel_divergent_600` run after this fix landed showed
+channel 1 replying with valid telemetry (97.7% CRC-valid) but at the at-rest eRPM value — the
+motor did not spin, though the ESC still recovered normally after disarm. A second, identical
+run spun both motors cleanly. Genuinely intermittent, not reproduced enough to explain, and not
+caused by this fix (the ESC recovered either way). Untested lead, not a conclusion: the pull-up
+is applied at `BidirectionalDShot.__init__`, before `arm()`, which is a window the fix doesn't
+touch.
 
 ## References
 

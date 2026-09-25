@@ -351,3 +351,17 @@ W1 item for the hardware measurement that surfaced this.
 - Send throttle commands continuously (typically every 1-2ms)
 - ESCs may shut down if no valid command received within timeout
 - Bidirectional mode roughly halves effective update rate due to response wait
+
+### Idle / Stopped Line State
+- Simply pausing outbound frames is not the same as making an ESC's own signal-loss timeout
+  resolve cleanly. Some ESC firmware's recovery path depends on the line actually reaching a
+  low level at some point, not just on no more valid frames arriving - a line left merely
+  released (its receiver's pull-up holding it passively high, as a bidirectional TX's idle state
+  naturally does when a driver simply deactivates its state machine) can leave that ESC unable
+  to find its way back to a normal idle state on its own.
+- Confirmed against AM32 firmware source (`am32-firmware/AM32`'s `Src/main.c` and
+  `am32-firmware/AM32-bootloader`): it reboots its own MCU after a signal-loss timeout, and the
+  bootloader that runs on every such reboot only returns to the application once the line has
+  gone low - held permanently high, it waits indefinitely. Driving the line to a defined low
+  level when stopping, rather than only releasing it, avoids this and is a safe default for any
+  DShot TX implementation, bidirectional or not.
