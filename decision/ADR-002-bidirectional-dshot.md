@@ -1846,11 +1846,12 @@ gets the fix automatically.
 Verified on hardware: `telemetry_settled_300/600` and `two_channel_divergent_300/600` (single
 and multiple bidirectional motors, the latter the scenario that first showed the bug) all
 recover audibly with no reset; three repeated arm/spin/disarm cycles in one session, run twice,
-all decoded 100% CRC-valid with real spin, confirming the pin-reclaim path specifically with a
-real ESC attached (an existing no-ESC test, `test_pio_lifecycle.py`, already re-armed 15 times
-on hardware, but never with telemetry to check against). Full investigation and verification
-trail: `git show ffae59d..ca1db7d` (commits on branch `fix/bidir-disarm-line-state`; the range
-survives a merge but not a squash).
+all decoded 100% CRC-valid with real spin, confirming the pin-reclaim path with a real ESC
+attached; `test_pio_lifecycle.py` (no ESC, GPIO 10/11) re-armed 15 more times after 30
+build/arm/disarm cycles, asserting the disarmed bidirectional line now reads low (previously
+asserted high) — all passed, including a fresh capture and a restarted sequence on every re-arm.
+Full investigation and verification trail: `git show ffae59d..ca1db7d` (commits on branch
+`fix/bidir-disarm-line-state`; the range survives a merge but not a squash).
 
 **Ruled out along the way, not the cause:**
 - An RP2350 silicon erratum (E9): can only hold a pulled-*down* pad high through leakage; the

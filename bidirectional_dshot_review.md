@@ -1994,10 +1994,10 @@ confirming the mechanism directly. See D1/D2 above and ADR-002 for the full trac
 pull-up. The decision rationale — why `stop()` over `disarm()`-only sequencing, and why an SIO
 drive over `sm.exec()` or a harness-only fix — is recorded in ADR-002's "Implementation Update
 (2026-09-25)" section, not duplicated here. New `tests/device/test_bidir_restart_cycles.py`
-exercises `start()`'s reclaim path with a real ESC attached — an existing no-ESC test,
-`test_pio_lifecycle.py`, already re-armed 15 times on hardware, but never with telemetry to
-check against. Three ordering unit tests guard the new `stop()`/`start()` sequence against a
-silent reorder.
+exercises `start()`'s reclaim path with a real ESC attached; `test_pio_lifecycle.py` (no ESC)
+updated and re-run — its disarmed-bidirectional-line assertion now checks low instead of high,
+and passed along with 15 more re-arm cycles. Three ordering unit tests guard the new
+`stop()`/`start()` sequence against a silent reorder.
 
 **Done when** (all met, 2026-09-25):
 - A scenario that reliably reproduced the stuck state now recovers audibly with no reset, single
