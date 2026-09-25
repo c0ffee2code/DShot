@@ -202,8 +202,10 @@ confirming signal.
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
 ├── specification/
 │   └── DSHOT_PROTOCOL.md            # Protocol documentation
-└── decision/
-    └── ADR-00N-*.md                 # Architecture decision records
+├── decision/
+│   └── ADR-00N-*.md                 # Architecture decision records
+└── bug-reports/
+    └── BUG-00N-*.md                 # Resolved/tracked bug reports
 ```
 
 Nothing under `driver/` imports `_thread` or picks a core. `core1_runner.py`
