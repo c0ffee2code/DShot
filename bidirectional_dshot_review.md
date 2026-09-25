@@ -1217,7 +1217,7 @@ but this is inference, not a confirmed fact about this specific board.
 | W19 | Run-length capture in the PIO receiver (idea) | — | L | IDEA - not started, optional; needs a go-ahead |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
-| W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | IN PROGRESS (2026-09-25) — option (a) chosen by the user; `stop()`/`start()` implemented in `driver/dshot_pio.py`, 143 PC unit tests pass (3 new ordering tests added), new `tests/device/test_bidir_restart_cycles.py` exercises the reclaim path (nothing else does); not yet run on hardware |
+| W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | IN PROGRESS (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — option (a) implemented, 143 PC unit tests pass (3 new ordering tests), new `tests/device/test_bidir_restart_cycles.py` exercises the reclaim path (nothing else does); not yet run on hardware, bench powered off |
 
 ### Work items
 
