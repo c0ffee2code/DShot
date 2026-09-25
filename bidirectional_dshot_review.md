@@ -2280,3 +2280,14 @@ reorder this.
   like a charm." Unaffected path confirmed unaffected.
 
 **All planned bench verification complete. W22 is DONE.**
+
+**2026-09-25, extra confirmation run — `two_channel_divergent_600` repeated once more.** Both
+motors spun cleanly this time: motor 0 (channel 1) 645/645 CRC-valid, median 58,140 eRPM
+(tracking its own accelerating profile); motor 2 (channel 3) 645/645 CRC-valid, median 34,325
+eRPM (tracking its decelerating profile) — every scenario threshold met, unlike the earlier run.
+User confirmed both motors visibly spun normally and **both ESCs returned to "waiting for
+signal" after disarm.** This confirms the earlier no-spin result on channel 1 is intermittent,
+not a consistent regression introduced by this fix — two consecutive runs of the identical
+scenario produced one no-spin and one clean result. Left as an open, separate, pre-existing
+symptom for a future session (see the note above); this fix's own correctness (the ESC recovers
+after disarm) held in both runs regardless of whether the motor spun.
