@@ -174,4 +174,6 @@ def main():
         print(row + "%.2f%%" % (100.0 * total_same / total_valid))
 
 
-main()
+# Guarded so scripts/verify_am32_reply.py can import run() without replaying captures
+if __name__ == "__main__":
+    main()
