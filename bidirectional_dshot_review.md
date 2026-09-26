@@ -1087,7 +1087,7 @@ but not a squash).
 | W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | DONE (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — bench-confirmed on `telemetry_settled_300/600`, `two_channel_divergent_300/600`, `test_bidir_restart_cycles.py` (x2, 6/6 cycles), `smoke_unidirectional` (x2); the disarm-hang bug is fixed for both single and multi-bidirectional-motor cases and re-arming works |
 | W23 | Hardware smoke test of the integrated frame receiver | — | S | DONE (2026-09-26) — no ENOMEM on the exactly-full block at either speed; 100% CRC-valid both speeds and across a restart; decode cost far above the spike's figure, flagged for W24/W25 |
 | W24 | Statistical comparison: frame vs sample receiver on the same motor | — | S | DONE (2026-09-26) — both receivers 100% CRC-valid, eRPM within ~500 of each other at both speeds, same day/wiring/throttle |
-| W25 | Frame receiver: arming-window, no-reply and stalled-drain behavior | — | M | IN PROGRESS (2026-09-26) — stalled-drain done: a full FIFO holds a correct value, does not corrupt one (an earlier result to the contrary was a test-pacing bug, retracted - see W25a); arming-window and no-reply still open |
+| W25 | Frame receiver: arming-window, no-reply and stalled-drain behavior | — | M | DONE (2026-09-26) — stalled drain: a full FIFO holds a correct value, does not corrupt one (an earlier result to the contrary was a test-pacing bug, retracted - see W25a); arming window: no echo-triggering seen (marker_ok 100% throughout), CRC-valid rate climbs to 100% over ~1-2s (ESC lock-on, not a receiver issue), moot since MotorGroup discards it anyway; no reply: reasoned from source, not bench-forced - same resync mechanism the stalled-drain test already exercised |
 | W25a | Fix or bound the frame receiver's stalled-drain corruption | — | M | SKIPPED (2026-09-26) — premise invalidated: the "corruption" was the test's own command pacing interfering with the ESC's reply on the wire, not a receiver bug; fifo_join was added then reverted once the corrected test came back clean at the original FIFO depth |
 | W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | BLOCKED — needs user decision, gated on W23-W25 |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
@@ -2167,7 +2167,30 @@ with zero drains, with or without the `fifo_join` fix W25a added and then revert
 own comment was right: a full FIFO holds a complete, correct value and only costs later replies
 (silently uncaptured until draining resumes), it does not corrupt one. Full account, including why
 the badly-paced test fooled a careful reading of the PIO structure, is in ADR-002's "Hardware
-validation, part 3" note. Arming-window and no-reply are still open - see below.
+validation, part 3" note.
+
+**Arming window: DONE 2026-09-26.** `tests/experimental/test_rle_arming_echo.py` drove a lone
+bidirectional motor directly (no `MotorGroup`, so nothing discards captures the way `update()`
+does while `ARMING`) at zero throttle for 3 seconds, bucketed by 500ms slice, then continued at
+throttle 100 for 2 seconds as a baseline. `marker_ok` was 100% in every bucket including the
+first, with no sign of the receiver mis-triggering on TX's own waveform. `crc_ok` climbed from 0%
+to 100% over roughly the first 1-2 seconds (one anomalous dip along the way) before settling -
+consistent with the ESC's own bidirectional lock-on transient producing genuine but
+bit-error-prone replies, not a receiver defect. Moot for correctness either way:
+`MotorGroup.update()` already discards every capture taken during arming regardless of validity.
+Full numbers in ADR-002's "Hardware validation, part 4".
+
+**No reply: DONE 2026-09-26, reasoned from source, not bench-forced** (depowering or
+disconnecting the ESC mid-run needed physical access this session didn't have).
+`dshot_bidir_rx_rle`'s marker-wait has no timeout, identical to `dshot_bidir_rx`'s own - a
+never-answered frame blocks the state machine there indefinitely, and the next real reply's own
+edge is what unblocks and resyncs it, the same way the stalled-drain test's FIFO-push stall
+already showed resuming cleanly after 60 frames of inactivity. `CaptureMailbox.latest()` already
+returns `None` until a real publish regardless of receiver. Full reasoning in ADR-002's "Hardware
+validation, part 5".
+
+All three W25 behaviors are now checked. W25a (below) is the one gap this work found, and it was
+retracted the same day - see its own entry.
 
 **W25a — Fix or bound the frame receiver's stalled-drain corruption** ·
 `driver/dshot_pio.py` (`dshot_bidir_rx_rle`)

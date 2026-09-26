@@ -1996,6 +1996,44 @@ hardware result that disagrees with it.
 Not yet checked: the arming-window and no-reply behaviours this section's "Not settled" list
 still names.
 
+*Hardware validation, part 4 - arming window (2026-09-26).* `dshot_bidir_rx_rle` waits for a
+falling edge exactly like `dshot_bidir_rx`, so early in arming - before the ESC has locked onto
+bidirectional DShot - a capture could in principle be TX's own waveform rather than a genuine
+reply. `tests/experimental/test_rle_arming_echo.py` drove a lone bidirectional motor plus the
+usual three idle unidirectional ones directly (no `MotorGroup`, so nothing discards captures the
+way `update()` does while `ARMING`) at zero throttle for 3 seconds, bucketing every capture by
+500ms slice, then continued at throttle 100 for 2 seconds as a clean baseline.
+
+Result: `marker_ok` was 100% in every bucket, including the very first 500ms - no sign of the
+receiver locking onto TX's own waveform, which would be expected to show up as scrambled marker
+bits, not a clean 0 every time. `crc_ok` told a different story: 0% in the first 500ms, 74% in the
+second, 100% by the third (1000ms), an unexplained dip back to 39% at 1500ms, then 100% from
+2000ms onward and through the whole spin baseline. Marker-bit correctness with a fluctuating CRC
+rate reads as the ESC replying almost immediately with genuine (not echoed) frames, some of them
+bit-error-prone during its own bidirectional-mode lock-on transient, rather than the receiver
+mis-triggering on our own signal. This has no bearing on correctness today - `MotorGroup.update()`
+already discards every capture taken during `ARMING` regardless of validity - but it is new
+information should the arming duration or lock-on timing ever need tuning.
+
+*Hardware validation, part 5 - no reply (2026-09-26, reasoned from source, not bench-forced).*
+Simulating "the ESC never replies" needs depowering or disconnecting it mid-run, which this
+session's remote access to the bench can't do. Reasoning from the program instead:
+`dshot_bidir_rx_rle`'s `wait(0, pin, 0)` marker-wait has no timeout, identical to
+`dshot_bidir_rx`'s own step 3 - if the ESC never replies to a given frame, the state machine
+blocks there indefinitely, and does not return to `wrap_target()` to watch for the *next* frame's
+release IRQ until some falling edge, any falling edge, finally arrives. When the ESC eventually
+does reply again, that reply's own marker edge is what unblocks it; the read logic doesn't care
+which frame's window it's nominally in, so it decodes correctly, then resyncs cleanly via the
+fresh IRQ wait for every frame after that. `CaptureMailbox.latest()` returns `None` until the
+first real publish regardless of receiver (unit-tested, receiver-independent), so an application
+sees nothing during the gap rather than stale or garbage data.
+
+This is a smaller extrapolation than it would have been before part 3 above: the stalled-drain
+test already exercised the same "not listening for many frames, then resyncs cleanly on
+`wrap_target()`" pattern far more aggressively (60 frames of TX activity with RX not listening,
+there stalled on the FIFO push rather than the marker wait) and it held up on the bench. Not
+proof of the no-reply case specifically, but not a bare unforced reading either.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
