@@ -1081,10 +1081,17 @@ but not a squash).
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
 | W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | IN PROGRESS |
-| W19 | Run-length capture in the PIO receiver | — | L | SPIKE DONE on branch `feature/pio-run-length-capture` (2026-09-20): 100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us; not adopted, several checks open |
+| W19 | Run-length capture in the PIO receiver | — | L | IN PROGRESS on branch `feature/pio-run-length-capture`: spike DONE 2026-09-20 (100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us); integrated into `BidirectionalDShot`/`CaptureMailbox`/`gcr_decode` as an opt-in `receiver=` 2026-09-26 (still EXPERIMENTAL); hardware validation and the adopt/keep/drop decision continue as W23-W28 below |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
 | W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | DONE (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — bench-confirmed on `telemetry_settled_300/600`, `two_channel_divergent_300/600`, `test_bidir_restart_cycles.py` (x2, 6/6 cycles), `smoke_unidirectional` (x2); the disarm-hang bug is fixed for both single and multi-bidirectional-motor cases and re-arming works |
+| W23 | Hardware smoke test of the integrated frame receiver | — | S | DONE (2026-09-26) — no ENOMEM on the exactly-full block at either speed; 100% CRC-valid both speeds and across a restart; decode cost far above the spike's figure, flagged for W24/W25 |
+| W24 | Statistical comparison: frame vs sample receiver on the same motor | — | S | TODO |
+| W25 | Frame receiver: arming-window, no-reply and stalled-drain behavior | — | M | TODO |
+| W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | BLOCKED — needs user decision, gated on W23-W25 |
+| — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
+| W27 | Port the harness to frame-only 1-word records | — | L | TODO |
+| W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | TODO |
 
 ### Work items
 
@@ -1935,6 +1942,19 @@ Spike outcome: step 1 and parts of 2 and 3 are done - the program exists (`dshot
 214us (raw path 1.27ms); DSHOT600 on the bench: 10,009 of 10,009, 212us. Still open: no-reply/partial/pre-arming behaviour, a
 stalled drain, frame-for-frame agreement on live replies, and fitting it into `CaptureMailbox`.
 
+**Integration, 2026-09-26 (still not the "Done when" bar below).** The "fitting it into
+`CaptureMailbox`" gap is closed: `BidirectionalDShot` takes a `receiver=SAMPLE_RECEIVER |
+FRAME_RECEIVER` argument (named for what each hands the CPU), `CaptureMailbox` takes a
+`capture_words` argument (1 for the frame receiver, 4 for the sample one) instead of a hardcoded
+constant, and `gcr_decode.analyze_frame()` is the frame receiver's own decode entry point (shares
+`analyze_capture()`'s CRC/eRPM tail, skips the reconstruction steps it doesn't need).
+`tests/experimental/rle_bench.py` now drives it through `BidirectionalDShot`/`MotorGroup` like a
+real motor instead of a private subclass and ring buffer. Full detail, including that this
+program going through `start()`/`stop()` at all - not only a restart - has not run against
+hardware, is in ADR-002's "Integration (2026-09-26)" note under the same section this idea was
+written up in. Not touched: the sample-vs-frame live agreement check and the
+no-reply/partial/pre-arming/stalled-drain behaviour - still open, per step 3 below.
+
 Steps, if picked up:
 1. Spike: a run-length receiver written as a standalone program on a spare state machine beside the
    existing receiver on the same pin (several state machines can read one pin), no driver change.
@@ -2019,3 +2039,155 @@ fix landed showed channel 1 replying with valid telemetry (97.7% CRC-valid) but 
 repeat immediately after spun both motors cleanly. The ESC recovered normally after disarm in
 both cases either way. Genuinely intermittent, not caused by this fix, not investigated further
 — see ADR-002's note for an untested lead.
+
+**W23 — Hardware smoke test of the integrated frame receiver** ·
+`tests/experimental/rle_bench.py`, `test_rle_receiver_300.py`, `test_rle_receiver_600.py`
+
+W19's spike measured the frame receiver's own PIO program on the bench (9,971/9,971 CRC-valid at
+DSHOT300, 10,009/10,009 at DSHOT600), but its bench harness built the receiver's state machine by
+hand and never called `start()`/`stop()` through `BidirectionalDShot`. The 2026-09-26 integration
+(`receiver=BidirectionalDShot.FRAME_RECEIVER`) made `start()` call `rx_sm.init()` with this
+program on every `arm()`, on a PIO block the frame receiver fills alone (13 + 19 of 32
+instruction slots) - a path nothing has run on hardware yet. If MicroPython cannot re-init an
+already-loaded program on an exactly-full block, this fails with ENOMEM.
+
+Run `python scripts/deploy.py test_rle_receiver_300.py` then `test_rle_receiver_600.py` (single
+bidirectional channel, motor + prop mounted, as documented in `rle_bench.py`'s own header). Then,
+in the same session if the first run succeeds, disarm and arm again once (`MotorGroup.disarm()`
+then `arm()`, matching `test_bidir_restart_cycles.py`'s pattern) to exercise a restart on this
+program too - the spike never went through `start()`/`stop()` at all, so a restart is not a
+narrower case here than the very first arm.
+
+**Done when:** both DSHOT300 and DSHOT600 runs complete with no ENOMEM, CRC-valid% and eRPM
+within the spike's ranges (see above), and a disarm/arm restart in the same session also
+completes cleanly. Record the actual numbers in ADR-002 next to the spike's own.
+
+**DONE 2026-09-26.** `rle_bench.run()` on channel 1 (motor + prop mounted): DSHOT300 4,413/4,413
+CRC-valid (100%), median eRPM 21,067; DSHOT600 4,410/4,410 (100%), median eRPM 21,186 - both in
+the spike's range. A new `tests/experimental/test_rle_restart_cycles.py` (same wiring as
+`rle_bench.py`, unidirectional motors on the next block so nothing shares the frame receiver's
+full one) ran two arm/spin/disarm/arm cycles at DSHOT300: cycle 1 and cycle 2 both 143/143
+CRC-valid, median eRPM 21,126 - **no ENOMEM on the restart**, confirming MicroPython reuses an
+already-loaded identical program rather than re-adding it, even on a block with zero free slots.
+W23's own worry is resolved.
+
+**Found along the way, not part of this item.** `rle_bench.py`'s decode cost is far above the
+spike's own figure: mean 698-699us, max 7,404-7,546us, against the spike's 212-214us average. The
+spike measured only `decode()` + `check_crc()`; this bench measures the real
+`MotorGroup.decode_telemetry()` call, which also builds `decode_result()`'s dict, and it decodes
+*every* new capture rather than sampling every Nth one the way `run_scenario.py` does - so GC
+pressure from the busier loop is a live possibility, not just per-call dict overhead. It also lost
+more replies to mailbox overwrite (5,017 of ~9,430 at 300; 4,970 of ~9,380 at 600) than were kept:
+the one-slot mailbox was never going to see every reply once the poll loop itself got this slow,
+so total-received figures here are not comparable to the spike's continuous 5-second counts.
+Neither crosses W23's own bar (still 100% CRC-valid on what was decoded), but both belong in
+W24/W25: is 698us typical of `decode_capture()`'s own overhead, or is this loop specifically slow
+because it decodes every capture instead of sampling.
+
+**W24 — Statistical comparison: frame vs sample receiver on the same motor** ·
+`tests/experimental/rle_bench.py`, `decision/ADR-002-bidirectional-dshot.md`
+
+**Depends on W23.** ADR-002's original validation plan for this receiver assumed a spare state
+machine could run a second receiver beside the first on the same pin. That is no longer true once
+the frame receiver's real 19-instruction program is loaded: with `dshot_bidir_tx` (13) it fills
+the block completely (see the layout table in ADR-002's "Spike result"), leaving no room for
+`dshot_bidir_rx` (10) on the same block. So the two receivers cannot capture the same live reply
+at once, and a literal frame-for-frame live comparison is not possible without a second, separate
+capture pass. The frame-for-frame check that *is* possible is already done, offline: the PC
+model (`scripts/simulate_rle_receiver.py`) replays 10,867 stored raw captures and agrees with
+`gcr_decode.reconstruct_frame()`'s own output. What remains is a live, statistical comparison,
+not a per-reply one.
+
+Run the same bench scenario twice, same motor/ESC/throttle/duration, once per receiver (the
+sample-receiver baseline already exists in `tests/harness`'s `telemetry_settled_300/600`
+scenarios; run the frame receiver via `rle_bench.py`). Compare CRC-valid%, eRPM range, and decode
+cost per the printed summaries.
+
+**Done when:** both receivers meet the same thresholds (>=98% CRC-valid, eRPM in the established
+~21k range at throttle 100) at both DSHOT300 and DSHOT600 on the same physical setup, and the
+comparison is recorded in ADR-002 - including the note that this is a statistical comparison
+across two runs, not a live per-reply one, and why.
+
+**W25 — Frame receiver: arming-window, no-reply and stalled-drain behavior** ·
+`tests/experimental/` (new script or scenario), `decision/ADR-002-bidirectional-dshot.md`
+
+**Depends on W23.** Three behaviors the sample receiver has documented and the frame receiver
+does not:
+1. **Arming window.** `dshot_bidir_rx_rle` waits for a falling edge exactly like `dshot_bidir_rx`,
+   so it can just as easily capture the TX's own waveform as a "reply" before the ESC arms. What
+   a mis-triggered frame looks like (marker_ok, CRC) has not been checked - it may differ from the
+   sample receiver's version of the same problem, since the frame receiver commits to reading 21
+   bits no matter what triggered it.
+2. **No reply.** An unpowered or disconnected ESC: does the mailbox correctly report "nothing
+   published" rather than stalling, and does the receiver recover cleanly once the ESC is powered
+   again mid-run?
+3. **Stalled drain.** ADR-002/ADR-005 document the sample receiver's FIFO-join fix for a drain
+   that falls behind. The frame receiver's FIFO holds 4 one-word captures (no `fifo_join`,
+   default depth) rather than 2 four-word ones - whether that tolerates the same one-late-drain
+   margin, or a different one, has not been measured.
+
+**Done when:** each of the three behaviors has been exercised on the bench (or reasoned through
+from the PIO program where hardware can't easily force it, e.g. no-reply) and its outcome -
+matching or differing from the sample receiver's documented behavior - is recorded in ADR-002.
+
+**W26 — Decision: adopt the frame receiver as the sole production receiver (idea)** ·
+`decision/ADR-002-bidirectional-dshot.md`
+
+**BLOCKED — needs user decision, gated on W23, W24 and W25 all passing.** This is W19's own
+"Done when" bar: decide whether the frame receiver replaces the sample receiver, stays as a
+second option, or is dropped - recorded in ADR-002 with the measured decode cost and the W23-W25
+results next to it. The user's direction (2026-09-26 conversation, not yet acted on): once this
+passes, the frame receiver becomes the sole production receiver and the sample receiver moves out
+of the driver into a standalone calibration/diagnostic tool (see W28) - motivated by the ongoing
+cost of a testing/analysis harness that would otherwise have to support two capture formats
+indefinitely for no production benefit. If W23-W25 surface a problem specific to the frame
+receiver (an edge case it handles worse than the sample receiver), that changes this decision -
+report it rather than proceeding on schedule.
+
+**Done when:** the decision (adopt / keep both / drop) is recorded in ADR-002, and if "adopt",
+W27 and W28 are unblocked.
+
+**W27 — Port the harness to frame-only 1-word records** ·
+`tests/harness/run_scenario.py`, `bidir_capture_sink.py`, `capture_sink.py`,
+`scripts/analyze_bidir_capture_log.py`, `tests/harness/scenarios/*.json`
+
+**Depends on W26 (adopt).** The regression suite is built entirely on the sample receiver's
+4-word records: `run_scenario.py`'s `RECORD_ZERO_WORDS` and per-motor word slots, the SD sink's
+record layout, and `analyze_bidir_capture_log.py`'s offline decode all assume 4 words per
+bidirectional motor. Switch every scenario's bidirectional motors to
+`receiver=BidirectionalDShot.FRAME_RECEIVER`, shrink the record format to 1 word per bidirectional
+motor slot, and switch the offline analyzer to `gcr_decode.analyze_frame()`.
+
+Two things to check before running anything: (1) a frame-receiver pair fills its PIO block alone
+(see W23's note), so any scenario JSON that puts a unidirectional motor on the same block as a
+bidirectional pair will now fail with ENOMEM instead of arming - audit `scenarios/*.json` for this
+before the first run, not after a confusing failure. (2) Two bidirectional motors each on their
+own full block (four motors total, two frame-receiver pairs) is a combination ADR-002 explicitly
+flags as never run on hardware - run a two-bidirectional-motor scenario early in this item, not
+last, so a problem there doesn't surface after the rest of the port looks done.
+
+**Done when:** the full existing scenario suite passes against its existing thresholds
+(`min_crc_valid_pct`, `min_median_erpm`) using the frame receiver exclusively, including at least
+one two-bidirectional-motor scenario.
+
+**W28 — Hygiene: delete the sample receiver from the driver; move raw capture and calibration to
+a standalone script** · `driver/dshot_pio.py`, `driver/capture_mailbox.py`, `driver/gcr_decode.py`,
+`tests/experimental/rle_bench.py`, new `scripts/`
+
+**Depends on W26 (adopt) and W27.** Remove `BidirectionalDShot.SAMPLE_RECEIVER`, the `receiver=`
+parameter (frame becomes the only mode), `dshot_bidir_rx`'s wiring into the class, and the
+`capture_words` branching in `CaptureMailbox` (it can go back to always being 1, or stay
+parametric if nothing else needs the choice - decide at the time). Do not delete
+`gcr_decode.py`'s raw-decode functions (`find_edges`, `estimate_bit_period_fixed`,
+`reconstruct_frame`, `analyze_capture`) or `dshot_bidir_rx` itself: `scripts/simulate_rle_receiver.py`
+and `scripts/verify_gcr_decode_port.py` both still consume them, and raw capture is still how
+`BIDIR_PROFILES`' `expected_ratio` gets measured for a new ESC unit or the second 4-in-1 - the
+frame receiver has no period search of its own to fall back on. Build a standalone script (not
+wired into `MotorGroup`) that constructs a bare TX/raw-RX pair directly, the way the low-level
+usage example in CLAUDE.md does for a single motor, for one-off raw captures when tuning or
+diagnosing. `tests/experimental/rle_bench.py` can retire once W27's scenarios cover what it
+checked.
+
+**Done when:** `BidirectionalDShot`'s constructor no longer offers a receiver choice, all unit
+tests pass, and the standalone script can still take a raw calibration capture and produce an
+`expected_ratio` estimate for a new ESC unit.

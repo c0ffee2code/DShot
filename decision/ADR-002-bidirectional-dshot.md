@@ -1868,6 +1868,78 @@ decode is already off the command loop, so this is application headroom, not
 command-loop speed. It has to be weighed against replacing a receiver that is
 verified on hardware for both supported speeds.
 
+*Integration (2026-09-26).* The receiver is now a `receiver=` option on
+`BidirectionalDShot`'s constructor, named for what each hands the CPU:
+`SAMPLE_RECEIVER` (the default) or `FRAME_RECEIVER` - rather than a standalone
+spike built by hand. Still EXPERIMENTAL, not yet validated against the sample
+receiver on live replies. What changed to make it selectable:
+
+- `CaptureMailbox` takes a `capture_words` argument (4 for the sample
+  receiver's raw samples, 1 for the frame receiver's already-reconstructed
+  frame) instead of a fixed constant, so one class serves both.
+- `gcr_decode` gained `analyze_frame()`, the frame receiver's own entry point:
+  it shares `analyze_capture()`'s decode/CRC/eRPM tail (now factored out as
+  `decode_result()`) but skips `find_edges()`, `estimate_bit_period_fixed()`
+  and `reconstruct_frame()` entirely, since the receiver did that work in
+  hardware. Its result carries no period fields (nothing is measured per
+  capture), and both entry points now also carry a `marker_ok` field - the
+  frame's own top bit read back as 0 - worth surfacing next to the CRC check
+  while this receiver is unproven.
+- The constructor picks the receiver program, its clock, and `jmp_pin` (the
+  frame program's only receiver-specific pin wiring - the sample receiver has
+  no `jmp(pin, ...)` instructions and does not get it) once, and `start()`
+  replays that same choice on every `arm()`, the first one included. The
+  spike's own bench harness never exercised this at all: its `BidirectionalDShot`
+  subclass overrode `__init__()` and `start()` to build the frame receiver's
+  state machine directly, so `rx_sm.init()` never ran with this program - on a
+  block it fills on its own (see the layout table above) or otherwise - and
+  still has not run on hardware.
+- The bench script now drives the frame receiver through
+  `BidirectionalDShot`/`MotorGroup` like every other motor - reading it with
+  `raw_telemetry()`/`decode_telemetry()` and counting missed frames from the
+  mailbox's own sequence number - rather than a private ring buffer and a
+  `BidirectionalDShot` subclass that bypassed the `start()`/`stop()` path
+  above entirely.
+
+Not settled by this pass, same as the spike: behaviour when the ESC does not
+reply, replies partially, or before arming; a stalled or slow drain;
+frame-for-frame agreement against the sample receiver on live replies (the PC
+model agrees on stored captures - see "Model" above - which is not the same
+claim); and whether the untested `start()`/`stop()` path above actually
+succeeds on hardware. The spike's own decode-cost figures (~200-215us) also
+don't carry over as-is: they measured `decode()` plus `check_crc()` alone,
+not `decode_capture()`'s or `analyze_frame()`'s own overhead (a 9-key dict
+built per call) - the bench script measures the real thing, but through a
+one-slot mailbox that can no longer report a per-frame count the way the
+spike's private ring did. Adoption is still an open decision, gated on
+hardware validation.
+
+*Hardware validation, part 1 (2026-09-26).* The integrated `start()`/`rx_sm.init()` path above -
+the one thing this pass could not exercise without a real board - has now run: `rle_bench.py` on
+channel 1 (motor + prop mounted) gave 4,413/4,413 CRC-valid at DSHOT300 (median eRPM 21,067) and
+4,410/4,410 at DSHOT600 (median eRPM 21,186), both matching the spike's own CRC-valid rate and
+eRPM range. A new device test (`tests/experimental/test_rle_restart_cycles.py`) ran two
+arm/spin/disarm/arm cycles at DSHOT300 on the same wiring: both cycles 143/143 CRC-valid, median
+eRPM 21,126, no ENOMEM - so a second `rx_sm.init()` with this program, on a block with zero free
+slots, does not re-add it and run out of space. That was the specific risk this integration
+carried; it did not materialize.
+
+What did surface: the bench's own decode cost (mean 698-699us, max up to 7,546us) is far above
+the spike's 212-214us. The spike measured `decode()` plus `check_crc()` alone; `rle_bench.py`
+measures the real `decode_capture()`/`analyze_frame()` call, including `decode_result()`'s dict
+construction, and it decodes every new capture rather than sampling every Nth one the way
+`run_scenario.py` does - so this is not yet evidence that `analyze_frame()` itself is slow, only
+that this particular loop is. The same run lost more replies to mailbox overwrite than it kept
+(5,017 of ~9,430 at 300; 4,970 of ~9,380 at 600), consistent with a poll loop too slow to keep up
+with a one-slot mailbox at the full reply rate. Neither figure is a regression from anything
+verified before now - there was no prior number to regress from - but both need separating out
+(loop overhead vs. `analyze_frame()` cost) before the decode-cost comparison against the sample
+receiver can be trusted.
+
+Still not settled: everything else this section's "Not settled by this pass" already named -
+behaviour when the ESC does not reply, replies partially, or before arming; a stalled or slow
+drain; and frame-for-frame agreement against the sample receiver on live replies.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
