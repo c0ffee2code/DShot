@@ -1081,7 +1081,7 @@ but not a squash).
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
 | W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | IN PROGRESS |
-| W19 | Run-length capture in the PIO receiver | — | L | IN PROGRESS on branch `feature/pio-run-length-capture`: spike DONE 2026-09-20 (100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us); integrated into `BidirectionalDShot`/`CaptureMailbox`/`gcr_decode` as an opt-in `receiver=` 2026-09-26 (still EXPERIMENTAL); hardware validation and the adopt/keep/drop decision continue as W23-W28 below |
+| W19 | Run-length capture in the PIO receiver | — | L | DONE (code), hardware verification of W27/W28 still open - see those rows. Spike DONE 2026-09-20 (100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us); integrated as an opt-in `receiver=` 2026-09-26, validated on the bench (W23-W25), adopted as the sole production receiver (W26), harness ported and sample receiver removed from `BidirectionalDShot` (W27-W28, code done 2026-09-26, bench was powered off) |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
 | W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | DONE (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — bench-confirmed on `telemetry_settled_300/600`, `two_channel_divergent_300/600`, `test_bidir_restart_cycles.py` (x2, 6/6 cycles), `smoke_unidirectional` (x2); the disarm-hang bug is fixed for both single and multi-bidirectional-motor cases and re-arming works |
@@ -1092,7 +1092,7 @@ but not a squash).
 | W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | DONE (2026-09-26) — user decided: adopt as the sole production receiver, sample receiver moves to a standalone tool (W27, W28) |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
 | W27 | Port the harness to frame-only 1-word records | — | L | IN PROGRESS (2026-09-26) — bench powered off, code changes only this session, hardware verification still needed |
-| W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | TODO |
+| W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Code done 2026-09-26 — bench powered off, hardware verification of the new calibration tool still needed |
 
 ### Work items
 
@@ -2291,3 +2291,40 @@ checked.
 **Done when:** `BidirectionalDShot`'s constructor no longer offers a receiver choice, all unit
 tests pass, and the standalone script can still take a raw calibration capture and produce an
 `expected_ratio` estimate for a new ESC unit.
+
+**Code done 2026-09-26; hardware verification of the new calibration tool still needed - the bench
+was powered off.** `BidirectionalDShot` no longer takes a `receiver=` argument at all; it always
+builds `dshot_bidir_rx_rle`. `SAMPLE_RECEIVER`/`FRAME_RECEIVER` are gone. `CaptureMailbox` lost its
+`capture_words` parameter too - nothing constructs it with any value but 1 any more, so it went
+back to a fixed `WORDS = 1` module constant, the shape it had before the sample receiver needed
+something wider. `dshot_bidir_rx` and `gcr_decode.py`'s raw-decode functions were kept, exactly as
+planned - `scripts/simulate_rle_receiver.py` and `scripts/verify_gcr_decode_port.py` still use
+them, unaffected by any of this.
+
+New: `tests/experimental/calibrate_bidir_rx.py`, a standalone script (not wired into `MotorGroup`)
+that builds a bare TX/raw-RX pair directly using `dshot_bidir_tx`/`dshot_bidir_rx`, arms and spins
+one motor, and prints captured raw words to stdout for offline analysis with
+`scripts/dshot_bidir_decode.py`'s existing `estimate_bit_period()` sweep. **Untested on hardware.**
+
+`tests/experimental/rle_bench.py` was NOT retired, despite the item's own suggestion that it
+could be - W27 (the scenario harness it would be replaced by) has not been hardware-verified
+either, so deleting the simpler fallback before knowing the replacement actually works seemed like
+the wrong order. Revisit once W27 passes on the bench.
+
+Every test/experimental script that referenced `receiver=BidirectionalDShot.FRAME_RECEIVER`
+(`rle_bench.py`, `test_rle_arming_echo.py`, `test_rle_restart_cycles.py`,
+`test_rle_stalled_drain.py`) had that now-invalid keyword argument removed.
+`tests/unit/test_motor_group.py`'s `FrameReceiverTest` class (which tested the selection mechanism
+itself) was deleted; the one test in it with no other coverage - that `start()` reinitializes the
+receiver program and `jmp_pin` on every `arm()`, not only a restart - was kept, folded into
+`TelemetryTest`. All 152 unit tests pass.
+
+**Found along the way, not fixed here.** `scripts/capture_session.py`'s `iter_groups()` only
+recognizes two on-disk record formats and raises on any other `record_fmt` string (already known
+to crash on at least one old session predating both - see W23's note on
+`verify_gcr_decode_port.py`'s no-argument mode). W27's new `<I4H4I` harness format is a third one
+it doesn't recognize either, so a freshly pulled scenario session would now also trip this if fed
+to `verify_gcr_decode_port.py` or `tally_period_cycles.py` - both of which exist specifically to
+analyze 4-word raw sample groups, which a frame-receiver session no longer contains at all. Not a
+correctness bug in the harness; a possible robustness improvement for those two PC tools (skip an
+unrecognized format rather than crash) that was out of scope for this pass.

@@ -2070,6 +2070,19 @@ the idle unidirectional motors onto the otherwise-unused PIO2 block. Full detail
 capture-format and PC-tooling changes, is in the backlog's W27 entry. None of this has run on the
 bench yet.
 
+*Sample receiver removed from BidirectionalDShot (2026-09-26), code done, hardware verification
+pending.* `receiver=`/`SAMPLE_RECEIVER`/`FRAME_RECEIVER` are gone - the frame receiver is the only
+one `BidirectionalDShot` builds, and its constructor no longer takes a receiver argument at all.
+`CaptureMailbox` lost its `capture_words` parameter for the same reason: nothing constructs it
+with any value but 1 any more, so it went back to a fixed `WORDS = 1` module constant (the shape
+it had before the sample receiver ever needed something wider). `dshot_bidir_rx` and
+`gcr_decode.py`'s raw-decode functions (`find_edges`, `estimate_bit_period_fixed`,
+`reconstruct_frame`, `analyze_capture`) are not deleted - they back a new standalone tool,
+`tests/experimental/calibrate_bidir_rx.py`, which builds a bare TX/raw-RX pair directly (not
+through `BidirectionalDShot`) to measure a new ESC unit's `expected_ratio`, since the frame
+receiver has no period search of its own to fall back on. That tool is untested on hardware, same
+as the harness port above - the bench was powered off for this whole pass.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
