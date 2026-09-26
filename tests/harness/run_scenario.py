@@ -63,7 +63,7 @@ REPLY_FAILSAFE_GRACE_MS = 2000
 # an error: arming completes inside update() on Core 1, so a dead loop shows here
 ARM_TIMEOUT_MARGIN_MS = 1000
 
-RECORD_ZERO_WORDS = (0, 0, 0, 0)
+RECORD_ZERO_WORDS = (0,)
 
 
 def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
@@ -159,7 +159,8 @@ def measured(update, times):
 def build_motor(spec, dshot_speed):
     if spec.bidirectional:
         return BidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed,
-                                  rx_state_machine_id=spec.rx_sm_id)
+                                  rx_state_machine_id=spec.rx_sm_id,
+                                  receiver=BidirectionalDShot.FRAME_RECEIVER)
     return UnidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed)
 
 
