@@ -12,7 +12,8 @@ import unittest
 import fakes
 from fakes import Clock, Pin
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, UnsupportedOperationException,
-                       DSHOT_SPEEDS)
+                       DSHOT_SPEEDS, dshot_bidir_rx_frame)
+from dshot_profiles import frame_rx_speed
 from motor_group import (MotorGroup, MotorGroupException,
                                   DISARMED, ARMING, ARMED)
 
@@ -269,7 +270,10 @@ class ThrottleTest(GroupTestCase):
 
 
 class TelemetryTest(GroupTestCase):
-    CAPTURE = [0x1FF00F80, 0x0787FFC1, 0xFC01FFFF, 0xFFFFFFFF]
+    # A real DSHOT300 reply from the bench, reconstructed to the frame
+    # receiver's own 1-word shape (gcr_decode.reconstruct_frame() on the raw
+    # samples this used to be); decodes to eRPM 48859.9.
+    CAPTURE = (0xC8BB3,)
 
     def setUp(self):
         super().setUp()
@@ -315,14 +319,14 @@ class TelemetryTest(GroupTestCase):
         self.group.update()
         ticks_us, sequence, words = self.group.raw_telemetry(0)
         self.assertEqual(sequence, 1)
-        self.assertEqual(list(words), self.CAPTURE)
+        self.assertEqual(words, self.CAPTURE)
 
     def test_the_latest_capture_replaces_earlier_ones(self):
         self.arm_fully(self.group)
         for marker in (1, 2, 3):
-            self.motor.rx_sm.feed([marker, 0, 0, 0])
+            self.motor.rx_sm.feed([marker])
             self.group.update()
-        self.assertEqual(self.group.raw_telemetry(0)[1:], (3, (3, 0, 0, 0)))
+        self.assertEqual(self.group.raw_telemetry(0)[1:], (3, (3,)))
 
     def test_disarm_takes_the_captures_away_again(self):
         self.arm_fully(self.group)
@@ -341,12 +345,13 @@ class TelemetryTest(GroupTestCase):
         self.run_until_armed(self.group)
         self.assertIsNone(self.group.raw_telemetry(0))
 
-    def test_decode_telemetry_uses_the_motors_own_profile(self):
-        # a real DSHOT300 capture from the bench; the 300 profile decodes it to eRPM 48859.9
+    def test_decode_telemetry_uses_analyze_frame(self):
         motor = BidirectionalDShot(4, Pin(8), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=5)
         group = self.make([motor])
         result = group.decode_telemetry(0, self.CAPTURE)
         self.assertTrue(result["crc_ok"])
+        self.assertAlmostEqual(result["erpm"], 48859.9, places=1)
+        self.assertIsNone(result["period_cycles"], "the frame receiver measures no period per capture")
 
     def test_decode_telemetry_raises_for_a_unidirectional_motor(self):
         with self.assertRaises(UnsupportedOperationException):
@@ -355,6 +360,24 @@ class TelemetryTest(GroupTestCase):
     def test_decode_telemetry_rejects_a_bad_index(self):
         with self.assertRaises(MotorGroupException):
             self.group.decode_telemetry(5, self.CAPTURE)
+
+    def test_every_arm_reinitializes_the_receiver_program_and_jmp_pin(self):
+        # start() calls rx_sm.init() on every arm(), the first one included,
+        # not only a restart after a stop() - and dshot_bidir_rx_frame fills its
+        # PIO block on its own (see BidirectionalDShot's constructor
+        # docstring), so it is worth checking both calls get it right.
+        self.arm_fully(self.group)
+        first_program, first_freq, first_kwargs = self.motor.rx_sm.init_calls[-1]
+        self.assertEqual(first_program, dshot_bidir_rx_frame)
+        self.assertEqual(first_freq, frame_rx_speed(SPEED))
+        self.assertEqual(first_kwargs["jmp_pin"], self.motor.pin)
+
+        self.group.disarm()
+        self.group.arm(ARM_MS)
+        program, freq, kwargs = self.motor.rx_sm.init_calls[-1]
+        self.assertEqual(program, dshot_bidir_rx_frame)
+        self.assertEqual(freq, frame_rx_speed(SPEED))
+        self.assertEqual(kwargs["jmp_pin"], self.motor.pin)
 
 
 if __name__ == "__main__":

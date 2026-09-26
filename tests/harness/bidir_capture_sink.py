@@ -11,17 +11,17 @@
 import struct
 
 from capture_sink import CaptureSinkBase
-from dshot_pio import BIDIR_PROFILES
+from dshot_profiles import frame_rx_speed
 
 COPY_CHUNK_SIZE = 512
 
 
 class BidirCaptureSink(CaptureSinkBase):
-    # ticks_us, throttle0..3, then one 4-word GCR capture group per motor
-    # (motor0_w0..w3, motor1_w0..w3, motor2_w0..w3, motor3_w0..w3). A motor
-    # that had no new capture for this record, and a non-bidirectional motor, has
-    # an all-zero word group.
-    RECORD_FMT = "<I4H16I"
+    # ticks_us, throttle0..3, then one word per motor (motor0..motor3) - the
+    # frame receiver's already-reconstructed 21-bit frame. A motor that had
+    # no new capture for this record, and a non-bidirectional motor, has an
+    # all-zero word.
+    RECORD_FMT = "<I4H4I"
 
     def init_session(self, scenario, scenario_path):
         """Create a timestamped run directory and open the capture log.
@@ -30,8 +30,7 @@ class BidirCaptureSink(CaptureSinkBase):
         as scenario.json - full provenance for the PC-side analyzer.
         """
         bidir_indices = ",".join(str(i) for i in scenario.bidir_indices)
-        rx_clock_hz = ((BIDIR_PROFILES.get(scenario.dshot_speed) or {}).get("rx_speed")
-                       if scenario.bidir_indices else 0)
+        rx_clock_hz = frame_rx_speed(scenario.dshot_speed) if scenario.bidir_indices else 0
 
         self.create_session_dir({
             "dshot_speed": str(scenario.dshot_speed),
@@ -86,7 +85,7 @@ class BidirCaptureSink(CaptureSinkBase):
 
     def write_record(self, ticks_us, throttles, words):
         """Write one record: `throttles` is the 4 motors' throttle values, `words`
-        the 4 motors' 4-word capture groups (a tuple of 4 ints each)."""
+        the 4 motors' captures (a 1-tuple each - see RECORD_FMT)."""
         fields = [ticks_us]
         fields.extend(throttles)
         for group in words:

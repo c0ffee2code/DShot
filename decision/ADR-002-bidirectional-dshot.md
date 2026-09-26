@@ -1775,8 +1775,8 @@ at each flip bounds the error to one stretch.
 *What would need settling before building it:*
 
 - **Program space.** A PIO block has 32 instructions shared by every state machine
-  on it. The bidirectional transmit program uses 12 and the current receiver about
-  a dozen, so the new receiver would replace the oversampling one rather than sit
+  on it. The bidirectional transmit program uses 13 and the current receiver 10,
+  so the new receiver would replace the oversampling one rather than sit
   beside it, and it has to fit.
 - **The bit period.** With no fractional subtraction, either the receiver's clock
   divider is tuned so a bit is a whole number of cycles (the divider is fractional,
@@ -1801,11 +1801,304 @@ machine, and every frame it produces can be compared with the current decoder's
 result on the same reply. Agreement over many thousands of real replies, including
 during arming and after a stall, is the bar before it replaces anything.
 
+*Spike result (2026-09-20).* A level-2 receiver was built as a second receiver
+program, `dshot_bidir_rx_frame`, and run on the bench. It differs from the sketch
+above in how it finds bit boundaries: instead of subtracting the bit period in a
+loop it runs a per-bit timer - a count-down of 2-cycle passes that tests the
+pin on every pass. When the timer runs out with no flip, it reads the pin (one
+bit, one whole bit after the previous read) and reloads the timer. When the pin
+flips, it jumps to the other level's loop with a short count, so the next read is
+half a bit after the edge, at the centre of the new bit. This is the way a
+hardware UART receiver re-synchronises, and it needs no division. It reads
+exactly 21 bits and autopushes them as one word, marker at the top, so the end of
+a frame never has to be detected.
+
+- **Clock.** The bit is 16 receiver cycles at both levels, so the receiver clock
+  is 16 times the reply bit rate: 6.20MHz at DSHOT300 and 12.40MHz at DSHOT600
+  (`frame_rx_speed()`; the rate is `rx_speed / expected_ratio`, the measured value).
+  The two levels' paths are made the same length with a nop; before that, high
+  bits took 15 cycles and low bits 16, and the last read drifted early enough to
+  fail 1.4% of replays.
+- **Program space.** It fits with `dshot_bidir_tx` only at 19 instructions,
+  because the pre-delay is one `nop` with a 26-cycle delay slot instead of a
+  counted loop. Together they fill the block: it cannot also hold the raw
+  receiver (replacing the raw receiver of a constructed `BidirectionalDShot`
+  fails with ENOMEM), nor the unidirectional program. A unidirectional motor has
+  to sit on another block. Four bidirectional motors with this receiver, one pair
+  each (see "State machines and instruction memory"; identical programs are loaded
+  once per block, so a second pair on a block adds state machines but no slots):
+
+  | Block | State machines | Programs loaded | Slots used |
+  |---|---|---|---|
+  | PIO0 | sm0 TX + sm1 RX (motor 1), sm2 TX + sm3 RX (motor 2) | `dshot_bidir_tx` + `dshot_bidir_rx_frame` | 32 of 32 |
+  | PIO1 | sm4 TX + sm5 RX (motor 3), sm6 TX + sm7 RX (motor 4) | `dshot_bidir_tx` + `dshot_bidir_rx_frame` | 32 of 32 |
+  | PIO2 | free (sm8 to sm11): unidirectional motors go here | `dshot` | 4 of 32 |
+
+  Two of these pairs on one exactly-full block has not been run on hardware.
+- **Model.** A PC model of the program (`scripts/simulate_frame_receiver.py`)
+  replays stored captures with the pin's waveform rebuilt from the raw samples.
+  At the profile's clock it rebuilds the frame `gcr_decode` builds for all 10,867
+  CRC-valid replies in four sessions (three DSHOT300, one DSHOT600). With the
+  receiver clock 1.5% off it is still 99.5%, 3% off 96.8% (slow) or 85.6% (fast),
+  5% off 74% or 44%. The replayed waveform has more edge jitter than the real
+  signal, so these are pessimistic.
+- **Bench.** On the AM32 ESC (channel 1, DSHOT300, throttle 100, motor spinning):
+  9,971 replies in 5 seconds, every one with the marker bit 0, valid GCR symbols
+  and a valid CRC, eRPM 21.4k to 21.7k (the raw receiver's bench figures are
+  100% CRC-valid and 21.4k to 21.8k). Decoding a frame - `decode()` and
+  `check_crc()`, all that is left for the CPU - took 214us on average and 345us at
+  most, against 1.27ms for the raw path. No frame was lost from a 64-frame ring
+  drained by the application core. At DSHOT600 (receiver clock 12.40MHz) the same
+  bench gave 10,009 replies in 5 seconds, all valid, eRPM 21.6k to 21.8k, decode
+  212us on average and 298us at most.
+
+Not settled by the spike: behaviour when the ESC does not
+reply, replies partially or before arming (the program waits for a falling edge
+like the raw receiver, so it can take the transmitter's own waveform for a reply
+in the same way, and nothing has checked how that looks in a 21-bit frame); a
+stalled or slow drain (a word per reply is far less pressure than four, but the
+same undrained-FIFO condition applies); comparison against the raw receiver on
+the very same replies (the bench shows both are valid, not that they agree
+frame for frame - the model does that on stored captures); and integrating it
+with `CaptureMailbox`, which takes whole 4-word captures.
+
 *What it would buy.* About a millisecond of application-core time per decode, a
 smaller FIFO payload, and no oversampling density to tune per DShot speed. The
 decode is already off the command loop, so this is application headroom, not
 command-loop speed. It has to be weighed against replacing a receiver that is
 verified on hardware for both supported speeds.
+
+*Integration (2026-09-26).* The receiver is now a `receiver=` option on
+`BidirectionalDShot`'s constructor, named for what each hands the CPU:
+`SAMPLE_RECEIVER` (the default) or `FRAME_RECEIVER` - rather than a standalone
+spike built by hand. Still EXPERIMENTAL, not yet validated against the sample
+receiver on live replies. What changed to make it selectable:
+
+- `CaptureMailbox` takes a `capture_words` argument (4 for the sample
+  receiver's raw samples, 1 for the frame receiver's already-reconstructed
+  frame) instead of a fixed constant, so one class serves both.
+- `gcr_decode` gained `analyze_frame()`, the frame receiver's own entry point:
+  it shares `analyze_capture()`'s decode/CRC/eRPM tail (now factored out as
+  `decode_result()`) but skips `find_edges()`, `estimate_bit_period_fixed()`
+  and `reconstruct_frame()` entirely, since the receiver did that work in
+  hardware. Its result carries no period fields (nothing is measured per
+  capture), and both entry points now also carry a `marker_ok` field - the
+  frame's own top bit read back as 0 - worth surfacing next to the CRC check
+  while this receiver is unproven.
+- The constructor picks the receiver program, its clock, and `jmp_pin` (the
+  frame program's only receiver-specific pin wiring - the sample receiver has
+  no `jmp(pin, ...)` instructions and does not get it) once, and `start()`
+  replays that same choice on every `arm()`, the first one included. The
+  spike's own bench harness never exercised this at all: its `BidirectionalDShot`
+  subclass overrode `__init__()` and `start()` to build the frame receiver's
+  state machine directly, so `rx_sm.init()` never ran with this program - on a
+  block it fills on its own (see the layout table above) or otherwise - and
+  still has not run on hardware.
+- The bench script now drives the frame receiver through
+  `BidirectionalDShot`/`MotorGroup` like every other motor - reading it with
+  `raw_telemetry()`/`decode_telemetry()` and counting missed frames from the
+  mailbox's own sequence number - rather than a private ring buffer and a
+  `BidirectionalDShot` subclass that bypassed the `start()`/`stop()` path
+  above entirely.
+
+Not settled by this pass, same as the spike: behaviour when the ESC does not
+reply, replies partially, or before arming; a stalled or slow drain;
+frame-for-frame agreement against the sample receiver on live replies (the PC
+model agrees on stored captures - see "Model" above - which is not the same
+claim); and whether the untested `start()`/`stop()` path above actually
+succeeds on hardware. The spike's own decode-cost figures (~200-215us) also
+don't carry over as-is: they measured `decode()` plus `check_crc()` alone,
+not `decode_capture()`'s or `analyze_frame()`'s own overhead (a 9-key dict
+built per call) - the bench script measures the real thing, but through a
+one-slot mailbox that can no longer report a per-frame count the way the
+spike's private ring did. Adoption is still an open decision, gated on
+hardware validation.
+
+*Hardware validation, part 1 (2026-09-26).* The integrated `start()`/`rx_sm.init()` path above -
+the one thing this pass could not exercise without a real board - has now run: `rle_bench.py` on
+channel 1 (motor + prop mounted) gave 4,413/4,413 CRC-valid at DSHOT300 (median eRPM 21,067) and
+4,410/4,410 at DSHOT600 (median eRPM 21,186), both matching the spike's own CRC-valid rate and
+eRPM range. A new device test (`tests/experimental/test_rle_restart_cycles.py`) ran two
+arm/spin/disarm/arm cycles at DSHOT300 on the same wiring: both cycles 143/143 CRC-valid, median
+eRPM 21,126, no ENOMEM - so a second `rx_sm.init()` with this program, on a block with zero free
+slots, does not re-add it and run out of space. That was the specific risk this integration
+carried; it did not materialize.
+
+What did surface: the bench's own decode cost (mean 698-699us, max up to 7,546us) is far above
+the spike's 212-214us. The spike measured `decode()` plus `check_crc()` alone; `rle_bench.py`
+measures the real `decode_capture()`/`analyze_frame()` call, including `decode_result()`'s dict
+construction, and it decodes every new capture rather than sampling every Nth one the way
+`run_scenario.py` does - so this is not yet evidence that `analyze_frame()` itself is slow, only
+that this particular loop is. The same run lost more replies to mailbox overwrite than it kept
+(5,017 of ~9,430 at 300; 4,970 of ~9,380 at 600), consistent with a poll loop too slow to keep up
+with a one-slot mailbox at the full reply rate. Neither figure is a regression from anything
+verified before now - there was no prior number to regress from - but both need separating out
+(loop overhead vs. `analyze_frame()` cost) before the decode-cost comparison against the sample
+receiver can be trusted.
+
+Still not settled: everything else this section's "Not settled by this pass" already named -
+behaviour when the ESC does not reply, replies partially, or before arming; a stalled or slow
+drain; and frame-for-frame agreement against the sample receiver on live replies.
+
+*Hardware validation, part 2 - statistical comparison (2026-09-26).* Same bench session as part 1
+(same motor, prop, ESC, throttle 100): the sample receiver's existing regression scenarios
+(`telemetry_settled_300/600.json`) gave 99/99 CRC-valid (a decoded sample - `run_scenario.py`
+decodes every 20th new capture by design) with median eRPM 21,127 at DSHOT300 and 21,490 at
+DSHOT600; the frame receiver's `rle_bench.py` run from part 1 gave 4,413/4,413 and 4,410/4,410
+(every capture it saw) with median eRPM 21,067 and 21,186. Both receivers clear the same
+threshold at both speeds, with eRPM agreeing within ~450 (300) and ~300 (600) - normal
+run-to-run variation, not a discrepancy.
+
+This is a statistical comparison, not the frame-for-frame one this section originally asked for:
+the frame receiver's real 19-instruction program fills its PIO block alongside `dshot_bidir_tx`
+(32 of 32 slots), so there is no room left for `dshot_bidir_rx` on the same block to capture the
+same live reply the way the original validation plan assumed a spare state machine could. The
+frame-for-frame check that *is* possible stays the offline one already done: the PC model
+(`scripts/simulate_frame_receiver.py`) against 10,867 stored raw captures.
+
+The two "records published but never seen" counts from these runs (sample: 10,039 of 12,029 at
+300; frame: 5,017 of ~9,430 at 300) are not a fair receiver-to-receiver comparison either -
+`run_scenario.py`'s loop also does per-tick SD writes and steps a throttle profile across 4
+motors, work `rle_bench.py`'s loop doesn't do at all, so they measure two different loops'
+overhead more than the two receivers' relative cost. Separating decode cost from loop overhead is
+still open, per part 1's note above.
+
+*Hardware validation, part 3 - stalled drain, corrected (2026-09-26).* An earlier version of this
+note reported that a full RX FIFO corrupts a frame-receiver capture rather than merely delaying
+it, based on `tests/experimental/test_rle_stalled_drain.py`: a burst of 20 frames with no drain at
+all came back with 3 of 5 drained captures corrupted (bad CRC; one also failing `marker_ok`). A
+fix (`fifo_join=PIO.JOIN_RX`, doubling the FIFO to 8 one-word captures, the same fix
+`dshot_bidir_rx` already has) was implemented on that basis. Both the finding and the fix were
+wrong, and both are reverted - `dshot_bidir_rx_frame` has no `fifo_join`.
+
+The finding was a bug in the test, not the receiver. The burst paced commands at `motor.frame_us`
+(~54us at DSHOT300) - the TX bit-shift time only, not the ESC's own reply (another ~54us at this
+profile's bit period, plus a ~4us predelay). Re-arming TX that fast drove the line again before
+the ESC's reply had finished, corrupting it by interference on the wire - a failure that looks
+identical to a genuine RX-FIFO-stall corruption once only the drained result is inspected.
+Re-running the same burst with the interval widened to comfortably exceed a full reply's duration
+(200us) came back clean - at the FIFO's original, unmodified depth, and at bursts up to 60 frames
+with zero drains, both with and without the (now-reverted) `fifo_join`. Every run showed the same
+pattern: exactly depth+1 captures drained (5 at depth 4, 9 at depth 8) regardless of how many
+frames were sent beyond that, all of them `marker_ok` and CRC-valid. This matches
+`dshot_bidir_rx_frame`'s own comment, and the structural read that motivated it: the 21st of 21
+reads is the one autopush fires on, and every bit is already shifted into the ISR by then, so a
+full FIFO stalls holding a complete, correct value - it does not corrupt one. The cost of a long
+stall is silently missing later replies (the state machine does not resume watching for the next
+release IRQ until room frees), not wrong data.
+
+Lesson worth keeping: reading the PIO program's structure predicted the correct answer twice (the
+frame-for-frame agreement in the "Model" section above, and this property) and the badly-paced
+test contradicted it once, before a corrected test confirmed the structural reading was right.
+Read the structure, then verify the test itself paces the wire correctly before trusting a
+hardware result that disagrees with it.
+
+Not yet checked: the arming-window and no-reply behaviours this section's "Not settled" list
+still names.
+
+*Hardware validation, part 4 - arming window (2026-09-26).* `dshot_bidir_rx_frame` waits for a
+falling edge exactly like `dshot_bidir_rx`, so early in arming - before the ESC has locked onto
+bidirectional DShot - a capture could in principle be TX's own waveform rather than a genuine
+reply. `tests/experimental/test_rle_arming_echo.py` drove a lone bidirectional motor plus the
+usual three idle unidirectional ones directly (no `MotorGroup`, so nothing discards captures the
+way `update()` does while `ARMING`) at zero throttle for 3 seconds, bucketing every capture by
+500ms slice, then continued at throttle 100 for 2 seconds as a clean baseline.
+
+Result: `marker_ok` was 100% in every bucket, including the very first 500ms - no sign of the
+receiver locking onto TX's own waveform, which would be expected to show up as scrambled marker
+bits, not a clean 0 every time. `crc_ok` told a different story: 0% in the first 500ms, 74% in the
+second, 100% by the third (1000ms), an unexplained dip back to 39% at 1500ms, then 100% from
+2000ms onward and through the whole spin baseline. Marker-bit correctness with a fluctuating CRC
+rate reads as the ESC replying almost immediately with genuine (not echoed) frames, some of them
+bit-error-prone during its own bidirectional-mode lock-on transient, rather than the receiver
+mis-triggering on our own signal. This has no bearing on correctness today - `MotorGroup.update()`
+already discards every capture taken during `ARMING` regardless of validity - but it is new
+information should the arming duration or lock-on timing ever need tuning.
+
+*Hardware validation, part 5 - no reply (2026-09-26, reasoned from source, not bench-forced).*
+Simulating "the ESC never replies" needs depowering or disconnecting it mid-run, which this
+session's remote access to the bench can't do. Reasoning from the program instead:
+`dshot_bidir_rx_frame`'s `wait(0, pin, 0)` marker-wait has no timeout, identical to
+`dshot_bidir_rx`'s own step 3 - if the ESC never replies to a given frame, the state machine
+blocks there indefinitely, and does not return to `wrap_target()` to watch for the *next* frame's
+release IRQ until some falling edge, any falling edge, finally arrives. When the ESC eventually
+does reply again, that reply's own marker edge is what unblocks it; the read logic doesn't care
+which frame's window it's nominally in, so it decodes correctly, then resyncs cleanly via the
+fresh IRQ wait for every frame after that. `CaptureMailbox.latest()` returns `None` until the
+first real publish regardless of receiver (unit-tested, receiver-independent), so an application
+sees nothing during the gap rather than stale or garbage data.
+
+This is a smaller extrapolation than it would have been before part 3 above: the stalled-drain
+test already exercised the same "not listening for many frames, then resyncs cleanly on
+`wrap_target()`" pattern far more aggressively (60 frames of TX activity with RX not listening,
+there stalled on the FIFO push rather than the marker wait) and it held up on the bench. Not
+proof of the no-reply case specifically, but not a bare unforced reading either.
+
+*Decision (2026-09-26): adopt the frame receiver.* Parts 1-5 above are the validation this idea's
+own "How it could be validated" and "Done when" asked for before deciding whether it replaces the
+oversampling (sample) receiver, stays as a second option, or is dropped. Summary of what was
+checked: `start()`/`arm()` re-initializing this program on a PIO block it fills alone, at both
+DSHOT300 (4,413/4,413 CRC-valid, median eRPM 21,067) and DSHOT600 (4,410/4,410, 21,186), and across
+a disarm/arm restart (143/143 CRC-valid both cycles); a same-day statistical comparison against
+the sample receiver's own regression scenarios, agreeing within normal run-to-run variation at
+both speeds; a stalled drain up to 60 frames with zero drains, holding correct values rather than
+corrupting them, at the FIFO's unmodified default depth; an arming window showing no sign of the
+receiver mis-triggering on TX's own waveform; and no-reply behavior reasoned to match the sample
+receiver's own, on the same resync mechanism the stalled-drain test already exercised. No problem
+specific to the frame receiver surfaced anywhere in this pass.
+
+**Decision: adopt the frame receiver as the sole production receiver.** The sample receiver
+(`dshot_bidir_rx`) moves out of `BidirectionalDShot` entirely rather than staying as a second
+option - the deciding factor was not a technical shortcoming of either receiver, but the ongoing
+cost of a testing/analysis harness that would otherwise support two capture formats indefinitely
+for no production benefit, now that the replacement is validated. Raw capture is not deleted
+outright: it still has two uses beyond diagnostics (measuring `BIDIR_PROFILES`' `expected_ratio`
+for a new ESC unit, since the frame receiver has no period search of its own to fall back on; and
+the PC-side tooling - `scripts/simulate_frame_receiver.py`, `scripts/verify_gcr_decode_port.py` -
+that consumes raw captures directly) and moves to a standalone script instead. Tracked as W27
+(port the harness to frame-only 1-word records) and W28 (remove the sample receiver from the
+driver, build the standalone tool) in the backlog.
+
+*Harness port (2026-09-26), bench-verified.* Porting `run_scenario.py` to build bidirectional
+motors with the frame receiver surfaced the risk the adoption decision above only described in the
+abstract: every existing scenario with a bidirectional motor wired a unidirectional motor onto the
+same PIO block (safe for the sample receiver, which leaves room in its block; not safe for the
+frame receiver, which fills its block alone). `scenario.py` gained a fail-fast check for exactly
+this - a scenario JSON that makes the same mistake in the future gets a clear message instead of an
+on-device ENOMEM - and every affected scenario was rewired, moving the idle unidirectional motors
+onto the otherwise-unused PIO2 block.
+
+Once the bench came back, this ran clean: single-motor scenarios at both speeds, and - the
+combination this section's own layout table flagged as never run on hardware - two frame-receiver
+pairs each filling a full PIO block simultaneously, including under forced GC pauses and a 60-second
+diverging-throttle soak, all 100% CRC-valid with correctly independent eRPM per channel.
+`pull_captures.py`/`scripts/analyze_bidir_capture_log.py`'s full pipeline was verified against real
+1-word-record data too: the offline re-decode of 14,922 records agreed with the device's own
+sampled tally exactly. Full numbers are in the backlog's W27 entry. One DSHOT600 two-motor run hit
+BUG-002 (the pre-existing, already-documented intermittent no-spin issue) and cleared on immediate
+retry - not a regression from this work; see BUG-002's own record.
+
+*Sample receiver removed from BidirectionalDShot (2026-09-26), driver change bench-verified,
+calibration tool BROKEN.* `receiver=`/`SAMPLE_RECEIVER`/`FRAME_RECEIVER` are gone - the frame
+receiver is the only one `BidirectionalDShot` builds, and its constructor no longer takes a
+receiver argument at all. `CaptureMailbox` lost its `capture_words` parameter for the same reason:
+nothing constructs it with any value but 1 any more, so it went back to a fixed `WORDS = 1` module
+constant (the shape it had before the sample receiver ever needed something wider). This part is
+covered by the harness port's own bench runs above, which never exercised the removed code paths
+in the first place. `dshot_bidir_rx` and `gcr_decode.py`'s raw-decode functions (`find_edges`,
+`estimate_bit_period_fixed`, `reconstruct_frame`, `analyze_capture`) are not deleted - they back a
+new standalone tool, `tests/experimental/calibrate_bidir_rx.py`, which builds a bare TX/raw-RX pair
+directly (not through `BidirectionalDShot`) to measure a new ESC unit's `expected_ratio`, since the
+frame receiver has no period search of its own to fall back on.
+
+That tool does not work. Four bench runs (two send intervals, both activation orders for the TX/RX
+pair) all produced the same result: 200 captures at a constant throttle, word 0 varying by exactly
+one bit, words 1-3 always exactly `0xffffffff`. A real GCR reply fills all 4 words with activity
+that varies with eRPM even at constant throttle; this pattern reads as the receiver locking onto
+TX's own fixed, repeating command waveform instead - bidirectional mode most likely never engaged
+in this manually-built setup. The exact cause, relative to what `BidirectionalDShot`'s own
+construction does differently, was not isolated. Left broken for a future session - see the
+script's own header comment for the full account.
 
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 

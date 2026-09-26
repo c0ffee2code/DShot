@@ -5,13 +5,20 @@ real hardware capture words, using each session's own tuned fixed-ratio
 profile (driver/dshot_profiles.py's BIDIR_PROFILES). Catches a mechanical
 porting bug for free, before MicroPython ever enters the picture.
 
+Also checks both files' analyze_frame() (the frame receiver's own path,
+see verify_frame_parity()) against 4096 synthetic values - there are no
+real frame-receiver capture sessions to diff yet, so this runs
+unconditionally, with or without arguments, unlike the analyze_capture()
+sweep below.
+
 Not a one-off: this is a permanent regression check, kept alongside both
 files - re-run it whenever either changes.
 
 Run from project root:
   python scripts/verify_gcr_decode_port.py [captures/<session> ...]
 
-With no arguments, checks every session under captures/.
+With no arguments, checks every session under captures/ (plus the frame
+parity check, which needs no sessions).
 
 **Scope, since 2026-09-12 (see decision/ADR-002-bidirectional-dshot.md's
 fixed-ratio RX sampling section):** this only checks sessions recorded at
@@ -71,8 +78,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "driver"))
 
-from dshot_bidir_decode import analyze_capture as reference_analyze
-from gcr_decode import analyze_capture as port_analyze
+from dshot_bidir_decode import (analyze_capture as reference_analyze,
+                                analyze_frame as reference_analyze_frame,
+                                GCR_ENCODE_TABLE, crc_inverted)
+from gcr_decode import analyze_capture as port_analyze, analyze_frame as port_analyze_frame
 from dshot_profiles import BIDIR_PROFILES
 from capture_session import load_meta, iter_groups, rx_clock_hz_for, dshot_speed_for, expects_bidir_groups
 
@@ -191,7 +200,48 @@ def verify_session(session_dir):
     return (total, mismatches, expected_divergences, "ok")
 
 
+def verify_frame_parity():
+    """
+    Synthetic parity check between driver/gcr_decode.py's analyze_frame() and
+    this script's own, for the frame receiver's path. Unlike analyze_capture()'s
+    sweep above, there are no stored real-capture sessions to diff against yet
+    (the harness only produces frame-receiver captures once BidirectionalDShot
+    is built with it - see decision/ADR-002-bidirectional-dshot.md's "run-length
+    capture" section), so this synthesizes every 12-bit value instead: GCR-encode
+    it with the inverted CRC into the 21-bit frame dshot_bidir_rx_frame would push,
+    and check both implementations agree on the whole result dict.
+
+    Returns a list of (data12, field, reference_value, port_value) mismatches.
+    """
+    mismatches = []
+    for data12 in range(4096):
+        number = (data12 << 4) | crc_inverted(data12)
+        code = 0
+        for shift in (12, 8, 4, 0):
+            code = (code << 5) | GCR_ENCODE_TABLE[(number >> shift) & 0xF]
+        level = 0
+        frame = 0
+        for shift in range(19, -1, -1):
+            level ^= (code >> shift) & 1
+            frame = (frame << 1) | level
+
+        ref = reference_analyze_frame(frame)
+        port = port_analyze_frame(frame)
+        for field in ("full", "marker_ok", "crc_ok", "crc_kind", "data12", "erpm"):
+            if ref[field] != port[field]:
+                mismatches.append((data12, field, ref[field], port[field]))
+                break
+
+    return mismatches
+
+
 def main():
+    frame_mismatches = verify_frame_parity()
+    print(f"Frame receiver parity: 4096 synthetic values checked, {len(frame_mismatches)} mismatches")
+    for data12, field, ref_value, port_value in frame_mismatches[:5]:
+        print(f"    mismatch: data12={data12} field={field} reference={ref_value!r} port={port_value!r}")
+    print()
+
     args = sys.argv[1:]
     if args:
         sessions = [Path(a) for a in args]
@@ -200,7 +250,10 @@ def main():
         sessions = sorted(p for p in captures_dir.iterdir() if p.is_dir())
 
     if not sessions:
-        sys.exit("No capture sessions found - run scripts/pull_captures.py first.")
+        if frame_mismatches:
+            sys.exit(1)
+        sys.exit("No capture sessions found - run scripts/pull_captures.py first "
+                 "(the frame-receiver parity check above still ran).")
 
     grand_total = 0
     grand_mismatches = 0
@@ -246,7 +299,7 @@ def main():
               f"but yielded ZERO groups (predates the reply failsafe, or the failsafe failed to catch it):")
         for session_dir in anomaly_sessions:
             print(f"    {session_dir}")
-    if grand_mismatches or anomaly_sessions:
+    if grand_mismatches or anomaly_sessions or frame_mismatches:
         sys.exit(1)
 
 

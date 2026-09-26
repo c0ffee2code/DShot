@@ -63,7 +63,7 @@ REPLY_FAILSAFE_GRACE_MS = 2000
 # an error: arming completes inside update() on Core 1, so a dead loop shows here
 ARM_TIMEOUT_MARGIN_MS = 1000
 
-RECORD_ZERO_WORDS = (0, 0, 0, 0)
+RECORD_ZERO_WORDS = (0,)
 
 
 def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):

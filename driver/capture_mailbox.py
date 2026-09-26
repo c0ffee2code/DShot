@@ -7,37 +7,41 @@
 
 from array import array
 
-# Words in one capture: 128 samples, 32 per word
-WORDS = 4
+# Words in one capture: dshot_bidir_rx_frame pushes one already-reconstructed
+# 21-bit frame per reply.
+WORDS = 1
 
 
 class CaptureMailbox:
     """
     One writer drains captures into it; any other core may read the latest one.
 
-    A reply arrives as exactly 4 words. drain() takes a whole capture from the
-    source (the RX state machine's FIFO) in one bulk read, straight into the
-    published slot. The slot keeps only the latest capture: the application
-    samples telemetry, so a newer capture always replaces an older one.
+    A reply arrives as exactly WORDS words. drain() takes a whole capture from
+    the source (the RX state machine's FIFO) in one bulk read, straight into
+    the published slot. The slot keeps only the latest capture: the
+    application samples telemetry, so a newer capture always replaces an
+    older one.
 
-    Only whole captures are ever read. The RX FIFO is exactly one capture deep,
-    so a capture is complete when 4 words are waiting; with fewer, drain() leaves
-    them where they are, and the word grouping cannot slip.
+    Only whole captures are ever read: a capture is complete when WORDS words
+    are waiting; with fewer, drain() leaves them where they are, and the word
+    grouping cannot slip. How deep the source's own FIFO is relative to
+    WORDS - whether it can hold more than one capture at a time - is the
+    driver's concern, not this class's (see BidirectionalDShot).
 
-    The two cores run in parallel with no global interpreter lock, and a
-    capture is several stores, so a reader could otherwise see half of one
-    capture and half of the next. The slot is guarded by a sequence counter
-    (a seqlock): 0 means nothing published yet, odd means the writer is
+    The two cores run in parallel with no global interpreter lock, and
+    publishing a capture is more than one store (the word, then the
+    timestamp), so a reader could otherwise see one from an old capture and
+    one from a new one. The slot is guarded by a sequence counter (a
+    seqlock): 0 means nothing published yet, odd means the writer is
     mid-update, even means stable. The reader copies the words and accepts them
     only if the counter was even and unchanged across the copy.
 
-    drain() runs on every command-loop tick, so it is written for the hot path.
-    Reading a capture as one bulk get() into a preallocated array costs about a
-    quarter of four separate get() calls and allocates nothing: a single get()
-    returns a Python integer, and a 32-bit word above 30 bits is a heap object,
-    which fed the garbage collector and stalled both cores when it ran. It is
-    also one flat function with no calls to helpers of its own, because a
-    Python-level call here costs about as much as the rest of the loop body.
+    drain() runs on every command-loop tick, so it is written for the hot
+    path: get() into a preallocated array allocates nothing (a word above 30
+    bits would otherwise be a heap object - see ADR-002 for the measured GC
+    cost of that), and it is one flat function with no calls to helpers of
+    its own, since a Python-level call costs about as much as the rest of the
+    loop body.
     """
 
     # How many times latest() re-reads a slot the writer keeps rewriting before
@@ -73,8 +77,8 @@ class CaptureMailbox:
         """
         Take up to `limit` whole captures from the source. Each is published,
         stamped with clock(), when `publish` is true and dropped otherwise.
-        Fewer than 4 words waiting means no complete capture yet: nothing is
-        taken, so get() can never block here.
+        Fewer than WORDS words waiting means no complete capture yet: nothing
+        is taken, so get() can never block here.
 
         Must be called from one place only: while running it is the only writer
         of the published slot.
@@ -99,8 +103,8 @@ class CaptureMailbox:
         since reset(), or the writer kept rewriting the slot for every attempt.
 
         sequence counts published captures since reset(), so a caller can tell
-        a fresh capture from one it has already seen. words is a tuple of the 4
-        raw 32-bit words.
+        a fresh capture from one it has already seen. words is a tuple of
+        WORDS raw 32-bit words.
         """
         for _ in range(self.LATEST_ATTEMPTS):
             seq = self.slot_seq
@@ -108,8 +112,7 @@ class CaptureMailbox:
                 return None
             if seq & 1:
                 continue
-            slot = self.slot_words
-            words = (slot[0], slot[1], slot[2], slot[3])
+            words = tuple(self.slot_words)
             ticks_us = self.slot_ticks_us
             if self.slot_seq == seq:
                 return (ticks_us, seq >> 1, words)

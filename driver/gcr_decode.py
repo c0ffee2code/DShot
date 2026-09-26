@@ -1,35 +1,40 @@
 """
-On-device bidirectional DShot GCR telemetry decoder - MicroPython, mirrors
-scripts/dshot_bidir_decode.py (the PC-side reference) for the fixed-ratio decode
-path. The two differ only in how the bit period is found: this module takes it
-from a tuned profile, the reference can also search for it.
-scripts/verify_gcr_decode_port.py checks that the shared path stays in sync -
-re-run it whenever either file changes.
+On-device bidirectional DShot GCR telemetry decoder - MicroPython.
 
-Decodes the raw captures produced by dshot_bidir_rx: a dense, uniform sampling
-of the pin covering the marker bit, the 20 GCR data bits and the idle tail.
-The real bit period those samples work out to is a per-DShot-speed constant
-(driver/dshot_profiles.py's BIDIR_PROFILES), not something this module searches
-for on every capture - searching is too slow to run on the Pico.
+Two entry points, one per receiver in driver/dshot_pio.py. analyze_frame()
+decodes the frame receiver's (dshot_bidir_rx_frame) already run-length-
+reconstructed 21-bit frame - the path BidirectionalDShot uses.
+analyze_capture() decodes the sample receiver's (dshot_bidir_rx) raw
+oversampled waveform instead, doing the run-length reconstruction here on
+the CPU; it backs the standalone calibration tool that measures
+driver/dshot_profiles.py's BIDIR_PROFILES expected_ratio for a new ESC unit,
+since the frame receiver has no period search of its own.
 
-Each real reply produces FOUR 32-bit words (in_shiftdir=SHIFT_LEFT,
-push_thresh=32): the OLDEST sample in each word is at bit31, the NEWEST at
-bit0. Words concatenate in capture order, giving 128 samples in time order - but
-NOT perfectly uniformly spaced: dshot_bidir_rx's sample loop is a nested 4x32
-structure, which costs 2 extra PIO cycles at each of the 3 "outer pass"
-boundaries (every 32 samples) versus the normal 2-cycles/sample gap within a
-pass. This is fully deterministic, so a sample's position is computed as its
-exact CYCLE (sample_cycle()), not assumed from its index.
+Both share a fixed-ratio decode path with scripts/dshot_bidir_decode.py (the
+PC-side reference), differing only in how the bit period is found: this
+module takes it from a tuned profile (BIDIR_PROFILES), the reference can
+also search for it. scripts/verify_gcr_decode_port.py checks the shared path
+stays in sync - re-run it whenever either file changes.
+
+analyze_capture()'s raw input: each real reply produces FOUR 32-bit words
+(in_shiftdir=SHIFT_LEFT, push_thresh=32) - the OLDEST sample in each word is
+at bit31, the NEWEST at bit0. Words concatenate in capture order, giving 128
+samples in time order - but NOT perfectly uniformly spaced: dshot_bidir_rx's
+sample loop is a nested 4x32 structure, which costs 2 extra PIO cycles at
+each of the 3 "outer pass" boundaries (every 32 samples) versus the normal
+2-cycles/sample gap within a pass. This is fully deterministic, so a
+sample's position is computed as its exact CYCLE (sample_cycle()), not
+assumed from its index.
 
 Unlike the reference script, check_crc() here accepts ONLY the inverted CRC
-polarity. That is deliberate: every CRC-valid capture from real hardware has
-been inverted, matching AM32's firmware source, and accepting the plain
-polarity as well would double the false-accept probability of the 4-bit CRC
-(2/16 instead of 1/16) for a polarity the hardware never produces. The
-reference script accepts both because a stray plain hit is diagnostic there;
-this module is the driver's validity gate and has no such use for it.
+polarity: every CRC-valid capture from real hardware has been inverted,
+matching AM32's firmware source, and accepting the plain polarity as well
+would double the false-accept probability of the 4-bit CRC (2/16 instead of
+1/16) for a polarity the hardware never produces. The reference script
+accepts both because a stray plain hit is diagnostic there; this module is
+the driver's validity gate and has no such use for it.
 
-Method:
+analyze_capture()'s reconstruction method:
 1. Find the edges - the samples whose value differs from the one before - by
    XOR-ing each half-word with itself shifted by one, instead of looking at all
    128 samples one by one. Only about a dozen samples are edges.
@@ -45,12 +50,10 @@ Method:
    fallback.
 4. Differential-decode, then look each 5-bit group up in the GCR table.
 
-Every step works on plain integers, not on lists of per-sample tuples. That is
-about 8 times faster than the per-sample version it replaced (roughly 1.3ms per
-capture instead of 10ms), and it allocates about 16 times less (under 1KB per
-capture instead of 11KB): this runs on the application core, but a garbage
-collection on either core pauses both, so heap churn here shows up as gaps in
-the command loop.
+Every step works on plain integers, not on lists of per-sample tuples: a
+garbage collection on either core pauses both, so heap churn here shows up
+as gaps in the command loop - see ADR-002 for the measured cost this design
+avoids.
 """
 
 GCR_ENCODE_TABLE = [
@@ -244,39 +247,32 @@ def check_crc(dshot_full_number):
     return None, data12
 
 
-def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
+def decode_result(frame):
     """
-    Full pipeline from 4 raw 32-bit capture words to a decoded result.
+    Shared tail of analyze_capture() and analyze_frame(): decode a
+    reconstructed FRAME_LENGTH_BITS-bit frame (marker at the top) into a
+    result dict, without the period fields - each caller's own timing
+    information, if it has any, goes in those.
 
-    expected_ratio/ratio_tolerance feed estimate_bit_period_fixed. They are
-    required: every supported DShot speed has a measured profile in
-    driver/dshot_profiles.py's BIDIR_PROFILES, so there is no search fallback
-    on the device. The PC-side reference (scripts/dshot_bidir_decode.py) keeps
-    its own search for analysing captures taken at any rate.
+    marker_ok is the frame's own top bit read back as 0, the reply's fixed
+    start level. decode() itself never checks it (the differential decode
+    folds the marker's fixed value in implicitly), but a false marker is a
+    sign of a garbled first bit, worth surfacing next to the CRC check rather
+    than dropping it silently.
 
-    Returns None if no edges were found at all (dead line). Otherwise
-    returns a dict with:
-      period_cycles, period_us, bitrate_bps - the measured GCR bit timing
-      full           - the raw 16-bit DShot number (12-bit data + 4-bit CRC),
-                        or None if GCR symbol lookup failed
-      crc_ok         - True if `full`'s CRC matched (inverted polarity only)
-      crc_kind       - "inverted" on a CRC hit, else None
-      data12         - the 12-bit payload (mantissa + exponent), if decoded
-      erpm           - electrical RPM, or None if not decodable/CRC-invalid
+    Returns a dict with:
+      full      - the raw 16-bit DShot number (12-bit data + 4-bit CRC), or
+                  None if GCR symbol lookup failed
+      marker_ok - True if the frame's marker bit read back as 0
+      crc_ok    - True if `full`'s CRC matched (inverted polarity only)
+      crc_kind  - "inverted" on a CRC hit, else None
+      data12    - the 12-bit payload (mantissa + exponent), if decoded
+      erpm      - electrical RPM, or None if not decodable/CRC-invalid
     """
-    edges = find_edges(words)
-    if not edges:
-        return None
-    period = estimate_bit_period_fixed(edges, expected_ratio, ratio_tolerance)
-    if period is None:
-        return None
-    full = decode(reconstruct_frame(words, edges, period))
-    period_us = period / rx_clock_hz * 1_000_000
+    full = decode(frame)
     result = {
-        "period_cycles": period,
-        "period_us": period_us,
-        "bitrate_bps": int(1_000_000 / period_us) if period_us else None,
         "full": full,
+        "marker_ok": (frame >> (FRAME_LENGTH_BITS - 1)) == 0,
         "crc_ok": False,
         "crc_kind": None,
         "data12": None,
@@ -293,4 +289,55 @@ def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
         exponent = (data12 >> 9) & 0x7
         eperiod_us = mantissa << exponent
         result["erpm"] = None if eperiod_us == 0 else 60_000_000 / eperiod_us
+    return result
+
+
+def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
+    """
+    Full pipeline from 4 raw 32-bit capture words (dshot_bidir_rx's output) to
+    a decoded result: find the edges, estimate the bit period, run-length
+    reconstruct the frame, then decode_result().
+
+    expected_ratio/ratio_tolerance feed estimate_bit_period_fixed. They are
+    required: every supported DShot speed has a measured profile in
+    driver/dshot_profiles.py's BIDIR_PROFILES, so there is no search fallback
+    on the device. The PC-side reference (scripts/dshot_bidir_decode.py) keeps
+    its own search for analysing captures taken at any rate.
+
+    Returns None if no edges were found at all (dead line). Otherwise returns
+    decode_result()'s dict plus the measured GCR bit timing: period_cycles,
+    period_us, bitrate_bps.
+    """
+    edges = find_edges(words)
+    if not edges:
+        return None
+    period = estimate_bit_period_fixed(edges, expected_ratio, ratio_tolerance)
+    if period is None:
+        return None
+    result = decode_result(reconstruct_frame(words, edges, period))
+    period_us = period / rx_clock_hz * 1_000_000
+    result["period_cycles"] = period
+    result["period_us"] = period_us
+    result["bitrate_bps"] = int(1_000_000 / period_us) if period_us else None
+    return result
+
+
+def analyze_frame(frame):
+    """
+    Full pipeline for one frame the frame receiver (dshot_bidir_rx_frame, the
+    only receiver BidirectionalDShot has) already reconstructed in hardware:
+    the same FRAME_LENGTH_BITS-bit integer, marker at the top, that
+    reconstruct_frame() builds from raw samples. Skips find_edges(),
+    estimate_bit_period_fixed() and reconstruct_frame() entirely - the
+    receiver did that work in the state machine, not the CPU.
+
+    Same result shape as analyze_capture(), with period_cycles, period_us and
+    bitrate_bps all None: the frame receiver's bit period is fixed by its
+    clock divider (driver/dshot_profiles.py's frame_rx_speed()), not measured
+    per capture, so there is nothing to report there.
+    """
+    result = decode_result(frame)
+    result["period_cycles"] = None
+    result["period_us"] = None
+    result["bitrate_bps"] = None
     return result

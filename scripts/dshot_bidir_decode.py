@@ -8,6 +8,14 @@ only the inverted CRC polarity (real hardware data shows this ESC only ever
 produces inverted); this script deliberately keeps accepting both, since
 seeing a stray "plain" hit here would itself be diagnostic for exploration.
 
+Most of this module (raw_samples() through analyze_capture()) decodes the
+sample receiver's raw oversampled captures - see the method notes below.
+decode_frame()/analyze_frame() are a separate, much shorter path for the
+frame receiver's already-reconstructed captures (see driver/gcr_decode.py's
+own analyze_frame(), which this mirrors) - used by
+scripts/analyze_bidir_capture_log.py, which is where the harness's own
+sessions go once BidirectionalDShot builds them with the frame receiver.
+
 **Deliberate divergence from the driver, since 2026-09-12:** this module
 keeps its full brute-force bit-period sweep (estimate_bit_period)
 permanently, even though driver/gcr_decode.py deleted its own copy once
@@ -300,6 +308,60 @@ def check_crc(dshot_full_number):
         if crc == expected:
             return name, data12
     return None, data12
+
+
+def decode_frame(frame):
+    """
+    Differential-decode + GCR table lookup directly on a reconstructed
+    integer frame (marker at the top, FRAME_LENGTH_BITS wide) - the format
+    dshot_bidir_rx_frame's already-reconstructed captures use. Counterpart to
+    decode() above, which takes a bit list built from raw oversampled
+    words; this is the integer-native path driver/gcr_decode.py's decode()
+    also uses, since the frame receiver needs no bit-list reconstruction.
+    """
+    data = frame & 0xFFFFF
+    decoded20 = data ^ (data >> 1)
+    nibbles = []
+    for shift in (15, 10, 5, 0):
+        symbol = (decoded20 >> shift) & 0x1F
+        nibble = GCR_DECODE_TABLE.get(symbol)
+        if nibble is None:
+            return None
+        nibbles.append(nibble)
+    return (nibbles[0] << 12) | (nibbles[1] << 8) | (nibbles[2] << 4) | nibbles[3]
+
+
+def analyze_frame(frame):
+    """
+    Full pipeline for one frame the frame receiver (dshot_bidir_rx_frame)
+    already reconstructed - PC-side counterpart to driver/gcr_decode.py's
+    analyze_frame(). No period fields (nothing is measured per capture,
+    the frame receiver's bit period is fixed by its clock divider).
+    marker_ok is the frame's own top bit read back as 0, same as the driver;
+    check_crc() above (this module's own, not the driver's) still accepts
+    both CRC polarities, per this module's stated divergence.
+    """
+    full = decode_frame(frame)
+    result = {
+        "full": full,
+        "marker_ok": (frame >> (FRAME_LENGTH_BITS - 1)) == 0,
+        "crc_ok": False,
+        "crc_kind": None,
+        "data12": None,
+        "erpm": None,
+    }
+    if full is None:
+        return result
+    crc_kind, data12 = check_crc(full)
+    result["crc_kind"] = crc_kind
+    result["data12"] = data12
+    result["crc_ok"] = crc_kind is not None
+    if crc_kind is not None:
+        mantissa = data12 & 0x1FF
+        exponent = (data12 >> 9) & 0x7
+        eperiod_us = mantissa << exponent
+        result["erpm"] = None if eperiod_us == 0 else 60_000_000 / eperiod_us
+    return result
 
 
 def analyze_capture(words, rx_clock_hz, expected_ratio=None, ratio_tolerance=0.0):

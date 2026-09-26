@@ -25,17 +25,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "harness"))
 sys.path.insert(0, str(ROOT / "driver"))
 
-from dshot_bidir_decode import analyze_capture
-from dshot_profiles import BIDIR_PROFILES
+from dshot_bidir_decode import analyze_frame
 from decode_tally import DecodeTally, is_sampled
 from scenario import load_scenario
 
-# ticks_us, throttle0..3, then one 4-word GCR group per motor - must match
-# tests/harness/bidir_capture_sink.py's BidirCaptureSink.RECORD_FMT
-_RECORD_FMT = "<I4H16I"
+# ticks_us, throttle0..3, then one word per motor (the frame receiver's
+# already-reconstructed frame) - must match tests/harness/bidir_capture_sink.py's
+# BidirCaptureSink.RECORD_FMT
+_RECORD_FMT = "<I4H4I"
 _RECORD_SIZE = struct.calcsize(_RECORD_FMT)
 
-_ZERO_GROUP = (0, 0, 0, 0)
+_ZERO_GROUP = (0,)
 
 
 def load_meta(session_dir):
@@ -63,8 +63,8 @@ def most_recent_session(captures_dir):
 
 
 def _motor_words(record, motor_index):
-    base = 5 + motor_index * 4
-    return record[base:base + 4]
+    base = 5 + motor_index
+    return record[base:base + 1]
 
 
 def _new_motor_state():
@@ -80,7 +80,7 @@ def _new_motor_state():
     }
 
 
-def analyze_records(records, bidir_indices, rx_clock_hz, expected_ratio, decode_every):
+def analyze_records(records, bidir_indices, decode_every):
     per_motor = {i: _new_motor_state() for i in bidir_indices}
     overall_largest_gap_us = 0
     last_ticks_us = None
@@ -101,7 +101,7 @@ def analyze_records(records, bidir_indices, rx_clock_hz, expected_ratio, decode_
 
             state = per_motor[index]
             state["completed_groups"] += 1
-            result = analyze_capture(list(words), rx_clock_hz, expected_ratio)
+            result = analyze_frame(words[0])
             state["seen"] += 1
             if is_sampled(state["seen"], decode_every):
                 state["sample"].add(result)
@@ -211,8 +211,6 @@ def main():
     rx_clock_hz = int(meta["rx_clock_hz"])
     bidir_indices = [int(s) for s in meta.get("bidir_motor_indices", "").split(",") if s]
     missed = int(meta.get("captures_missed", 0))
-    profile = BIDIR_PROFILES.get(int(meta["dshot_speed"]))
-    expected_ratio = profile["expected_ratio"] if profile else None
     print(f"dshot_speed={meta.get('dshot_speed')} rx_clock_hz={rx_clock_hz} "
           f"bidir_motors={bidir_indices}")
 
@@ -227,8 +225,7 @@ def main():
             print(f"  motor {index}: {published} captures published")
     print()
 
-    per_motor, overall_largest_gap_us = analyze_records(records, bidir_indices, rx_clock_hz,
-                                                        expected_ratio, scenario.decode_every)
+    per_motor, overall_largest_gap_us = analyze_records(records, bidir_indices, scenario.decode_every)
 
     for index in bidir_indices:
         state = per_motor[index]

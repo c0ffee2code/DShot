@@ -17,7 +17,8 @@ SCENARIOS = sorted((HARNESS / "scenarios").glob("*.json"))
 
 
 def valid_scenario():
-    """A minimal valid scenario: motor 0 bidirectional on PIO0, three idle motors."""
+    """A minimal valid scenario: motor 0 bidirectional alone on PIO0 (its frame
+    receiver fills the block), three idle motors on the free PIO2 block."""
     idle = [{"type": "hold", "throttle": 0, "duration_ms": 1000}]
     return {
         "dshot_speed": "DSHOT300",
@@ -25,9 +26,9 @@ def valid_scenario():
         "motors": [
             {"pin": 6, "sm_id": 0, "bidirectional": True, "rx_sm_id": 1,
              "profile": [{"type": "hold", "throttle": 100, "duration_ms": 1000}]},
-            {"pin": 7, "sm_id": 2, "profile": idle},
-            {"pin": 8, "sm_id": 4, "profile": idle},
-            {"pin": 9, "sm_id": 6, "profile": idle},
+            {"pin": 7, "sm_id": 8, "profile": idle},
+            {"pin": 8, "sm_id": 9, "profile": idle},
+            {"pin": 9, "sm_id": 10, "profile": idle},
         ],
     }
 
@@ -94,6 +95,18 @@ class ScenarioValidationTest(unittest.TestCase):
 
     def test_receiver_id_on_a_unidirectional_motor(self):
         self.rejected(lambda d: d["motors"][1].update(rx_sm_id=3), "bidirectional is false")
+
+    def test_a_unidirectional_motor_cannot_share_a_bidirectional_motors_pio_block(self):
+        self.rejected(lambda d: d["motors"][1].update(sm_id=2), "shares PIO block")
+
+    def test_two_bidirectional_motors_may_share_one_pio_block(self):
+        # Identical programs are loaded once per block (ADR-002's layout table) -
+        # only mixing with a unidirectional motor's different program is rejected.
+        data = valid_scenario()
+        data["motors"][1].update(bidirectional=True, sm_id=2, rx_sm_id=3,
+                                  profile=[{"type": "hold", "throttle": 100, "duration_ms": 1000}])
+        scenario = build_scenario(data)
+        self.assertEqual(scenario.bidir_indices, [0, 1])
 
     def test_every_motor_needs_a_profile(self):
         self.rejected(lambda d: d["motors"][1].pop("profile"), "profile is required")

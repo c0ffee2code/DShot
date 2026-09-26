@@ -116,29 +116,34 @@ class CrcTest(unittest.TestCase):
             self.assertIsNone(gcr_decode.check_crc(number ^ (1 << bit))[0], "bit %d" % bit)
 
 
-class DecodeTest(unittest.TestCase):
-    def frame_for(self, symbols):
-        """A 21-bit frame (marker 0) whose differential decoding is the given 5-bit symbols."""
-        decoded = 0
-        for symbol in symbols:
-            decoded = (decoded << 5) | symbol
-        level = 0
-        data = 0
-        for shift in range(19, -1, -1):
-            level ^= (decoded >> shift) & 1
-            data = (data << 1) | level
-        return data  # marker bit 0 above
+def nibbles16(number):
+    return ((number >> 12) & 0xF, (number >> 8) & 0xF, (number >> 4) & 0xF, number & 0xF)
 
+
+def frame_for(symbols):
+    """A 21-bit frame (marker 0) whose differential decoding is the given 5-bit symbols."""
+    decoded = 0
+    for symbol in symbols:
+        decoded = (decoded << 5) | symbol
+    level = 0
+    data = 0
+    for shift in range(19, -1, -1):
+        level ^= (decoded >> shift) & 1
+        data = (data << 1) | level
+    return data  # marker bit 0 above
+
+
+class DecodeTest(unittest.TestCase):
     def test_a_valid_frame_gives_the_reply_number(self):
         nibbles = (0xA, 0x5, 0x0, 0xF)
-        frame = self.frame_for([GCR_CODE[n] for n in nibbles])
+        frame = frame_for([GCR_CODE[n] for n in nibbles])
         self.assertEqual(gcr_decode.decode(frame), 0xA50F)
 
     def test_a_symbol_outside_the_code_gives_none(self):
         valid = GCR_CODE[3]
         for invalid in (0b00000, 0b00001, 0b01000, 0b11111):
             self.assertNotIn(invalid, GCR_CODE)
-            self.assertIsNone(gcr_decode.decode(self.frame_for([valid, invalid, valid, valid])))
+            self.assertIsNone(gcr_decode.decode(frame_for([valid, invalid, valid, valid])))
 
     def test_the_code_table_matches_the_protocol_code(self):
         self.assertEqual(gcr_decode.GCR_ENCODE_TABLE, GCR_CODE)
@@ -240,6 +245,56 @@ class SyntheticRoundTripTest(unittest.TestCase):
         result = gcr_decode.analyze_capture(words, profile["rx_speed"], profile["expected_ratio"])
         self.assertTrue(result["crc_ok"])
         self.assertIsNone(result["erpm"])
+
+
+class AnalyzeFrameTest(unittest.TestCase):
+    """gcr_decode.analyze_frame(): the frame receiver (dshot_bidir_rx_frame)
+    already reconstructed the frame, so this skips find_edges(),
+    estimate_bit_period_fixed() and reconstruct_frame() - unlike
+    analyze_capture(), it takes the 21-bit frame directly, and has no period
+    to report.
+    """
+
+    def test_a_valid_frame_matches_analyze_capture_on_the_same_reply(self):
+        for words, number, erpm in REAL_DSHOT300:
+            profile = PROFILES["DSHOT300"]
+            edges = gcr_decode.find_edges(words)
+            period = gcr_decode.estimate_bit_period_fixed(edges, profile["expected_ratio"])
+            frame = gcr_decode.reconstruct_frame(words, edges, period)
+
+            result = gcr_decode.analyze_frame(frame)
+
+            self.assertTrue(result["crc_ok"], hex(words[0]))
+            self.assertEqual(result["full"], number)
+            self.assertAlmostEqual(result["erpm"], erpm, places=1)
+            self.assertTrue(result["marker_ok"])
+
+    def test_period_fields_are_none(self):
+        frame = frame_for([GCR_CODE[n] for n in (0xA, 0x5, 0x0, 0xF)])
+        result = gcr_decode.analyze_frame(frame)
+        self.assertIsNone(result["period_cycles"])
+        self.assertIsNone(result["period_us"])
+        self.assertIsNone(result["bitrate_bps"])
+
+    def test_every_12_bit_value_round_trips(self):
+        for data12 in range(4096):
+            frame = frame_for([GCR_CODE[n] for n in nibbles16(reply_number(data12))])
+            result = gcr_decode.analyze_frame(frame)
+            self.assertTrue(result["crc_ok"], data12)
+            self.assertEqual(result["data12"], data12)
+
+    def test_a_false_marker_bit_is_reported(self):
+        frame = frame_for([GCR_CODE[n] for n in (0xA, 0x5, 0x0, 0xF)])
+        frame |= 1 << 20  # force the marker bit high
+        result = gcr_decode.analyze_frame(frame)
+        self.assertFalse(result["marker_ok"])
+
+    def test_a_symbol_outside_the_code_gives_no_full_number(self):
+        valid = GCR_CODE[3]
+        frame = frame_for([valid, 0b00001, valid, valid])
+        result = gcr_decode.analyze_frame(frame)
+        self.assertIsNone(result["full"])
+        self.assertFalse(result["crc_ok"])
 
 
 class UnusableCaptureTest(unittest.TestCase):

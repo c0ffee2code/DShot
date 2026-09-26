@@ -41,7 +41,7 @@
     },
     {
       "pin": 7,
-      "sm_id": 2,
+      "sm_id": 8,
       "profile": [
         {
           "type": "hold",
@@ -52,7 +52,7 @@
     },
     {
       "pin": 8,
-      "sm_id": 4,
+      "sm_id": 9,
       "profile": [
         {
           "type": "hold",
@@ -63,7 +63,7 @@
     },
     {
       "pin": 9,
-      "sm_id": 6,
+      "sm_id": 10,
       "profile": [
         {
           "type": "hold",
