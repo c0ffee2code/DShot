@@ -52,6 +52,19 @@ data, not yet chased.
 **Channel:** seen on channel 1 (this session) and previously on both channel 1 and channel 3
 (2026-09-20 batch) — not obviously specific to one channel or one PIO block.
 
+**2026-09-26 (frame receiver, `two_channel_gc_600`, three consecutive runs):** run 1: both motors
+stuck at 917, with CRC failures/invalid decodes mixed in (motor 0: 222/239 CRC-valid, 3 invalid;
+motor 2: 222/239, 1 invalid) - matches the earlier invalid-decode correlation. Run 2 (immediate
+retry): motor 0 spun cleanly (246/246 CRC-valid, median 21,490); motor 2 stuck at 917 with **0
+CRC failures and 0 invalid decodes** - perfectly clean telemetry, motor still not spinning. Run 3
+(immediate retry): both motors spun cleanly (246/246 each, medians 21,368 and 22,255). This is the
+first time the symptom has been seen on the frame receiver, an entirely different capture/decode
+pipeline from every prior instance (all previously on the sample receiver) - the same failure mode
+surviving a full receiver rewrite is evidence against a receiver-implementation-specific cause and
+for something at the ESC or arming-timing level, consistent with this report's existing leads. It
+also weakens the invalid-decode correlation as a reliable indicator: run 2's clean-telemetry,
+no-spin case had no invalid decodes at all.
+
 ## What's been ruled out
 
 - **Not caused by BUG-001 (the disarm-hang fix), and not fixed by it either.** The no-spin
