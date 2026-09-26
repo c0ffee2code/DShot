@@ -817,14 +817,10 @@ path is proven; the continuous transaction engine is not**, and that engine — 
 table, nibble order, CRC polarity, or dense-capture decoder — is where the remaining work
 lives.
 
-**Design constraint (2026-08-25, also recorded in CLAUDE.md; narrowed further 2026-09-26 —
-see below):** this is a pet/exploration project. Supported ESC firmware families were
-exactly two at the time this was written: **BLHeli_S** (unidirectional baseline — stock
-BLHeli_S has no bidirectional DShot) and **AM32** (the bidirectional target). As of
-2026-09-26, CLAUDE.md narrowed this further to **AM32 only** - BLHeli_S is no longer a
-supported target either, so read "BLHeli_S" below as the historical unidirectional baseline
-this review was written against, not a currently accommodated firmware. AM32's decisive
-advantage is being open source: its firmware source is this
+**Design constraint (2026-08-25, also recorded in CLAUDE.md):** this is a pet/exploration
+project. Supported ESC firmware families are exactly two: **BLHeli_S** (unidirectional
+baseline — stock BLHeli_S has no bidirectional DShot) and **AM32** (the bidirectional
+target). AM32's decisive advantage is being open source: its firmware source is this
 project's ground truth, so "what does the ESC actually do" is answered by reading
 `Src/dshot.c`/`Src/signal.c`, not by generalizing from articles. Consequences for this
 review: the executive summary's risk 7 ("generalizing beyond the currently characterized
@@ -930,10 +926,9 @@ the third-party review; remediation lands in W15/W16 and amendments to W1/W4/W9 
   when fixing the spec (W2/W15).
 - **A7 — "Recommendation: Bluejay" is dead under the design constraint.** The Firmware
   Compatibility section still recommends flashing Bluejay onto the BLHeli_S ESCs. Under the
-  supported-ESC constraint as it stood then (BLHeli_S = unidirectional as-is, AM32 = the
-  bidirectional target) no Bluejay flash is planned; the section needs a superseded marker so
-  a future session doesn't pursue it. (BLHeli_S itself was dropped from the supported-ESC
-  constraint entirely on 2026-09-26 - doubly dead now.)
+  supported-ESC constraint (BLHeli_S = unidirectional as-is, AM32 = the bidirectional
+  target) no Bluejay flash is planned; the section needs a superseded marker so a future
+  session doesn't pursue it.
 - **Checked and benign:** the two confirmation sweeps report *identical* throttle-100
   statistics (mean 3,092, range 3,088–3,097) — it looks like a copy-paste error but is
   real quantization: at ~21.6k eRPM the encoding sits at exponent=3, where adjacent
@@ -1046,11 +1041,10 @@ but not a squash).
    at https://github.com/am32-firmware/AM32
    (`Src/dshot.c` `gcr_encode_table`, `Src/signal.c` `transfercomplete()`); Betaflight
    RP2350 PR #14618 (`src/platform/PICO/dshot.pio`, `dshot_bidir_pico.c`).
-   Design constraint (see the maintainer assessment above and CLAUDE.md, the live source of
-   truth for this): AM32 only, as of 2026-09-26 - BLHeli_S, the second family this review
-   was written against, is no longer supported either. When in doubt about ESC behavior,
-   read AM32's source — do not design for, or add configuration surface for, other ESC
-   families.
+   Design constraint (see the maintainer assessment above and CLAUDE.md): supported ESCs
+   are BLHeli_S (unidirectional) and AM32 (bidirectional) only. When in doubt about ESC
+   behavior, read AM32's source — do not design for, or add configuration surface for,
+   other ESC families.
 7. Code style (CLAUDE.md): MicroPython, snake_case, no `_`-prefix visibility convention, no
    f-strings on error paths under `driver/`, and never add `_thread` under `driver/`
    (ADR-004).
