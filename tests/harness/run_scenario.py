@@ -93,7 +93,9 @@ def check_expect(expect, largest_gap_us, records, elapsed_ms, loop_gap_us):
         return
 
     # The longest gap between two update() calls, measured on Core 1 itself. The
-    # ESC disarms on its own after 100-250ms without a frame.
+    # ESC disarms on its own after roughly 100-250ms without a frame - a figure
+    # measured on the now-unsupported BLHeli_S ESC (see CLAUDE.md/ADR-004), not
+    # re-verified against AM32.
     max_loop_gap_ms = expect.get("max_loop_gap_ms")
     if max_loop_gap_ms is not None and loop_gap_us > max_loop_gap_ms * 1000:
         raise RuntimeError(
