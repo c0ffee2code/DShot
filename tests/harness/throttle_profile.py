@@ -14,6 +14,12 @@
 # Pure Python, no MicroPython-only APIs - reused as-is by the PC-side
 # scripts/check_scenario.py smoke test, not just on-device.
 
+# Mirrors driver/dshot_pio.py's MAX_THROTTLE rather than importing it: that
+# module has top-level `machine`/`rp2` imports (MicroPython-only) and this one
+# is also loaded PC-side (see DSHOT_SPEED_NAMES in scenario.py for the same
+# pattern). Update both places together if it ever changes.
+MAX_THROTTLE = 2047
+
 
 def compile_segments(segments, cursor, throttle):
     """
@@ -28,6 +34,10 @@ def compile_segments(segments, cursor, throttle):
 
         if kind == "hold":
             value = segment["throttle"]
+            if value < 0 or value > MAX_THROTTLE:
+                raise ValueError(
+                    "hold throttle must be 0.." + str(MAX_THROTTLE) + ", got " + str(value)
+                )
             duration_ms = segment["duration_ms"]
             waypoints.append((cursor, value))
             throttle = value
@@ -35,6 +45,10 @@ def compile_segments(segments, cursor, throttle):
 
         elif kind == "ramp":
             to = segment["to"]
+            if to < 0 or to > MAX_THROTTLE:
+                raise ValueError(
+                    "ramp target must be 0.." + str(MAX_THROTTLE) + ", got " + str(to)
+                )
             step = segment["step"]
             duration_ms = segment["duration_ms"]
             if step <= 0:
