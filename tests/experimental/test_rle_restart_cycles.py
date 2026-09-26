@@ -82,8 +82,7 @@ def run_one_cycle(group, runner, cycle):
 
 def main():
     motors = [
-        BidirectionalDShot(0, Pin(6), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=1,
-                            receiver=BidirectionalDShot.FRAME_RECEIVER),
+        BidirectionalDShot(0, Pin(6), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=1),
         UnidirectionalDShot(4, Pin(7), DSHOT_SPEEDS.DSHOT300),
         UnidirectionalDShot(5, Pin(8), DSHOT_SPEEDS.DSHOT300),
         UnidirectionalDShot(6, Pin(9), DSHOT_SPEEDS.DSHOT300),

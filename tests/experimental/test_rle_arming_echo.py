@@ -74,8 +74,7 @@ def report(label, buckets, bucket_count):
 
 
 def main():
-    motor = BidirectionalDShot(0, Pin(6), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=1,
-                                receiver=BidirectionalDShot.FRAME_RECEIVER)
+    motor = BidirectionalDShot(0, Pin(6), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=1)
     others = [
         UnidirectionalDShot(4, Pin(7), DSHOT_SPEEDS.DSHOT300),
         UnidirectionalDShot(5, Pin(8), DSHOT_SPEEDS.DSHOT300),

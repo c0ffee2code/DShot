@@ -159,8 +159,7 @@ def measured(update, times):
 def build_motor(spec, dshot_speed):
     if spec.bidirectional:
         return BidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed,
-                                  rx_state_machine_id=spec.rx_sm_id,
-                                  receiver=BidirectionalDShot.FRAME_RECEIVER)
+                                  rx_state_machine_id=spec.rx_sm_id)
     return UnidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed)
 
 

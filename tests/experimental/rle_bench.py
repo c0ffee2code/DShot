@@ -1,16 +1,15 @@
 # The frame receiver (dshot_bidir_rx_rle) against a real ESC, driven through
-# the same BidirectionalDShot/MotorGroup facade every other motor uses
-# (BidirectionalDShot(..., receiver=BidirectionalDShot.FRAME_RECEIVER)).
-# Shared by test_rle_receiver_300.py and test_rle_receiver_600.py, which pick
-# the speed.
+# the same BidirectionalDShot/MotorGroup facade every other motor uses - it is
+# the only receiver BidirectionalDShot has (W28: the sample receiver,
+# dshot_bidir_rx, moved out of the class - see ADR-002's "run-length capture"
+# section). Shared by test_rle_receiver_300.py and test_rle_receiver_600.py,
+# which pick the speed.
 #
-# Purpose: dshot_bidir_rx_rle rebuilds the ESC's reply in the state machine and
-# hands the CPU one already-reconstructed 21-bit frame per reply
-# (gcr_decode.analyze_frame()), instead of 128 raw samples the CPU turns into
-# a frame (gcr_decode.analyze_capture()). This runs it on the bench, on the
-# same wiring and at the same settled throttle as the telemetry_settled
-# scenarios, which are the baseline for the sample receiver (>=98% CRC-valid,
-# eRPM around 21k at throttle 100), so the two can be compared.
+# A single-bidirectional-motor scenario (single_channel_baseline.json,
+# telemetry_settled_300/600.json) now checks the same thing through the
+# regular harness, once that port (W27) is verified on hardware - this script
+# is kept as a simpler, standalone fallback until then, and can retire once
+# it is no longer needed.
 #
 # CaptureMailbox keeps only the latest capture, so per-frame counting comes
 # from its own sequence number (raw_telemetry()'s second element), the same
@@ -20,8 +19,7 @@
 # between samples), the DecodeTally tests/harness/run_scenario.py's own
 # scenarios are judged on (crc_ok / crc_fail / invalid, median eRPM), the
 # marker-bit check DecodeTally does not track, and the CPU cost of
-# decode_telemetry() - all that is left for the CPU, versus about 1.3ms for
-# the sample path's analyze_capture(). Any failure raises.
+# decode_telemetry(). Any failure raises.
 #
 # Hardware: as tests/harness scenarios - 4-in-1 AM32 ESC, channel 1 -> GPIO 6
 # (motor + prop mounted, the only bidirectional channel), channels 2-4 ->
@@ -52,8 +50,7 @@ def run(dshot_speed):
     """Run the bench check at `dshot_speed` (a DSHOT_SPEEDS value); any failure raises."""
     print("=== Frame receiver test ===")
 
-    bidir = BidirectionalDShot(0, Pin(6), dshot_speed, rx_state_machine_id=1,
-                                receiver=BidirectionalDShot.FRAME_RECEIVER)
+    bidir = BidirectionalDShot(0, Pin(6), dshot_speed, rx_state_machine_id=1)
     motors = MotorGroup([
         bidir,
         UnidirectionalDShot(4, Pin(7), dshot_speed),
