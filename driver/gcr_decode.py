@@ -321,9 +321,9 @@ def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
 
 def analyze_frame(frame):
     """
-    Full pipeline for one frame the frame receiver (dshot_bidir_rx_rle, see
-    BidirectionalDShot's FRAME_RECEIVER) already reconstructed in hardware: the
-    same FRAME_LENGTH_BITS-bit integer, marker at the top, that
+    Full pipeline for one frame the frame receiver (dshot_bidir_rx_rle, the
+    only receiver BidirectionalDShot has) already reconstructed in hardware:
+    the same FRAME_LENGTH_BITS-bit integer, marker at the top, that
     reconstruct_frame() builds from raw samples. Skips find_edges(),
     estimate_bit_period_fixed() and reconstruct_frame() entirely - the
     receiver did that work in the state machine, not the CPU.
