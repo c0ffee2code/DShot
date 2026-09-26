@@ -1,36 +1,41 @@
-# The run-length PIO receiver (dshot_bidir_rx_rle) against a real ESC. Shared by
-# test_rle_receiver_300.py and test_rle_receiver_600.py, which pick the speed.
+# The frame receiver (dshot_bidir_rx_rle) against a real ESC, driven through
+# the same BidirectionalDShot/MotorGroup facade every other motor uses
+# (BidirectionalDShot(..., receiver=BidirectionalDShot.FRAME_RECEIVER)).
+# Shared by test_rle_receiver_300.py and test_rle_receiver_600.py, which pick
+# the speed.
 #
 # Purpose: dshot_bidir_rx_rle rebuilds the ESC's reply in the state machine and
-# hands the CPU one 21-bit frame per reply, instead of 128 raw samples that the
-# CPU turns into a frame. This runs it on the bench, on the same wiring and at
-# the same settled throttle as the telemetry_settled scenarios, which are the
-# baseline for the raw receiver (>=98% CRC-valid, eRPM around 21k at throttle
-# 100), so the two can be compared.
+# hands the CPU one already-reconstructed 21-bit frame per reply
+# (gcr_decode.analyze_frame()), instead of 128 raw samples the CPU turns into
+# a frame (gcr_decode.analyze_capture()). This runs it on the bench, on the
+# same wiring and at the same settled throttle as the telemetry_settled
+# scenarios, which are the baseline for the sample receiver (>=98% CRC-valid,
+# eRPM around 21k at throttle 100), so the two can be compared.
 #
-# The bidirectional motor uses the run-length receiver and its own drain in
-# place of the CaptureMailbox: the mailbox takes 4-word captures, this receiver
-# produces one word per reply. The drain keeps every frame in a ring for Core 0 to decode at its own pace, which also gives
-# a per-frame count (the mailbox keeps only the latest).
+# CaptureMailbox keeps only the latest capture, so per-frame counting comes
+# from its own sequence number (raw_telemetry()'s second element), the same
+# way tests/harness/run_scenario.py counts missed captures.
 #
-# Reports: frames received, how many decode to a valid GCR frame and pass the
-# CRC, the median eRPM, and the CPU cost of decoding a frame (decode() plus
-# check_crc(); the raw path's whole decode is about 1.3ms). Any failure raises.
+# Reports: frames received (and how many the sequence numbers say were missed
+# between samples), the DecodeTally tests/harness/run_scenario.py's own
+# scenarios are judged on (crc_ok / crc_fail / invalid, median eRPM), the
+# marker-bit check DecodeTally does not track, and the CPU cost of
+# decode_telemetry() - all that is left for the CPU, versus about 1.3ms for
+# the sample path's analyze_capture(). Any failure raises.
 #
-# Hardware: as tests/test_motor_group_telemetry.py - 4-in-1 AM32 ESC, channel 1
-# -> GPIO 6 (motor + prop mounted, the only bidirectional channel), channels 2-4
-# -> GPIO 7/8/9 (idle, but the ESC only completes its arm handshake with valid
-# signal on all 4). The idle channels' state machines sit on the next block
-# (4-6): this receiver and dshot_bidir_tx fill their block's 32 instruction slots.
+# Hardware: as tests/harness scenarios - 4-in-1 AM32 ESC, channel 1 -> GPIO 6
+# (motor + prop mounted, the only bidirectional channel), channels 2-4 ->
+# GPIO 7/8/9 (idle, but the ESC only completes its arm handshake with valid
+# signal on all 4). The frame receiver and dshot_bidir_tx fill their PIO
+# block's 32 instruction slots between them (see BidirectionalDShot's
+# constructor docstring), so the idle channels' state machines sit on the
+# next block.
 
-from array import array
 from machine import Pin
-from rp2 import StateMachine
-from dshot_pio import (DShotPIO, BidirectionalDShot, UnidirectionalDShot,
-                       dshot_bidir_tx, dshot_bidir_rx_rle, rle_rx_speed)
+from dshot_pio import BidirectionalDShot, UnidirectionalDShot
 from motor_group import MotorGroup
 from core1_runner import Core1Runner
-import gcr_decode
+from decode_tally import DecodeTally
 import utime
 
 THROTTLE = 100
@@ -41,53 +46,14 @@ SAMPLE_MS = 5000
 MIN_FRAMES = 50
 MIN_CRC_VALID_PCT = 98.0
 MIN_MEDIAN_ERPM = 10000
-RING = 64          # frames the drain keeps for Core 0; must be a power of two
-MAX_ERPM_SAMPLES = 512
-SHOW_BAD = 6
-
-
-class RunLengthDShot(BidirectionalDShot):
-    """A BidirectionalDShot whose receiver is dshot_bidir_rx_rle.
-
-    BidirectionalDShot's own constructor loads the raw receiver, and the two
-    receivers do not fit one PIO block together (13 + 19 + dshot_bidir_rx's 10 > 32
-    instruction slots), so this builds the motor without it.
-    """
-
-    def __init__(self, state_machine_id, pin, dshot_speed, rx_state_machine_id, drain):
-        pin.init(Pin.IN, Pin.PULL_UP)
-        DShotPIO.__init__(self, state_machine_id, pin, dshot_speed, dshot_bidir_tx)
-        self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx_rle,
-                                  freq=rle_rx_speed(dshot_speed), in_base=pin, jmp_pin=pin)
-        self.rx_state_machine_id = rx_state_machine_id
-        self.drain_rx = drain
-
-    def start(self):
-        while self.rx_sm.rx_fifo():
-            self.rx_sm.get()
-        self.rx_sm.active(1)
-        DShotPIO.start(self)
 
 
 def run(dshot_speed):
     """Run the bench check at `dshot_speed` (a DSHOT_SPEEDS value); any failure raises."""
-    print("=== Run-length receiver test ===")
-    print("receiver clock: " + str(rle_rx_speed(dshot_speed)) + " Hz")
+    print("=== Frame receiver test ===")
 
-    frames = array('I', [0] * RING)
-    written = array('I', [0])
-    rx = []
-
-    def drain(publish):
-        sm = rx[0]
-        while sm.rx_fifo():
-            word = sm.get()
-            if publish:
-                frames[written[0] & (RING - 1)] = word
-                written[0] += 1
-
-    bidir = RunLengthDShot(0, Pin(6), dshot_speed, 1, drain)
-    rx.append(bidir.rx_sm)
+    bidir = BidirectionalDShot(0, Pin(6), dshot_speed, rx_state_machine_id=1,
+                                receiver=BidirectionalDShot.FRAME_RECEIVER)
     motors = MotorGroup([
         bidir,
         UnidirectionalDShot(4, Pin(7), dshot_speed),
@@ -114,90 +80,68 @@ def run(dshot_speed):
         utime.sleep_ms(SETTLE_MS)
 
         print("Sampling for " + str(SAMPLE_MS) + "ms at throttle " + str(THROTTLE) + "...")
-        seen = written[0]
+        tally = DecodeTally()
+        last_seq = 0
         total = 0
         lost = 0
         marker_ok = 0
-        symbols_ok = 0
-        crc_ok = 0
-        erpms = array('f', [0.0] * MAX_ERPM_SAMPLES)
-        erpm_count = 0
         decode_us_sum = 0
         decode_us_max = 0
-        bad = []
-        decode = gcr_decode.decode
-        check_crc = gcr_decode.check_crc
         ticks_us = utime.ticks_us
         ticks_diff = utime.ticks_diff
         sample_start = utime.ticks_ms()
         while ticks_diff(utime.ticks_ms(), sample_start) < SAMPLE_MS:
             if runner.error is not None:
                 raise runner.error
-            end = written[0]
-            if end == seen:
-                utime.sleep_ms(1)
+            capture = motors.raw_telemetry(0)
+            if capture is None:
                 continue
-            if end - seen > RING:
-                lost += end - seen - RING
-                seen = end - RING
-            while seen != end:
-                frame = frames[seen & (RING - 1)]
-                seen += 1
-                total += 1
-                t0 = ticks_us()
-                number = decode(frame)
-                kind = None
-                data12 = 0
-                if number is not None:
-                    kind, data12 = check_crc(number)
-                dt = ticks_diff(ticks_us(), t0)
-                decode_us_sum += dt
-                if dt > decode_us_max:
-                    decode_us_max = dt
-                if frame >> 20 == 0:
-                    marker_ok += 1
-                if number is not None:
-                    symbols_ok += 1
-                if kind is not None:
-                    crc_ok += 1
-                    eperiod = (data12 & 0x1FF) << ((data12 >> 9) & 0x7)
-                    if eperiod and erpm_count < MAX_ERPM_SAMPLES:
-                        erpms[erpm_count] = 60000000 / eperiod
-                        erpm_count += 1
-                elif len(bad) < SHOW_BAD:
-                    bad.append(frame)
+            _, seq, words = capture
+            if seq == last_seq:
+                continue
+            lost += seq - last_seq - 1
+            last_seq = seq
+            total += 1
 
-        print("  frames received: " + str(total) + " (" + str(total * 1000 // SAMPLE_MS) + "/s), lost to ring overflow: " + str(lost))
-        print("  marker bit 0: " + str(marker_ok) + ", valid GCR symbols: " + str(symbols_ok) + ", CRC-valid: " + str(crc_ok))
+            t0 = ticks_us()
+            result = motors.decode_telemetry(0, words)
+            dt = ticks_diff(ticks_us(), t0)
+            decode_us_sum += dt
+            if dt > decode_us_max:
+                decode_us_max = dt
+
+            tally.add(result)
+            if result is not None and result["marker_ok"]:
+                marker_ok += 1
+
+        print("  frames received: " + str(total) + " (" + str(total * 1000 // SAMPLE_MS) +
+              "/s), lost to mailbox overwrite: " + str(lost))
+        print("  marker bit 0: " + str(marker_ok) + ", " + tally.summary())
         if total:
-            print("  decode cost per frame: mean " + str(decode_us_sum // total) + "us, max " + str(decode_us_max) + "us")
-        for frame in bad:
-            print("  bad frame: " + "{:021b}".format(frame))
+            print("  decode cost per frame: mean " + str(decode_us_sum // total) +
+                  "us, max " + str(decode_us_max) + "us")
 
         if total < MIN_FRAMES:
             raise Exception("FAIL only " + str(total) + " frames (need " + str(MIN_FRAMES) + ")")
-        pct = 100.0 * crc_ok / total
-        print("  CRC-valid " + str(pct) + "%")
-        if pct < MIN_CRC_VALID_PCT:
-            raise Exception("FAIL CRC-valid " + str(pct) + "% below " + str(MIN_CRC_VALID_PCT))
-        if erpm_count == 0:
-            raise Exception("FAIL no CRC-valid frame carried an eRPM value")
-        samples = sorted(erpms[:erpm_count])
-        median_erpm = samples[erpm_count // 2]
-        print("  eRPM min/median/max (first " + str(erpm_count) + " values): " + str(samples[0]) + " / " + str(median_erpm) + " / " + str(samples[-1]))
-        if median_erpm < MIN_MEDIAN_ERPM:
-            raise Exception("FAIL median eRPM " + str(median_erpm) + " below " + str(MIN_MEDIAN_ERPM) + " - motor is not spinning")
+        failures = tally.check(MIN_CRC_VALID_PCT, MIN_MEDIAN_ERPM)
+        for failure in failures:
+            print("  FAIL " + failure)
+        if failures:
+            raise Exception("FAIL " + "; ".join(failures))
         print("  OK   motor spinning")
 
     except KeyboardInterrupt:
         print("\nInterrupted!")
 
     finally:
+        # Stop the loop before disarming: while it's still running, Core 1 can
+        # call update() concurrently with disarm()'s own send/drain/stop calls
+        # on the same state machines, from the other core, with nothing
+        # serialising the two beyond a single state check disarm() makes at
+        # its start.
+        runner.stop()
         motors.disarm()
         print("Motors stopped and disarmed.")
-        runner.stop()
-        print("Core 1 stopped.")
 
     print()
     print("=== Test Complete ===")
-
