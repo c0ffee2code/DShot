@@ -65,6 +65,33 @@ for something at the ESC or arming-timing level, consistent with this report's e
 also weakens the invalid-decode correlation as a reliable indicator: run 2's clean-telemetry,
 no-spin case had no invalid decodes at all.
 
+**2026-09-26 (frame receiver, `two_channel_divergent_600`, one run):** motor 0 (channel 1,
+commanded to ramp 60->200->300): offline decode of the full session gives 14,827/15,238 CRC-valid
+(97.3%), median eRPM 917, **longest CRC-fail streak 25, largest single-motor gap 637.7ms** - both
+notably worse than the earlier instances, and the first time a gap this large has been recorded
+for this bug specifically (motor 2's gap in the same run was 18.7ms, in line with every clean
+session). Motor 2 (channel 3, commanded to ramp 60->200->100, opposite direction) spun and
+decoded normally throughout: 100% CRC-valid, median eRPM 32,538, tracking its own commanded
+deceleration. User confirmed by direct observation: motor 1 (channel 1) did not spin. Immediately
+preceded by a clean `two_channel_divergent_300` run on the same boot/session with both motors
+100% CRC-valid and correctly divergent eRPMs (57,034 / 34,325) - so DSHOT300 was unaffected
+back-to-back with the DSHOT600 failure.
+
+Also notable: the device's own sampled tally and the offline replay of the *same* captures
+disagreed slightly on motor 0's split between CRC failures and invalid decodes (device:
+crc_ok=737/crc_fail=12; offline replay: crc_ok=742/crc_fail=7; both agree on invalid=12 and on
+the 761/769 decoded counts). Both are legitimate reads of the same data - device-side sampling is
+literally *every 20th* capture while the offline tool replays all of them - so this isn't itself
+anomalous, but the size of the discrepancy (5 records) is larger than seen before and worth
+keeping in mind if this gets investigated further.
+
+This run followed a same-day driver change: `dshot_bidir_rx_rle`/`rle_rx_speed`/
+`RLE_CYCLES_PER_BIT` were renamed to `dshot_bidir_rx_frame`/`frame_rx_speed`/
+`FRAME_CYCLES_PER_BIT` (identifier rename only, verified by diff to be a 1:1 substitution with no
+logic change, and by the clean DSHOT300 run using the identical renamed code moments earlier).
+Noted for the record, not treated as a cause - the symptom, channel, and even the co-occurring
+invalid-decode pattern all match the pre-rename 2026-09-25 and 2026-09-26 instances above.
+
 ## What's been ruled out
 
 - **Not caused by BUG-001 (the disarm-hang fix), and not fixed by it either.** The no-spin
@@ -94,10 +121,11 @@ no-spin case had no invalid decodes at all.
   checking first, not a working theory.
 - **The invalid-decode correlation noted above** — worth deliberately trying to reproduce with
   the invalid-decode count as the thing being watched, rather than noticing it after the fact.
-- **DSHOT600-specific:** both documented instances are at 600, none at 300 despite comparable
-  total runtime at both speeds across this project's regression history. Could be coincidence
-  given the small sample (2 instances total), could be a real timing-margin issue specific to
-  600's tighter bit period.
+- **DSHOT600-specific:** every documented instance is at 600, none at 300 despite comparable
+  total runtime at both speeds across this project's regression history - including a clean 300
+  run immediately preceding the 2026-09-26 `two_channel_divergent_600` instance, on the same
+  boot. Could be coincidence given the small sample, could be a real timing-margin issue specific
+  to 600's tighter bit period.
 
 ## Why this hasn't been investigated further
 
