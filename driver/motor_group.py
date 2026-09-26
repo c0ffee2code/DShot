@@ -235,8 +235,13 @@ class MotorGroup:
             for motor in self.motors:
                 motor.drain()
 
-        for motor in self.motors:
-            motor.stop()
+            # Only meaningful on a state machine that was actually live: a
+            # bidirectional motor's stop() always pays a fixed settle delay to
+            # let an in-flight ESC reply finish, which cannot be in flight on
+            # a motor that never transmitted (never armed) or was already
+            # stopped by an earlier disarm() call.
+            for motor in self.motors:
+                motor.stop()
 
         # Re-assert. An update() already past its state check when we started
         # may have promoted the group to ARMED behind us; by now it has long
@@ -371,7 +376,11 @@ class MotorGroup:
                 "Invalid motor index: " + str(motor_index)
             )
 
-        return self.motors[motor_index].decode_capture(words)
+        motor = self.motors[motor_index]
+        if not motor.bidirectional:
+            raise UnsupportedOperationException("Motor " + str(motor_index) + " is unidirectional")
+
+        return motor.decode_capture(words)
 
     def clamp_throttle(self, value):
         """Limit a throttle to the range a motor will transmit, 0 to MAX_THROTTLE."""
