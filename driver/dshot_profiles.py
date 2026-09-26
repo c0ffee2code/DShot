@@ -23,10 +23,12 @@ class DSHOT_SPEEDS:
 # Settings for the bidirectional reply receiver, per DShot speed. Only speeds
 # with an entry here can be used with BidirectionalDShot.
 #
-#   rx_speed         the RX state machine's own clock. It is independent of the
-#                    DShot speed (TX and RX have separate clock dividers on the
-#                    same PIO block) and sets how many samples land in each bit
-#                    of the ESC's reply.
+#   rx_speed         the sample receiver's own clock (dshot_bidir_rx, used
+#                    directly by the standalone calibration tool, and by
+#                    rle_rx_speed() below to derive the frame receiver's).
+#                    Independent of the DShot speed (TX and RX have separate
+#                    clock dividers on the same PIO block) and sets how many
+#                    samples land in each bit of the ESC's reply.
 #   expected_ratio   the reply's measured bit period in RX clock cycles. It is
 #                    measured on hardware rather than derived from the nominal
 #                    reply rate, because ESC oscillators run a few percent off

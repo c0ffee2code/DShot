@@ -1,35 +1,40 @@
 """
-On-device bidirectional DShot GCR telemetry decoder - MicroPython, mirrors
-scripts/dshot_bidir_decode.py (the PC-side reference) for the fixed-ratio decode
-path. The two differ only in how the bit period is found: this module takes it
-from a tuned profile, the reference can also search for it.
-scripts/verify_gcr_decode_port.py checks that the shared path stays in sync -
-re-run it whenever either file changes.
+On-device bidirectional DShot GCR telemetry decoder - MicroPython.
 
-Decodes the raw captures produced by dshot_bidir_rx: a dense, uniform sampling
-of the pin covering the marker bit, the 20 GCR data bits and the idle tail.
-The real bit period those samples work out to is a per-DShot-speed constant
-(driver/dshot_profiles.py's BIDIR_PROFILES), not something this module searches
-for on every capture - searching is too slow to run on the Pico.
+Two entry points, one per receiver in driver/dshot_pio.py. analyze_frame()
+decodes the frame receiver's (dshot_bidir_rx_rle) already run-length-
+reconstructed 21-bit frame - the path BidirectionalDShot uses.
+analyze_capture() decodes the sample receiver's (dshot_bidir_rx) raw
+oversampled waveform instead, doing the run-length reconstruction here on
+the CPU; it backs the standalone calibration tool that measures
+driver/dshot_profiles.py's BIDIR_PROFILES expected_ratio for a new ESC unit,
+since the frame receiver has no period search of its own.
 
-Each real reply produces FOUR 32-bit words (in_shiftdir=SHIFT_LEFT,
-push_thresh=32): the OLDEST sample in each word is at bit31, the NEWEST at
-bit0. Words concatenate in capture order, giving 128 samples in time order - but
-NOT perfectly uniformly spaced: dshot_bidir_rx's sample loop is a nested 4x32
-structure, which costs 2 extra PIO cycles at each of the 3 "outer pass"
-boundaries (every 32 samples) versus the normal 2-cycles/sample gap within a
-pass. This is fully deterministic, so a sample's position is computed as its
-exact CYCLE (sample_cycle()), not assumed from its index.
+Both share a fixed-ratio decode path with scripts/dshot_bidir_decode.py (the
+PC-side reference), differing only in how the bit period is found: this
+module takes it from a tuned profile (BIDIR_PROFILES), the reference can
+also search for it. scripts/verify_gcr_decode_port.py checks the shared path
+stays in sync - re-run it whenever either file changes.
+
+analyze_capture()'s raw input: each real reply produces FOUR 32-bit words
+(in_shiftdir=SHIFT_LEFT, push_thresh=32) - the OLDEST sample in each word is
+at bit31, the NEWEST at bit0. Words concatenate in capture order, giving 128
+samples in time order - but NOT perfectly uniformly spaced: dshot_bidir_rx's
+sample loop is a nested 4x32 structure, which costs 2 extra PIO cycles at
+each of the 3 "outer pass" boundaries (every 32 samples) versus the normal
+2-cycles/sample gap within a pass. This is fully deterministic, so a
+sample's position is computed as its exact CYCLE (sample_cycle()), not
+assumed from its index.
 
 Unlike the reference script, check_crc() here accepts ONLY the inverted CRC
-polarity. That is deliberate: every CRC-valid capture from real hardware has
-been inverted, matching AM32's firmware source, and accepting the plain
-polarity as well would double the false-accept probability of the 4-bit CRC
-(2/16 instead of 1/16) for a polarity the hardware never produces. The
-reference script accepts both because a stray plain hit is diagnostic there;
-this module is the driver's validity gate and has no such use for it.
+polarity: every CRC-valid capture from real hardware has been inverted,
+matching AM32's firmware source, and accepting the plain polarity as well
+would double the false-accept probability of the 4-bit CRC (2/16 instead of
+1/16) for a polarity the hardware never produces. The reference script
+accepts both because a stray plain hit is diagnostic there; this module is
+the driver's validity gate and has no such use for it.
 
-Method:
+analyze_capture()'s reconstruction method:
 1. Find the edges - the samples whose value differs from the one before - by
    XOR-ing each half-word with itself shifted by one, instead of looking at all
    128 samples one by one. Only about a dozen samples are edges.
@@ -45,12 +50,10 @@ Method:
    fallback.
 4. Differential-decode, then look each 5-bit group up in the GCR table.
 
-Every step works on plain integers, not on lists of per-sample tuples. That is
-about 8 times faster than the per-sample version it replaced (roughly 1.3ms per
-capture instead of 10ms), and it allocates about 16 times less (under 1KB per
-capture instead of 11KB): this runs on the application core, but a garbage
-collection on either core pauses both, so heap churn here shows up as gaps in
-the command loop.
+Every step works on plain integers, not on lists of per-sample tuples: a
+garbage collection on either core pauses both, so heap churn here shows up
+as gaps in the command loop - see ADR-002 for the measured cost this design
+avoids.
 """
 
 GCR_ENCODE_TABLE = [

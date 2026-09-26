@@ -57,13 +57,12 @@ def dshot():
 #
 # The bit=1 and bit=0 paths each carry their own release-and-loop tail because
 # one PIO instruction encodes exactly one side-set value and the two paths need
-# different ones. That costs program memory (12 of 32 words) but no cycles: the
+# different ones. That costs program memory (13 of 32 words) but no cycles: the
 # per-bit timing is identical on both paths.
 #
 # irq(rel(1)) fires once per frame, right after the release, telling the paired
-# dshot_bidir_rx that it may start its post-release delay. It is non-blocking,
-# so it costs nothing when RX is inactive or still busy with the previous
-# capture.
+# receiver that it may start its post-release delay. It is non-blocking, so it
+# costs nothing when RX is inactive or still busy with the previous capture.
 #
 # The IRQ is relative (rel) rather than a literal flag number because flags 4-7
 # are shared by every state machine on a PIO block: with a literal flag, two
@@ -82,7 +81,7 @@ def dshot_bidir_tx():
     label("bitloop")
     out(x, 1)                  .side(1)   [1] # 2 cycles, HIGH (idle level) while shifting in the next bit
     jmp(not_x, "zero")         .side(0)   [2] # 3 cycles, LOW, always executed regardless of bit value
-    jmp(y_dec, "bitloop")      .side(0)   [2] # "one" path: 3 cycles LOW, loop unless this was bit 16 - mostly LOW (25% high) same as dshot_bidir's original bit=1
+    jmp(y_dec, "bitloop")      .side(0)   [2] # "one" path: 3 cycles LOW, loop unless this was bit 16 - mostly LOW (25% high)
     set(pindirs, 0)            .side(0)   [1] # bit 16 only ("one" path): release the pin
     irq(rel(1))                .side(0)   [0] # tell paired RX (id = this SM's id + 1) the pin was just released
     jmp("frame_start")         .side(0)   [0]
@@ -176,16 +175,9 @@ def dshot_bidir_rx():
 # fires on, and by then every bit is already shifted into the ISR, so a full
 # RX FIFO stalls there holding a complete, correct value rather than a partial
 # one - unlike dshot_bidir_rx, which autopushes mid-capture and so can push a
-# torn one. Confirmed on the bench at the FIFO's default depth (4 one-word
-# captures, bursts of up to 60 frames with no drain at all): the held value is
-# always still marker_ok and CRC-valid once delivered: this only costs later
-# replies, which are silently never captured while the state machine sits
-# stalled - it does not resume watching for the next one until room frees. An
-# earlier version of this comment claimed a full FIFO could corrupt a reply's
-# tail; that was a test artifact (the test's own command pacing didn't leave
-# room for the ESC's reply before re-arming TX, corrupting it by interference,
-# independent of the receiver), not a receiver bug - see ADR-002's "run-length
-# capture" section for the correction.
+# torn one. It only costs later replies, silently uncaptured while the state
+# machine sits stalled - it does not resume watching for the next one until
+# room frees. See ADR-002's "run-length capture" section.
 #
 # What the program does, in order:
 #
@@ -394,11 +386,11 @@ class BidirectionalDShot(DShotPIO):
     bidirectional-capable) ESC needs to auto-detect bidirectional DShot, and
     captures the ESC's GCR telemetry reply on a second state machine sharing
     the same pin, running dshot_bidir_rx_rle (see its own comment): it
-    reconstructs the reply itself and hands the CPU one already-decoded word
-    per reply, for gcr_decode.analyze_frame(). Detection only happens while
-    the ESC is disarmed, so this class must be in use for the whole arm
-    sequence - there is no way to arm with a normal signal and switch
-    afterward.
+    reconstructs the reply's 21-bit frame in hardware and hands the CPU one
+    word per reply, for gcr_decode.analyze_frame() to decode. Detection only
+    happens while the ESC is disarmed, so this class must be in use for the
+    whole arm sequence - there is no way to arm with a normal signal and
+    switch afterward.
 
     The TX/RX pair fills its PIO block on its own (dshot_bidir_tx is 13
     instructions, dshot_bidir_rx_rle 19, of the block's 32) - it cannot share
@@ -492,10 +484,10 @@ class BidirectionalDShot(DShotPIO):
         # application to read from another core.
         #
         # drain_rx(publish) empties the RX FIFO. Call it on every command-loop
-        # tick: an undrained FIFO stalls the RX state machine, and the captures
-        # taken right after a stall come back corrupted (see ADR-002). It takes
-        # whole (1-word) captures only, leaving fewer waiting words for the
-        # next call, so the grouping cannot slip; a completed capture replaces
+        # tick: an undrained FIFO stalls the RX state machine, losing replies
+        # until it is drained again (see ADR-002). It takes whole (1-word)
+        # captures only, leaving fewer waiting words for the next call, so
+        # the grouping cannot slip; a completed capture replaces
         # the single published one (read it with latest_capture()) when
         # `publish` is true and is dropped otherwise. It takes at most
         # RX_DRAIN_LIMIT captures per call, does no decoding (that is the
@@ -571,11 +563,8 @@ class BidirectionalDShot(DShotPIO):
         Decode one raw capture and return gcr_decode.analyze_frame()'s result
         dict - crc_ok is the validity signal, a capture that is complete and
         correctly framed can still fail it. The receiver already did the
-        reconstruction that used to cost the most (the spike measured
-        decode() plus check_crc() alone at ~200-215us, against ~1.3ms for the
-        old raw-sample path), so this is much cheaper than that path was, but
-        the cost of this method's own dict-building has not been separated
-        from command-loop/GC overhead in a real bench run - see ADR-002.
+        reconstruction, so this is decode() plus check_crc() and a small
+        dict - see ADR-002 for the measured cost.
         """
         return gcr_decode.analyze_frame(words[0])
 

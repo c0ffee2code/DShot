@@ -55,8 +55,8 @@ class MotorGroup:
         group.set_throttle(0, 100)
         group.set_throttle(1, 150)
 
+        runner.stop()          # stop the loop before disarm() - see disarm()'s own docstring
         group.disarm()
-        runner.stop()
 
     Usage (application pumps update() from its own main loop):
         group.arm()
@@ -76,9 +76,8 @@ class MotorGroup:
     # with an at-rest eRPM even when the motor does not start. The library
     # cannot observe whether the motor started (or whether the ESC is beeping,
     # or the Pico has hung), so an application should not treat "armed" or
-    # "replying" as "spinning". On the bench a 500ms window has spun the motor,
-    # but some runs have not started it and the cause was not established; the
-    # test bench arms for 3000ms. A longer window only costs startup time.
+    # "replying" as "spinning" - see bug-reports/BUG-002 for a case this
+    # distinction matters for. A longer window only costs startup time.
     DEFAULT_ARM_DURATION_MS = 500
 
     # A gap longer than this between update() calls restarts the arming window,
@@ -205,8 +204,11 @@ class MotorGroup:
 
         Blocks for a few hundred microseconds while the zeros shift out.
 
-        Safe to call from any context, including a different core than the one
-        calling update().
+        Its own state check keeps a concurrent update() from corrupting the
+        group's state, but nothing serialises this method's FIFO/state-machine
+        calls against an update() still running on another core - stop that
+        loop first (see the class docstring's usage example) rather than
+        relying on disarm() to tolerate a still-running caller.
 
         Idempotent. Call arm() to bring the group back up.
         """
@@ -250,17 +252,16 @@ class MotorGroup:
 
         The application calls this at least every UPDATE_INTERVAL_US, from
         whichever core or scheduling arrangement it chooses. Draining here is
-        deliberate: an RX FIFO left undrained stalls the receiver and corrupts
-        the captures that follow, so it must not depend on the application
-        remembering a second call. Replies drained while ARMING are discarded
-        (before the ESC arms, what the receiver hears is our own transmit).
+        deliberate: an RX FIFO left undrained stalls the receiver, losing
+        replies until it is drained again, so it must not depend on the
+        application remembering a second call. Replies drained while ARMING
+        are discarded - not yet trusted, since the ESC may still be
+        completing bidirectional detection.
 
-        The drain comes first, before any command is queued. A reply capture
-        fills the RX FIFO exactly, and the next command starts the next capture
-        within tens of microseconds; if the old capture were still in the FIFO
-        by then, the receiver would stall on its first new word and the reply
-        after it would be lost. With several bidirectional motors the one
-        drained last was the one that suffered.
+        The drain comes first, before any command is queued, so a new reply's
+        words never have to wait behind an undrained old one - see ADR-002
+        and ADR-005 for what draining after sending cost with several
+        bidirectional motors on one command loop.
 
         Does nothing while disarmed, so it is always safe to call - including
         before arm() or after disarm(), when the state machines are inactive
@@ -328,7 +329,8 @@ class MotorGroup:
         latest_capture(), or None while the group is not ARMED or nothing has
         arrived yet. The group stores nothing itself - it only refuses to
         hand out captures taken while its own arming window was still open,
-        when what the receiver hears is mostly our own transmit.
+        not yet trusted since the ESC may still be completing bidirectional
+        detection.
 
         ARMED means that window has elapsed, not that the ESC has armed: with
         a window shorter than the ESC needs, or an ESC without power, the
@@ -358,14 +360,11 @@ class MotorGroup:
 
     def decode_telemetry(self, motor_index, words):
         """
-        Decode one capture returned by raw_telemetry() with that motor's own RX
-        profile; see BidirectionalDShot.decode_capture() for the result.
-
-        Costs about 1.3ms with the sample receiver's default decode path,
-        several command-loop ticks - less with the frame receiver's cheaper
-        one, see BidirectionalDShot.decode_capture() - so call it at whatever
-        pace the application can afford, never from the command loop. Raises
-        UnsupportedOperationException for a unidirectional motor.
+        Decode one capture returned by raw_telemetry(); see
+        BidirectionalDShot.decode_capture() for the result and its cost.
+        Call it at whatever pace the application can afford, never from the
+        command loop. Raises UnsupportedOperationException for a
+        unidirectional motor.
         """
         if motor_index < 0 or motor_index >= self.motor_count:
             raise MotorGroupException(
