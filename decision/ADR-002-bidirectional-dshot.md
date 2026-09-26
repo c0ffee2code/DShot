@@ -1940,6 +1940,29 @@ Still not settled: everything else this section's "Not settled by this pass" alr
 behaviour when the ESC does not reply, replies partially, or before arming; a stalled or slow
 drain; and frame-for-frame agreement against the sample receiver on live replies.
 
+*Hardware validation, part 2 - statistical comparison (2026-09-26).* Same bench session as part 1
+(same motor, prop, ESC, throttle 100): the sample receiver's existing regression scenarios
+(`telemetry_settled_300/600.json`) gave 99/99 CRC-valid (a decoded sample - `run_scenario.py`
+decodes every 20th new capture by design) with median eRPM 21,127 at DSHOT300 and 21,490 at
+DSHOT600; the frame receiver's `rle_bench.py` run from part 1 gave 4,413/4,413 and 4,410/4,410
+(every capture it saw) with median eRPM 21,067 and 21,186. Both receivers clear the same
+threshold at both speeds, with eRPM agreeing within ~450 (300) and ~300 (600) - normal
+run-to-run variation, not a discrepancy.
+
+This is a statistical comparison, not the frame-for-frame one this section originally asked for:
+the frame receiver's real 19-instruction program fills its PIO block alongside `dshot_bidir_tx`
+(32 of 32 slots), so there is no room left for `dshot_bidir_rx` on the same block to capture the
+same live reply the way the original validation plan assumed a spare state machine could. The
+frame-for-frame check that *is* possible stays the offline one already done: the PC model
+(`scripts/simulate_rle_receiver.py`) against 10,867 stored raw captures.
+
+The two "records published but never seen" counts from these runs (sample: 10,039 of 12,029 at
+300; frame: 5,017 of ~9,430 at 300) are not a fair receiver-to-receiver comparison either -
+`run_scenario.py`'s loop also does per-tick SD writes and steps a throttle profile across 4
+motors, work `rle_bench.py`'s loop doesn't do at all, so they measure two different loops'
+overhead more than the two receivers' relative cost. Separating decode cost from loop overhead is
+still open, per part 1's note above.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.

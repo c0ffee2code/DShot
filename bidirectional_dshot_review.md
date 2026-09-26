@@ -1086,7 +1086,7 @@ but not a squash).
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
 | W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | DONE (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — bench-confirmed on `telemetry_settled_300/600`, `two_channel_divergent_300/600`, `test_bidir_restart_cycles.py` (x2, 6/6 cycles), `smoke_unidirectional` (x2); the disarm-hang bug is fixed for both single and multi-bidirectional-motor cases and re-arming works |
 | W23 | Hardware smoke test of the integrated frame receiver | — | S | DONE (2026-09-26) — no ENOMEM on the exactly-full block at either speed; 100% CRC-valid both speeds and across a restart; decode cost far above the spike's figure, flagged for W24/W25 |
-| W24 | Statistical comparison: frame vs sample receiver on the same motor | — | S | TODO |
+| W24 | Statistical comparison: frame vs sample receiver on the same motor | — | S | DONE (2026-09-26) — both receivers 100% CRC-valid, eRPM within ~500 of each other at both speeds, same day/wiring/throttle |
 | W25 | Frame receiver: arming-window, no-reply and stalled-drain behavior | — | M | TODO |
 | W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | BLOCKED — needs user decision, gated on W23-W25 |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
@@ -2107,6 +2107,24 @@ cost per the printed summaries.
 ~21k range at throttle 100) at both DSHOT300 and DSHOT600 on the same physical setup, and the
 comparison is recorded in ADR-002 - including the note that this is a statistical comparison
 across two runs, not a live per-reply one, and why.
+
+**DONE 2026-09-26**, same bench session as W23 (same motor, prop, ESC, throttle 100):
+
+| | DSHOT300 CRC-valid | DSHOT300 eRPM | DSHOT600 CRC-valid | DSHOT600 eRPM |
+|---|---|---|---|---|
+| Sample (`telemetry_settled_300/600.json`) | 99/99 (100%) | 21,127 | 99/99 (100%) | 21,490 |
+| Frame (`rle_bench.py`) | 4,413/4,413 (100%) | 21,067 | 4,410/4,410 (100%) | 21,186 |
+
+Both receivers clear the threshold at both speeds, and the eRPM readings agree within ~450 of
+each other at DSHOT300 and ~300 at DSHOT600 - well inside normal run-to-run variation for this
+bench. The sample receiver's number is a decoded *sample* (`run_scenario.py` decodes every 20th
+new capture, by design - see that scenario's own comment); the frame receiver's is every capture
+`rle_bench.py` managed to see, which is not the same denominator and should not be read as "the
+frame receiver saw more replies" - `run_scenario.py`'s Core 0 loop also does per-tick SD writes
+and 4-motor throttle-profile stepping that `rle_bench.py`'s loop doesn't, so the two "records
+published but never seen" counts (sample: 10,039 of 12,029 at 300; frame: 5,017 of ~9,430 at 300)
+measure two different loops' overhead, not the two receivers' cost in isolation. Untangling that
+is what W25's "decode cost" note already flags as open, not settled by this comparison.
 
 **W25 — Frame receiver: arming-window, no-reply and stalled-drain behavior** ·
 `tests/experimental/` (new script or scenario), `decision/ADR-002-bidirectional-dshot.md`
