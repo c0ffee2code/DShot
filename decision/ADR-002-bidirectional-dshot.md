@@ -2059,29 +2059,46 @@ that consumes raw captures directly) and moves to a standalone script instead. T
 (port the harness to frame-only 1-word records) and W28 (remove the sample receiver from the
 driver, build the standalone tool) in the backlog.
 
-*Harness port (2026-09-26), code done, hardware verification pending.* Porting `run_scenario.py`
-to build bidirectional motors with the frame receiver surfaced the risk the adoption decision
-above only described in the abstract: every existing scenario with a bidirectional motor wired a
-unidirectional motor onto the same PIO block (safe for the sample receiver, which leaves room in
-its block; not safe for the frame receiver, which fills its block alone). `scenario.py` gained a
-fail-fast check for exactly this - a scenario JSON that makes the same mistake in the future gets
-a clear message instead of an on-device ENOMEM - and every affected scenario was rewired, moving
-the idle unidirectional motors onto the otherwise-unused PIO2 block. Full detail, including the
-capture-format and PC-tooling changes, is in the backlog's W27 entry. None of this has run on the
-bench yet.
+*Harness port (2026-09-26), bench-verified.* Porting `run_scenario.py` to build bidirectional
+motors with the frame receiver surfaced the risk the adoption decision above only described in the
+abstract: every existing scenario with a bidirectional motor wired a unidirectional motor onto the
+same PIO block (safe for the sample receiver, which leaves room in its block; not safe for the
+frame receiver, which fills its block alone). `scenario.py` gained a fail-fast check for exactly
+this - a scenario JSON that makes the same mistake in the future gets a clear message instead of an
+on-device ENOMEM - and every affected scenario was rewired, moving the idle unidirectional motors
+onto the otherwise-unused PIO2 block.
 
-*Sample receiver removed from BidirectionalDShot (2026-09-26), code done, hardware verification
-pending.* `receiver=`/`SAMPLE_RECEIVER`/`FRAME_RECEIVER` are gone - the frame receiver is the only
-one `BidirectionalDShot` builds, and its constructor no longer takes a receiver argument at all.
-`CaptureMailbox` lost its `capture_words` parameter for the same reason: nothing constructs it
-with any value but 1 any more, so it went back to a fixed `WORDS = 1` module constant (the shape
-it had before the sample receiver ever needed something wider). `dshot_bidir_rx` and
-`gcr_decode.py`'s raw-decode functions (`find_edges`, `estimate_bit_period_fixed`,
-`reconstruct_frame`, `analyze_capture`) are not deleted - they back a new standalone tool,
-`tests/experimental/calibrate_bidir_rx.py`, which builds a bare TX/raw-RX pair directly (not
-through `BidirectionalDShot`) to measure a new ESC unit's `expected_ratio`, since the frame
-receiver has no period search of its own to fall back on. That tool is untested on hardware, same
-as the harness port above - the bench was powered off for this whole pass.
+Once the bench came back, this ran clean: single-motor scenarios at both speeds, and - the
+combination this section's own layout table flagged as never run on hardware - two frame-receiver
+pairs each filling a full PIO block simultaneously, including under forced GC pauses and a 60-second
+diverging-throttle soak, all 100% CRC-valid with correctly independent eRPM per channel.
+`pull_captures.py`/`scripts/analyze_bidir_capture_log.py`'s full pipeline was verified against real
+1-word-record data too: the offline re-decode of 14,922 records agreed with the device's own
+sampled tally exactly. Full numbers are in the backlog's W27 entry. One DSHOT600 two-motor run hit
+BUG-002 (the pre-existing, already-documented intermittent no-spin issue) and cleared on immediate
+retry - not a regression from this work; see BUG-002's own record.
+
+*Sample receiver removed from BidirectionalDShot (2026-09-26), driver change bench-verified,
+calibration tool BROKEN.* `receiver=`/`SAMPLE_RECEIVER`/`FRAME_RECEIVER` are gone - the frame
+receiver is the only one `BidirectionalDShot` builds, and its constructor no longer takes a
+receiver argument at all. `CaptureMailbox` lost its `capture_words` parameter for the same reason:
+nothing constructs it with any value but 1 any more, so it went back to a fixed `WORDS = 1` module
+constant (the shape it had before the sample receiver ever needed something wider). This part is
+covered by the harness port's own bench runs above, which never exercised the removed code paths
+in the first place. `dshot_bidir_rx` and `gcr_decode.py`'s raw-decode functions (`find_edges`,
+`estimate_bit_period_fixed`, `reconstruct_frame`, `analyze_capture`) are not deleted - they back a
+new standalone tool, `tests/experimental/calibrate_bidir_rx.py`, which builds a bare TX/raw-RX pair
+directly (not through `BidirectionalDShot`) to measure a new ESC unit's `expected_ratio`, since the
+frame receiver has no period search of its own to fall back on.
+
+That tool does not work. Four bench runs (two send intervals, both activation orders for the TX/RX
+pair) all produced the same result: 200 captures at a constant throttle, word 0 varying by exactly
+one bit, words 1-3 always exactly `0xffffffff`. A real GCR reply fills all 4 words with activity
+that varies with eRPM even at constant throttle; this pattern reads as the receiver locking onto
+TX's own fixed, repeating command waveform instead - bidirectional mode most likely never engaged
+in this manually-built setup. The exact cause, relative to what `BidirectionalDShot`'s own
+construction does differently, was not isolated. Left broken for a future session - see the
+script's own header comment for the full account.
 
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 

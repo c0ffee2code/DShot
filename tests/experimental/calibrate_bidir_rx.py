@@ -27,9 +27,19 @@
 # (GPIO 7/8/9) are idle unidirectional, since the ESC only completes its arm
 # handshake with valid signal on all 4 (as in tests/harness scenarios).
 #
-# UNTESTED ON HARDWARE as of 2026-09-26 - written with the bench powered off.
-# Verify it end to end (arms, captures look sane, a pasted batch measures a
-# plausible expected_ratio) before relying on it to calibrate a new ESC unit.
+# BROKEN as of 2026-09-26 - do not use yet. Bench-tested four times (two
+# send-interval values, both activation orders for rx/tx), and every run
+# produced the same low-entropy pattern: word 0 varies by exactly one bit
+# across 200 captures at a constant throttle, words 1-3 are always exactly
+# 0xffffffff. That is not a GCR reply - a real one fills all 4 words with
+# activity that varies with eRPM even at constant throttle. It looks like
+# dshot_bidir_rx's marker-wait is locking onto TX's own next-frame
+# transmission (a fixed, repeating waveform at constant throttle) rather than
+# a genuine ESC reply, meaning bidirectional mode likely never engaged in
+# this setup - but the exact cause is not isolated. Ruled out: send pacing
+# (identical result at 700us and 5000us intervals) and rx/tx activation
+# order (identical result both ways). Not investigated further this session -
+# see bidirectional_dshot_review.md's W28 entry for the data and next steps.
 
 from array import array
 from machine import Pin
@@ -74,8 +84,13 @@ def main():
         UnidirectionalDShot(6, Pin(9), DSHOT_SPEED),
     ]
 
-    tx.start()
+    # RX listens before TX can release the pin and raise its first
+    # irq(rel(1)) - same ordering as BidirectionalDShot.start(), which this
+    # otherwise doesn't reuse (it only has the frame receiver).
+    while rx.rx_fifo():
+        rx.get()
     rx.active(1)
+    tx.start()
     for motor in others:
         motor.start()
 
@@ -90,7 +105,16 @@ def main():
         print("Armed - spinning at throttle %d, capturing %d replies..." %
               (THROTTLE, CAPTURES_WANTED))
 
-        words = array('I', [0, 0, 0, 0])
+        # No print()/formatting in this loop: the first attempt at this script
+        # had it inline, in case slow serial I/O was starving the drain - it
+        # wasn't (see this file's header: a 5000us interval showed the same
+        # bad captures), but keeping the timing-critical loop free of string
+        # formatting and serial writes is worth doing regardless. get() still
+        # reads into a 4-word buffer the same way CaptureMailbox.drain() does;
+        # the plain integer copy into the big buffer is cheap and allocates
+        # nothing, unlike string formatting.
+        small = array('I', [0, 0, 0, 0])
+        buf = array('I', [0] * (CAPTURES_WANTED * 4))
         captured = 0
         while captured < CAPTURES_WANTED:
             tx.send_throttle_command(THROTTLE)
@@ -98,9 +122,17 @@ def main():
                 motor.send_throttle_command(THROTTLE)
             utime.sleep_us(SEND_INTERVAL_US)
             if rx.rx_fifo() >= 4:
-                rx.get(words)
-                print("CAPTURE " + " ".join(hex(w) for w in words))
+                rx.get(small)
+                base = captured * 4
+                buf[base] = small[0]
+                buf[base + 1] = small[1]
+                buf[base + 2] = small[2]
+                buf[base + 3] = small[3]
                 captured += 1
+
+        for i in range(captured):
+            base = i * 4
+            print("CAPTURE " + " ".join(hex(buf[base + j]) for j in range(4)))
 
         print()
         print("Done - %d captures printed above. Paste them into a Python list and run "

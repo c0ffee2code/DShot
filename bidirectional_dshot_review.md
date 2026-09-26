@@ -1091,8 +1091,8 @@ but not a squash).
 | W25a | Fix or bound the frame receiver's stalled-drain corruption | — | M | SKIPPED (2026-09-26) — premise invalidated: the "corruption" was the test's own command pacing interfering with the ESC's reply on the wire, not a receiver bug; fifo_join was added then reverted once the corrected test came back clean at the original FIFO depth |
 | W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | DONE (2026-09-26) — user decided: adopt as the sole production receiver, sample receiver moves to a standalone tool (W27, W28) |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
-| W27 | Port the harness to frame-only 1-word records | — | L | IN PROGRESS (2026-09-26) — bench powered off, code changes only this session, hardware verification still needed |
-| W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Code done 2026-09-26 — bench powered off, hardware verification of the new calibration tool still needed |
+| W27 | Port the harness to frame-only 1-word records | — | L | DONE (2026-09-26) — bench-verified: single motor and two-full-block scenarios all clean at both speeds, offline analysis pipeline confirmed against real data |
+| W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Driver removal DONE and bench-verified (unaffected by W27's tests). The new calibrate_bidir_rx.py standalone tool is BROKEN - see its own header and the note below |
 
 ### Work items
 
@@ -2270,6 +2270,25 @@ this item's own note flagged as the untested full-block combination. `scripts/pu
 and `scripts/analyze_bidir_capture_log.py`'s full pipeline (parsing a real 1-word-record
 `capture.bin`, not just the synthetic parity check) are also unverified against real data.
 
+**Bench-verified 2026-09-26.** `telemetry_settled_300/600.json` (single motor): 115/115 CRC-valid
+each, eRPM 21,246 and 21,368. `two_channel_gc_300.json` (the previously-untested two-full-block
+combination, plus forced GC pauses): 246/246 CRC-valid on both motors, eRPM 21,429 and 22,189, no
+cross-talk between channels despite 188 forced collections. `two_channel_divergent_300.json` (60s,
+ramping/diverging throttles): 14,922/14,922 CRC-valid on both motors, eRPMs correctly diverging
+(57,692 vs 34,325, matching the accelerate/decelerate profiles). `pull_captures.py` and
+`scripts/analyze_bidir_capture_log.py` both ran clean against the real 1-word-record data - the
+offline re-decode of all 14,922 records agreed with the device's own sampled tally exactly
+(746/746 both ways), and `rx_clock_hz` in the pulled meta.txt correctly reflects
+`rle_rx_speed()`, confirming the `bidir_capture_sink.py` fix.
+
+`two_channel_gc_600.json` hit BUG-002 (the pre-existing, already-documented intermittent
+"motor doesn't spin" issue) on its first run, cleared on immediate retry per that report's own
+established pattern - not a W27 regression; see BUG-002's own record for this occurrence, which is
+actually useful evidence there (first time the symptom has been seen outside the sample receiver).
+`single_channel_baseline.json` (186s soak) and the 600-speed two-motor divergent scenario were not
+run this session, and `smoke_unidirectional.json`/`two_channel_unidirectional_300.json` (no
+bidirectional motors, unaffected by any of this work) were not re-run either.
+
 **W28 — Hygiene: delete the sample receiver from the driver; move raw capture and calibration to
 a standalone script** · `driver/dshot_pio.py`, `driver/capture_mailbox.py`, `driver/gcr_decode.py`,
 `tests/experimental/rle_bench.py`, new `scripts/`
@@ -2304,12 +2323,25 @@ them, unaffected by any of this.
 New: `tests/experimental/calibrate_bidir_rx.py`, a standalone script (not wired into `MotorGroup`)
 that builds a bare TX/raw-RX pair directly using `dshot_bidir_tx`/`dshot_bidir_rx`, arms and spins
 one motor, and prints captured raw words to stdout for offline analysis with
-`scripts/dshot_bidir_decode.py`'s existing `estimate_bit_period()` sweep. **Untested on hardware.**
+`scripts/dshot_bidir_decode.py`'s existing `estimate_bit_period()` sweep.
+
+**BROKEN, bench-tested 2026-09-26.** Four runs (send intervals of 700us and 5000us; both
+`rx.active(1)`-before-`tx.start()` and the reverse) all produced the identical result: across 200
+captures at a constant throttle, word 0 varied by exactly one bit and words 1-3 were always
+exactly `0xffffffff`. That is not a GCR reply - a real one fills all 4 words with activity that
+varies with eRPM even at constant throttle - and the fixed, near-identical word 0 across hundreds
+of captures reads as the receiver repeatedly sampling TX's own fixed, repeating command waveform,
+not a genuine ESC reply. Bidirectional mode likely never engaged in this manually-built setup, but
+the exact cause (vs. `BidirectionalDShot`'s own construction, which this deliberately doesn't
+reuse) was not isolated. Ruling out send pacing and activation order narrows it, but doesn't find
+it. Left for a future session - see the script's own header for the full account. Do not use this
+tool to calibrate a real ESC unit until it's fixed and re-verified.
 
 `tests/experimental/rle_bench.py` was NOT retired, despite the item's own suggestion that it
-could be - W27 (the scenario harness it would be replaced by) has not been hardware-verified
-either, so deleting the simpler fallback before knowing the replacement actually works seemed like
-the wrong order. Revisit once W27 passes on the bench.
+could be. W27 is now bench-verified, so the original reason to keep both (not knowing if the
+replacement worked) no longer applies - it's kept now simply because retiring it wasn't part of
+this pass's scope. Fine to retire in a future session once someone confirms nothing still depends
+on it specifically.
 
 Every test/experimental script that referenced `receiver=BidirectionalDShot.FRAME_RECEIVER`
 (`rle_bench.py`, `test_rle_arming_echo.py`, `test_rle_restart_cycles.py`,
