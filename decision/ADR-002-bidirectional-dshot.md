@@ -21,6 +21,12 @@ you can still run.
 **Date:** 2026-02-01 (original analysis); implementation findings added 2026-08-23/24
 **Context:** Exploring ESC telemetry via bidirectional DShot for the test bench
 
+**Scope note (2026-09-26):** the project's supported ESC firmware has since
+narrowed to AM32 only - BLHeli_S, discussed throughout the sections below as
+the original blocker and comparison point, is no longer a supported target
+(see CLAUDE.md). Read those BLHeli_S mentions as investigation history, not
+as firmware this driver still accommodates.
+
 ## Verification status
 
 What has and has not been shown on hardware, kept current as gates pass. Each

@@ -11,19 +11,22 @@ DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using
 
 ## Hardware
 
-This driver was developed and tested on a flight control test bench, against
-two different ESC firmware families with meaningfully different timing
-requirements (see "Verified Parameters" below):
+**AM32 is the only supported ESC firmware** (see CLAUDE.md's "Supported ESC targets").
+Earlier bench testing also used a BLHeli_S ESC; it's kept below and in "Verified
+Parameters" as historical timing data (and the rationale for the library's conservative
+defaults), not as a currently supported target.
 
 | Component | Model | Specifications |
 |-----------|-------|----------------|
 | **Controller** | Raspberry Pi Pico 2 | RP2350, dual ARM Cortex-M33, 150MHz |
 | **Motors** | BetaFPV Lava Series 1104 (×2) | 7200KV, 5g weight |
-| **ESC (1)** | JHEMCU Brushless Wing Dual 40A 2-in-1 | 40A×2, 2-6S (7.4-27V), 6.2g |
-| **Firmware (1)** | BLHeli_S | G-H-30 V16.7 |
 | **ESC (2)** | Skystar RC KM55A2 (4-in-1) | AM32 firmware |
+| **ESC (1), historical** | JHEMCU Brushless Wing Dual 40A 2-in-1 | 40A×2, 2-6S (7.4-27V), 6.2g |
+| **Firmware (1), historical** | BLHeli_S | G-H-30 V16.7 |
 
 ### Test Bench Configuration
+
+Historical BLHeli_S wiring, kept for reference — see "Hardware" above.
 
 ```
                     ┌─────────────┐
@@ -167,7 +170,13 @@ Timing requirements are ESC-firmware-dependent, not just protocol-dependent -
 the two ESCs tested needed meaningfully different arming behavior. The
 library's defaults (`MotorGroup.UPDATE_INTERVAL_US`,
 `DEFAULT_ARM_DURATION_MS`) target the more demanding of the two, since a
-faster/longer hold is always safe for the less demanding one too.
+faster/longer hold is always safe for the less demanding one too. The
+BLHeli_S column is historical (see "Hardware" above) - AM32 is the only
+currently supported firmware. AM32 was already the more demanding case for
+command interval (back-to-back required, vs. BLHeli_S's 1kHz tolerance), so
+the defaults need no re-verification now that BLHeli_S support is dropped;
+its column stays only as the reasoning trail for why the defaults are as
+conservative as they are.
 
 | Parameter | JHEMCU / BLHeli_S | Skystar KM55A2 / AM32 |
 |-----------|---------------------|------------------------|
@@ -224,9 +233,9 @@ See [DSHOT_PROTOCOL.md](specification/DSHOT_PROTOCOL.md) for complete protocol d
 
 | Feature | Status | Dependencies |
 |---------|--------|--------------|
-| **DShot commands** | Blocked | Several different ESCs required for testing |
-| **Bidirectional DShot** | Deferred | ESC firmware: Bluejay, BLHeli_32, or AM32 |
-| **Extended telemetry (EDT)** | Blocked | Bidirectional DShot + compatible firmware |
+| **DShot commands** | Blocked | ADR-003: several different ESCs required for testing |
+| **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, in production use |
+| **Extended telemetry (EDT)** | Blocked | Needs AM32-side EDT support to test against |
 
 See `decision/` folder for Architecture Decision Records (ADRs).
 

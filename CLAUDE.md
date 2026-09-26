@@ -9,12 +9,14 @@ DShot driver for Raspberry Pi Pico, part of a flight control systems test bench.
 Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0 license).
 
 **Supported ESC targets (design constraint):** This is a pet/exploration project — it does
-not aim to support the endless universe of ESCs. Exactly two firmware families are in scope:
-**BLHeli_S** (cheap, old, unidirectional DShot only in stock form) and **AM32** (modern,
-bidirectional-capable). AM32 has a further advantage: it is open source
+not aim to support the endless universe of ESCs. **AM32** is the sole firmware family in
+scope (modern, bidirectional-capable). AM32 has a further advantage: it is open source
 (https://github.com/am32-firmware/AM32), so behavior is verified against its actual
 firmware source rather than guessed from generic protocol articles — when a generic spec and AM32's source disagree, the source wins. Do not add
 abstraction layers or configuration surface for hypothetical other ESC families.
+**BLHeli_S** was an earlier bench target (see README's "Verified Parameters" table and
+ADR-001/ADR-004 for the timing data it produced) but is no longer supported — do not add
+code paths or timing accommodations to keep it working.
 
 ## Project Goals
 
@@ -23,7 +25,7 @@ abstraction layers or configuration surface for hypothetical other ESC families.
 | **Improve arming sequence** | Done | ADR-001: continuous 1kHz commands solve timing issues |
 | **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
 | **DShot commands** | Blocked | ADR-003: Several different ESCs required for testing |
-| **Bidirectional DShot** | Deferred | ADR-002: Needs Bluejay firmware or BLHeli_32/AM32 ESCs |
+| **Bidirectional DShot** | Done | ADR-002: frame receiver (`dshot_bidir_rx_frame`) bench-validated on AM32 and adopted as the sole production receiver (2026-09-26) |
 
 ## Development Environment
 

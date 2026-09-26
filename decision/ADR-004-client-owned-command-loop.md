@@ -103,7 +103,7 @@ The previous API had four overlapping methods — `start()`, `stop()`, `disarm()
 
 `disarm()` *is* the emergency stop, and it is stronger than the old one: it both commands the stop **and** cuts the signal, whereas the old version relied on a loop still running to deliver its zeros.
 
-Both halves are needed, and the order matters. Cutting the signal alone is not a stop — it only makes the ESC *eventually* time out, which on BLHeli_S is 100-250ms of a motor still spinning at its last commanded throttle. So `disarm()` transmits the zeros itself, waits for them to leave the shift register, and only then deactivates. That is a few hundred microseconds of blocking, in exchange for stopping the motor in about a millisecond rather than a quarter of a second. Cutting the signal afterwards is what makes the stop *stick* without any further `update()` calls.
+Both halves are needed, and the order matters. Cutting the signal alone is not a stop — it only makes the ESC *eventually* time out, which on BLHeli_S is 100-250ms of a motor still spinning at its last commanded throttle. (BLHeli_S is no longer a supported target as of 2026-09-26 — this figure is the historical measurement behind the design, and has not been re-verified against AM32's own signal-loss timeout; see ADR-002's notes on AM32's reboot-on-timeout behavior for what is known there.) So `disarm()` transmits the zeros itself, waits for them to leave the shift register, and only then deactivates. That is a few hundred microseconds of blocking, in exchange for stopping the motor in about a millisecond rather than a quarter of a second. Cutting the signal afterwards is what makes the stop *stick* without any further `update()` calls.
 
 Draining before deactivating also parks the signal line low, because an idle state machine stalls on the `side(0)` instruction at the top of the PIO program. Deactivating mid-frame would instead freeze the pin at whatever level that frame was driving.
 
@@ -117,7 +117,7 @@ Unchanged and still in force:
 
 - **Three-layer separation** — application, facade, driver. Only the core assignment moves.
 - **Lock-free shared state.** `array('H')` throttles with atomic per-element writes, no mutex. This matters *more* now: the library no longer knows which core writes throttles versus which calls `update()`, so the guarantee has to hold unconditionally.
-- **The timing figures** - 1kHz command rate, 500ms arming duration, minimum usable throttle 70 - were verified in ADR-001 on the original BLHeli_S ESC. The library's current values are `UPDATE_INTERVAL_US` and `DEFAULT_ARM_DURATION_MS` in `driver/motor_group.py`.
+- **The timing figures** - 1kHz command rate, 500ms arming duration, minimum usable throttle 70 - were verified in ADR-001 on the original BLHeli_S ESC, no longer a supported target (see CLAUDE.md). README's "Verified Parameters" has the corresponding AM32 figures, which the library's defaults already cover as the more demanding case. The library's current values are `UPDATE_INTERVAL_US` and `DEFAULT_ARM_DURATION_MS` in `driver/motor_group.py`.
 - **`DShotPIO` stays scheduling-unaware.**
 
 Reversed:
