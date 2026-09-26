@@ -1089,7 +1089,7 @@ but not a squash).
 | W24 | Statistical comparison: frame vs sample receiver on the same motor | — | S | DONE (2026-09-26) — both receivers 100% CRC-valid, eRPM within ~500 of each other at both speeds, same day/wiring/throttle |
 | W25 | Frame receiver: arming-window, no-reply and stalled-drain behavior | — | M | DONE (2026-09-26) — stalled drain: a full FIFO holds a correct value, does not corrupt one (an earlier result to the contrary was a test-pacing bug, retracted - see W25a); arming window: no echo-triggering seen (marker_ok 100% throughout), CRC-valid rate climbs to 100% over ~1-2s (ESC lock-on, not a receiver issue), moot since MotorGroup discards it anyway; no reply: reasoned from source, not bench-forced - same resync mechanism the stalled-drain test already exercised |
 | W25a | Fix or bound the frame receiver's stalled-drain corruption | — | M | SKIPPED (2026-09-26) — premise invalidated: the "corruption" was the test's own command pacing interfering with the ESC's reply on the wire, not a receiver bug; fifo_join was added then reverted once the corrected test came back clean at the original FIFO depth |
-| W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | BLOCKED — needs user decision, gated on W23-W25 |
+| W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | DONE (2026-09-26) — user decided: adopt as the sole production receiver, sample receiver moves to a standalone tool (W27, W28) |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
 | W27 | Port the harness to frame-only 1-word records | — | L | TODO |
 | W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | TODO |
@@ -2208,19 +2208,15 @@ own note above). The fix was reverted along with the finding - `dshot_bidir_rx_r
 **W26 — Decision: adopt the frame receiver as the sole production receiver (idea)** ·
 `decision/ADR-002-bidirectional-dshot.md`
 
-**BLOCKED — needs user decision, gated on W23, W24 and W25 all passing (W25a skipped - see its own
-row).** This is W19's own "Done when" bar: decide whether the frame receiver replaces the sample
-receiver, stays as a second option, or is dropped - recorded in ADR-002 with the measured decode
-cost and the W23-W25 results next to it. The user's direction (2026-09-26 conversation, not yet acted on): once this
-passes, the frame receiver becomes the sole production receiver and the sample receiver moves out
-of the driver into a standalone calibration/diagnostic tool (see W28) - motivated by the ongoing
-cost of a testing/analysis harness that would otherwise have to support two capture formats
-indefinitely for no production benefit. If W23-W25 surface a problem specific to the frame
-receiver (an edge case it handles worse than the sample receiver), that changes this decision -
-report it rather than proceeding on schedule.
-
-**Done when:** the decision (adopt / keep both / drop) is recorded in ADR-002, and if "adopt",
-W27 and W28 are unblocked.
+**DONE 2026-09-26.** This was W19's own "Done when" bar. W23-W25 all passed with no problem
+specific to the frame receiver surfacing (100% CRC-valid at both speeds, clean restarts on the
+exactly-full block, no corruption under a stalled drain once the test itself was paced correctly,
+no echo-triggering during arming, no-reply behavior reasoned to match the sample receiver's).
+**Decision: adopt.** The frame receiver becomes the sole production receiver; the sample receiver
+moves out of the driver into a standalone calibration/diagnostic tool - motivated by the ongoing
+cost a testing/analysis harness would otherwise carry indefinitely, supporting two capture formats
+for no production benefit. Recorded in ADR-002's "Decision (2026-09-26): adopt the frame receiver"
+section. W27 and W28 are unblocked.
 
 **W27 — Port the harness to frame-only 1-word records** ·
 `tests/harness/run_scenario.py`, `bidir_capture_sink.py`, `capture_sink.py`,

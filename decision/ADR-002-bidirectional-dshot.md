@@ -2034,6 +2034,31 @@ test already exercised the same "not listening for many frames, then resyncs cle
 there stalled on the FIFO push rather than the marker wait) and it held up on the bench. Not
 proof of the no-reply case specifically, but not a bare unforced reading either.
 
+*Decision (2026-09-26): adopt the frame receiver.* Parts 1-5 above are the validation this idea's
+own "How it could be validated" and "Done when" asked for before deciding whether it replaces the
+oversampling (sample) receiver, stays as a second option, or is dropped. Summary of what was
+checked: `start()`/`arm()` re-initializing this program on a PIO block it fills alone, at both
+DSHOT300 (4,413/4,413 CRC-valid, median eRPM 21,067) and DSHOT600 (4,410/4,410, 21,186), and across
+a disarm/arm restart (143/143 CRC-valid both cycles); a same-day statistical comparison against
+the sample receiver's own regression scenarios, agreeing within normal run-to-run variation at
+both speeds; a stalled drain up to 60 frames with zero drains, holding correct values rather than
+corrupting them, at the FIFO's unmodified default depth; an arming window showing no sign of the
+receiver mis-triggering on TX's own waveform; and no-reply behavior reasoned to match the sample
+receiver's own, on the same resync mechanism the stalled-drain test already exercised. No problem
+specific to the frame receiver surfaced anywhere in this pass.
+
+**Decision: adopt the frame receiver as the sole production receiver.** The sample receiver
+(`dshot_bidir_rx`) moves out of `BidirectionalDShot` entirely rather than staying as a second
+option - the deciding factor was not a technical shortcoming of either receiver, but the ongoing
+cost of a testing/analysis harness that would otherwise support two capture formats indefinitely
+for no production benefit, now that the replacement is validated. Raw capture is not deleted
+outright: it still has two uses beyond diagnostics (measuring `BIDIR_PROFILES`' `expected_ratio`
+for a new ESC unit, since the frame receiver has no period search of its own to fall back on; and
+the PC-side tooling - `scripts/simulate_rle_receiver.py`, `scripts/verify_gcr_decode_port.py` -
+that consumes raw captures directly) and moves to a standalone script instead. Tracked as W27
+(port the harness to frame-only 1-word records) and W28 (remove the sample receiver from the
+driver, build the standalone tool) in the backlog.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
