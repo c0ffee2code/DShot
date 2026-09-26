@@ -1087,9 +1087,9 @@ but not a squash).
 | W22 | Fix: bidirectional shutdown must not leave the line released-and-floating-high | D1 | M | DONE (2026-09-25, `7cdb8cb` on `fix/bidir-disarm-line-state`) — bench-confirmed on `telemetry_settled_300/600`, `two_channel_divergent_300/600`, `test_bidir_restart_cycles.py` (x2, 6/6 cycles), `smoke_unidirectional` (x2); the disarm-hang bug is fixed for both single and multi-bidirectional-motor cases and re-arming works |
 | W23 | Hardware smoke test of the integrated frame receiver | — | S | DONE (2026-09-26) — no ENOMEM on the exactly-full block at either speed; 100% CRC-valid both speeds and across a restart; decode cost far above the spike's figure, flagged for W24/W25 |
 | W24 | Statistical comparison: frame vs sample receiver on the same motor | — | S | DONE (2026-09-26) — both receivers 100% CRC-valid, eRPM within ~500 of each other at both speeds, same day/wiring/throttle |
-| W25 | Frame receiver: arming-window, no-reply and stalled-drain behavior | — | M | IN PROGRESS (2026-09-26) — stalled-drain done, found a real corruption mode (see W25a); arming-window and no-reply still open |
-| W25a | Fix or bound the frame receiver's stalled-drain corruption | — | M | TODO — found while doing W25; blocks W26 |
-| W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | BLOCKED — needs user decision, gated on W23-W25a |
+| W25 | Frame receiver: arming-window, no-reply and stalled-drain behavior | — | M | IN PROGRESS (2026-09-26) — stalled-drain done: a full FIFO holds a correct value, does not corrupt one (an earlier result to the contrary was a test-pacing bug, retracted - see W25a); arming-window and no-reply still open |
+| W25a | Fix or bound the frame receiver's stalled-drain corruption | — | M | SKIPPED (2026-09-26) — premise invalidated: the "corruption" was the test's own command pacing interfering with the ESC's reply on the wire, not a receiver bug; fifo_join was added then reverted once the corrected test came back clean at the original FIFO depth |
+| W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | BLOCKED — needs user decision, gated on W23-W25 |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
 | W27 | Port the harness to frame-only 1-word records | — | L | TODO |
 | W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | TODO |
@@ -2149,51 +2149,46 @@ does not:
 from the PIO program where hardware can't easily force it, e.g. no-reply) and its outcome -
 matching or differing from the sample receiver's documented behavior - is recorded in ADR-002.
 
-**Stalled drain: DONE 2026-09-26, and it found a real bug-shaped gap (split out as W25a).** The
-program's own comment claimed a full FIFO couldn't corrupt a capture, only delay it - reading the
-structure (all 21 bits already shifted into the ISR before autopush fires on the last one) made
-that plausible. `tests/experimental/test_rle_stalled_drain.py` armed a motor, then stopped the
-command loop and sent 20 frames with zero drains before checking what came out: 5 captures
-drained, 3 corrupted (bad CRC, one also `marker_ok=False`). The comment was wrong - the stalled
-`in_` instruction resamples the pin against real time once it resumes, not against the bit
-boundary it was waiting for, so the reply's tail comes out wrong rather than merely late. Full
-mechanism and what it does and doesn't mean for production use is in ADR-002's "Hardware
-validation, part 3" note; the driver comment is corrected. Arming-window and no-reply are still
-open - see below.
+**Stalled drain: DONE 2026-09-26, corrected same day.** The program's own comment claimed a full
+FIFO couldn't corrupt a capture, only delay it - reading the structure (all 21 bits already
+shifted into the ISR before autopush fires on the last one) made that plausible.
+`tests/experimental/test_rle_stalled_drain.py` armed a motor, stopped the command loop, sent 20
+frames with zero drains, and found 3 of 5 drained captures corrupted (bad CRC, one also
+`marker_ok=False`) - which looked like it disproved the comment, and W25a below was opened to fix
+it on that basis.
+
+It was a test bug, not a receiver bug. The burst paced commands at `motor.frame_us` - the TX
+bit-shift time only (~54us at DSHOT300), not the ESC's own ~54us reply - so re-arming TX that fast
+drove the line again before the ESC's reply had finished, corrupting it by interference on the
+wire. That looks identical to a genuine RX-FIFO-stall corruption once only the drained words are
+inspected. Re-run with the interval widened to comfortably exceed a full reply (200us), the
+"corruption" disappeared entirely - at the FIFO's original depth, and at bursts up to 60 frames
+with zero drains, with or without the `fifo_join` fix W25a added and then reverted. The program's
+own comment was right: a full FIFO holds a complete, correct value and only costs later replies
+(silently uncaptured until draining resumes), it does not corrupt one. Full account, including why
+the badly-paced test fooled a careful reading of the PIO structure, is in ADR-002's "Hardware
+validation, part 3" note. Arming-window and no-reply are still open - see below.
 
 **W25a — Fix or bound the frame receiver's stalled-drain corruption** ·
-`driver/dshot_pio.py` (`dshot_bidir_rx_rle`), `decision/ADR-002-bidirectional-dshot.md`
+`driver/dshot_pio.py` (`dshot_bidir_rx_rle`)
 
-**Found while doing W25 (2026-09-26); blocks W26.** A drain that falls more than ~4 captures
-behind corrupts the next capture's tail instead of merely delaying it - see W25's own note and
-ADR-002's "Hardware validation, part 3". `MotorGroup.update()` drains every tick unconditionally,
-so this has no known path to trigger in normal use today, but W26 (adopting the frame receiver as
-the *only* production receiver) means betting the whole telemetry link on that always being true,
-with no sample-receiver fallback left to fall back on.
-
-Two directions, not decided here:
-1. **Fix it.** The sample receiver's own version of this was fixed by giving the RX FIFO more
-   room (`fifo_join`) - `dshot_bidir_rx_rle` never uses its TX FIFO either, so the same join is
-   available and would take it from 4 one-word captures to 8. Whether that's enough headroom for
-   this receiver's actual failure mode (which corrupts on stall, not just on falling behind) needs
-   checking, not assuming - the mechanism differs from the sample receiver's, so the same fix
-   might not carry the same guarantee.
-2. **Bound it and rely on the discipline that already prevents it.** Measure exactly how many
-   consecutive late drains each receiver tolerates before failing, document the margin
-   `MotorGroup.update()`'s every-tick draining keeps this comfortably inside of, and accept the
-   dependency explicitly in ADR-002 rather than fixing the PIO program.
-
-**Done when:** a decision between the two directions above (or another one) is recorded in
-ADR-002, and either the fix is implemented and bench-verified against the same
-`test_rle_stalled_drain.py` burst, or the accepted margin is measured and documented.
+**SKIPPED 2026-09-26 - the premise it was opened on was wrong.** Opened the same day as the
+stalled-drain finding above, on the belief that a drain falling behind corrupted captures and
+`MotorGroup.update()`'s every-tick draining was the only thing preventing it from showing up in
+practice - a real problem if W26 removes the sample receiver as a fallback. `fifo_join=PIO.JOIN_RX`
+was implemented (doubling the FIFO from 4 one-word captures to 8, the same fix `dshot_bidir_rx`
+already has) and bench-verified... except the "fix" made no measurable difference, which is what
+exposed the original finding as a test-pacing artifact rather than a receiver defect (see W25's
+own note above). The fix was reverted along with the finding - `dshot_bidir_rx_rle` has no
+`fifo_join`, matching its state before this item was opened.
 
 **W26 — Decision: adopt the frame receiver as the sole production receiver (idea)** ·
 `decision/ADR-002-bidirectional-dshot.md`
 
-**BLOCKED — needs user decision, gated on W23, W24, W25 and W25a all passing.** This is W19's own
-"Done when" bar: decide whether the frame receiver replaces the sample receiver, stays as a
-second option, or is dropped - recorded in ADR-002 with the measured decode cost and the
-W23-W25a results next to it. The user's direction (2026-09-26 conversation, not yet acted on): once this
+**BLOCKED — needs user decision, gated on W23, W24 and W25 all passing (W25a skipped - see its own
+row).** This is W19's own "Done when" bar: decide whether the frame receiver replaces the sample
+receiver, stays as a second option, or is dropped - recorded in ADR-002 with the measured decode
+cost and the W23-W25 results next to it. The user's direction (2026-09-26 conversation, not yet acted on): once this
 passes, the frame receiver becomes the sole production receiver and the sample receiver moves out
 of the driver into a standalone calibration/diagnostic tool (see W28) - motivated by the ongoing
 cost of a testing/analysis harness that would otherwise have to support two capture formats

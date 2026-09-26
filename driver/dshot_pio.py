@@ -164,16 +164,21 @@ def dshot_bidir_rx():
 # with a sender whose clock is a little off - so a timing error can grow only
 # within one run of equal bits, not across the frame. That needs a receiver
 # clock at a whole number of cycles per reply bit: 16, see RLE_CYCLES_PER_BIT.
-# It takes exactly 21 bits, so it never has to recognise the end of a frame -
-# unlike dshot_bidir_rx, it never idles waiting for a sample slot mid-count.
-# That does NOT mean a full RX FIFO is harmless here: the last of the 21 reads
-# is also the one autopush fires on, so on a full FIFO it stalls there, and
-# when it resumes it samples the pin at whatever the wire is doing by then, not
-# at the bit's real centre - corrupting that reply's tail, not just delaying
-# delivery of an already-complete value. Confirmed on the bench (see ADR-002's
-# "run-length capture" section): a long enough undrained burst corrupts
-# captures, the same failure family dshot_bidir_rx's own fifo_join fix exists
-# for, and this program has no equivalent fix yet.
+# It takes exactly 21 bits, so it never has to recognise the end of a frame,
+# and a reply's worth of work always ends: the 21st read is the one autopush
+# fires on, and by then every bit is already shifted into the ISR, so a full
+# RX FIFO stalls there holding a complete, correct value rather than a partial
+# one - unlike dshot_bidir_rx, which autopushes mid-capture and so can push a
+# torn one. Confirmed on the bench at the FIFO's default depth (4 one-word
+# captures, bursts of up to 60 frames with no drain at all): the held value is
+# always still marker_ok and CRC-valid once delivered: this only costs later
+# replies, which are silently never captured while the state machine sits
+# stalled - it does not resume watching for the next one until room frees. An
+# earlier version of this comment claimed a full FIFO could corrupt a reply's
+# tail; that was a test artifact (the test's own command pacing didn't leave
+# room for the ESC's reply before re-arming TX, corrupting it by interference,
+# independent of the receiver), not a receiver bug - see ADR-002's "run-length
+# capture" section for the correction.
 #
 # What the program does, in order:
 #
