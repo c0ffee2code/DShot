@@ -153,6 +153,24 @@ def build_scenario(data):
 
         motors.append(MotorSpec(pin, sm_id, bidirectional, rx_sm_id, profile))
 
+    # A bidirectional motor's frame receiver fills its own PIO block alone
+    # (dshot_bidir_tx + dshot_bidir_rx_rle use all 32 of the block's
+    # instruction slots between them - see BidirectionalDShot's constructor
+    # docstring), so a unidirectional motor sharing that block would fail
+    # with ENOMEM at construction time. Caught here instead, before anything
+    # is armed. Two bidirectional motors ARE allowed to share one block:
+    # identical programs are loaded once per block, so a second pair adds
+    # state machines but no instructions (see ADR-002's layout table).
+    bidir_blocks = {pio_block(m.sm_id) for m in motors if m.bidirectional}
+    for index, m in enumerate(motors):
+        if not m.bidirectional and pio_block(m.sm_id) in bidir_blocks:
+            raise ValueError(
+                "motor " + str(index) + ": sm_id " + str(m.sm_id) + " shares PIO block " +
+                str(pio_block(m.sm_id)) + " with a bidirectional motor - a bidirectional "
+                "motor's frame receiver fills its own PIO block and cannot share it with a "
+                "unidirectional motor's program"
+            )
+
     # NOTE: expect.min_crc_valid_pct and expect.min_median_erpm are validated
     # here (shape + motor index) but NOT enforced on-device - run_scenario.py
     # deliberately does no GCR/CRC decoding during the run, because decoding on
