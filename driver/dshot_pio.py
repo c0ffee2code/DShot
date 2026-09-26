@@ -373,9 +373,21 @@ class BidirectionalDShot(DShotPIO):
     Sends commands with the inverted TX waveform an AM32 (or other
     bidirectional-capable) ESC needs to auto-detect bidirectional DShot, and
     captures the ESC's GCR telemetry reply on a second state machine sharing
-    the same pin (see dshot_bidir_rx). Detection only happens while the ESC is
-    disarmed, so this class must be in use for the whole arm sequence - there
-    is no way to arm with a normal signal and switch afterward.
+    the same pin. Detection only happens while the ESC is disarmed, so this
+    class must be in use for the whole arm sequence - there is no way to arm
+    with a normal signal and switch afterward.
+
+    Two receiver programs are available, chosen with the `receiver` argument by
+    what each hands the CPU: SAMPLE_RECEIVER (default), dshot_bidir_rx, hands
+    the CPU 128 raw samples per reply for gcr_decode.analyze_capture() to
+    reconstruct into a frame; FRAME_RECEIVER, the EXPERIMENTAL
+    dshot_bidir_rx_rle (see its own comment and ADR-002's "run-length capture"
+    section - not yet validated against the sample receiver on live replies),
+    reconstructs the frame itself and hands the CPU one word, for the cheaper
+    gcr_decode.analyze_frame(). A frame-receiver pair fills its PIO block on
+    its own (dshot_bidir_tx is 13 instructions, dshot_bidir_rx_rle 19, of the
+    block's 32) - unlike a sample-receiver pair, it cannot share a block with a
+    unidirectional motor or another pair.
     """
 
     bidirectional = True
@@ -386,8 +398,12 @@ class BidirectionalDShot(DShotPIO):
     # the next call.
     RX_DRAIN_LIMIT = 4
 
+    # receiver= argument values - see the class docstring
+    SAMPLE_RECEIVER = "sample"
+    FRAME_RECEIVER = "frame"
+
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600,
-                 rx_state_machine_id=None):
+                 rx_state_machine_id=None, receiver=SAMPLE_RECEIVER):
         """
         Args:
             rx_state_machine_id: Required. The second state machine, listening
@@ -406,6 +422,8 @@ class BidirectionalDShot(DShotPIO):
                 synchronises itself to each TX frame with no further calls -
                 the application only has to drain it (see drain_rx(), which
                 MotorGroup.update() calls every tick).
+            receiver: SAMPLE_RECEIVER (default) or FRAME_RECEIVER - see the
+                class docstring.
         """
         # Validate before claiming any hardware: a constructor that raises
         # partway through shouldn't leave a stray, half-configured state
@@ -432,11 +450,29 @@ class BidirectionalDShot(DShotPIO):
                 "4-7 -> PIO1, 8-11 -> PIO2) - see this constructor's own docstring"
             )
 
+        if receiver not in (self.SAMPLE_RECEIVER, self.FRAME_RECEIVER):
+            raise ValueError(
+                "receiver must be BidirectionalDShot.SAMPLE_RECEIVER or "
+                ".FRAME_RECEIVER, got " + repr(receiver)
+            )
+
         profile = BIDIR_PROFILES.get(dshot_speed)
         if profile is None:
             raise ValueError("BidirectionalDShot needs a dshot_speed with a verified "
                               "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
-        rx_speed = profile["rx_speed"]
+
+        if receiver == self.FRAME_RECEIVER:
+            rx_program = dshot_bidir_rx_rle
+            rx_speed = rle_rx_speed(dshot_speed)
+            capture_words = 1
+            expected_ratio = None
+            ratio_tolerance = None
+        else:
+            rx_program = dshot_bidir_rx
+            rx_speed = profile["rx_speed"]
+            capture_words = 4
+            expected_ratio = profile["expected_ratio"]
+            ratio_tolerance = profile["ratio_tolerance"]
 
         # Both sides release the line between frames (see dshot_bidir_tx), so
         # for part of each frame nobody drives it. An undriven pad can float
@@ -449,11 +485,21 @@ class BidirectionalDShot(DShotPIO):
 
         super().__init__(state_machine_id, pin, dshot_speed, dshot_bidir_tx)
 
-        self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx,
-                                   freq=rx_speed, in_base=pin)
+        # jmp_pin wires the pin dshot_bidir_rx_rle's jmp(pin, ...) instructions
+        # read; dshot_bidir_rx has none, so the sample receiver does not need
+        # it. Kept on self, alongside the program and clock, so start() can
+        # replay the same rx_sm.init() call on every run, not only the first.
+        rx_init_kwargs = {"in_base": pin}
+        if receiver == self.FRAME_RECEIVER:
+            rx_init_kwargs["jmp_pin"] = pin
+
+        self.rx_sm = StateMachine(rx_state_machine_id, rx_program, freq=rx_speed, **rx_init_kwargs)
+        self.rx_program = rx_program
+        self.rx_init_kwargs = rx_init_kwargs
+        self.receiver = receiver
         self.rx_clock_hz = rx_speed
-        self.expected_ratio = profile["expected_ratio"]
-        self.ratio_tolerance = profile["ratio_tolerance"]
+        self.expected_ratio = expected_ratio
+        self.ratio_tolerance = ratio_tolerance
 
         self.rx_state_machine_id = rx_state_machine_id
 
@@ -463,19 +509,20 @@ class BidirectionalDShot(DShotPIO):
         # drain_rx(publish) empties the RX FIFO. Call it on every command-loop
         # tick: an undrained FIFO stalls the RX state machine, and the captures
         # taken right after a stall come back corrupted (see ADR-002). It takes
-        # whole 4-word captures only, leaving fewer than 4 waiting words for the
-        # next call, so the grouping cannot slip; a completed capture replaces
-        # the single published one (read it with latest_capture()) when
-        # `publish` is true and is dropped otherwise. It takes at most
-        # RX_DRAIN_LIMIT captures per call, does no decoding (that is the
-        # application's job, on its own schedule - see decode_capture()), and
-        # must be called from one place only (MotorGroup.update()):
-        # while the loop runs it is the only writer of the published capture.
+        # whole captures only (capture_words - 4 for the sample receiver, 1 for
+        # the frame receiver), leaving fewer waiting words for the next call,
+        # so the grouping cannot slip; a completed capture replaces the single
+        # published one (read it with latest_capture()) when `publish` is true
+        # and is dropped otherwise. It takes at most RX_DRAIN_LIMIT captures
+        # per call, does no decoding (that is the application's job, on its
+        # own schedule - see decode_capture()), and must be called from one
+        # place only (MotorGroup.update()): while the loop runs it is the only
+        # writer of the published capture.
         #
         # It is the mailbox's own method, bound here, rather than a method of
         # this class that calls the mailbox: it runs on every tick, and a
         # Python-level call layer per tick measurably slowed the command loop.
-        self.mailbox = CaptureMailbox(self.rx_sm, self.RX_DRAIN_LIMIT, utime.ticks_us)
+        self.mailbox = CaptureMailbox(self.rx_sm, self.RX_DRAIN_LIMIT, utime.ticks_us, capture_words)
         self.drain_rx = self.mailbox.drain
 
     def start(self):
@@ -488,7 +535,7 @@ class BidirectionalDShot(DShotPIO):
         self.pin.init(Pin.IN, Pin.PULL_UP)
         self.sm.init(self.program, freq=self.dshot_speed,
                      sideset_base=self.pin, set_base=self.pin)
-        self.rx_sm.init(dshot_bidir_rx, freq=self.rx_clock_hz, in_base=self.pin)
+        self.rx_sm.init(self.rx_program, freq=self.rx_clock_hz, **self.rx_init_kwargs)
 
         # Start each run from a clean slate. RX listens before TX can release
         # the pin and raise its first irq(rel(1)) (see dshot_bidir_rx's
@@ -506,12 +553,14 @@ class BidirectionalDShot(DShotPIO):
         """
         Return the next raw captured word from the RX FIFO, or None if empty.
 
-        dshot_bidir_rx synchronises itself to every TX frame via a PIO IRQ -
-        no per-read setup call is needed. Each real reply produces four raw
-        32-bit words back to back (128 uniformly-spaced, un-slotted samples
-        covering the marker bit, the 20 real data bits, and idle tail - see
-        dshot_bidir_rx's comments). Raw and unpaired: decoding into eRPM is a
-        separate step (decode_capture()).
+        The receiver synchronises itself to every TX frame via a PIO IRQ - no
+        per-read setup call is needed. Each real reply produces this motor's
+        capture_words words back to back: 4 for the sample receiver (128
+        uniformly-spaced, un-slotted samples covering the marker bit, the 20
+        real data bits, and idle tail - see dshot_bidir_rx's comments), 1 for
+        the frame receiver (the already-reconstructed 21-bit frame - see
+        dshot_bidir_rx_rle's comments). Raw and unpaired: decoding into eRPM is
+        a separate step (decode_capture()).
 
         Diagnostic access. Use either this or drain_rx() on a given motor,
         never both - they consume the same FIFO.
@@ -531,20 +580,26 @@ class BidirectionalDShot(DShotPIO):
         ticks_us is utime.ticks_us() at publication (wraps - compare with
         ticks_diff). sequence counts published captures since start(), so a
         caller can tell a fresh capture from one it has already seen. words is
-        a tuple of the 4 raw 32-bit RX words. Safe to call from a different
-        core than drain_rx().
+        a tuple of this motor's capture_words raw 32-bit RX words (see
+        rx_read()). Safe to call from a different core than drain_rx().
         """
         return self.mailbox.latest()
 
     def decode_capture(self, words):
         """
-        Decode one raw capture with this motor's own RX profile and return
-        gcr_decode.analyze_capture()'s result dict (crc_ok is the validity
-        signal - a capture that is complete and correctly framed can still
-        fail it). Costs about 1.3ms on the Pico, several command-loop ticks;
-        call it at whatever pace the application can afford, never from the
-        command loop.
+        Decode one raw capture with this motor's own receiver and RX profile,
+        and return the result dict gcr_decode.analyze_capture() (sample
+        receiver) or gcr_decode.analyze_frame() (frame receiver) returns -
+        crc_ok is the validity signal in both, a capture that is complete and
+        correctly framed can still fail it. The sample receiver's decode costs
+        about 1.3ms on the Pico, several command-loop ticks, so call it at
+        whatever pace the application can afford, never from the command loop;
+        the frame receiver skips the reconstruction that costs most of that
+        1.3ms (measured on the spike bench at ~200-215us for decode() plus
+        check_crc() alone - not this method's own dict-building overhead).
         """
+        if self.receiver == self.FRAME_RECEIVER:
+            return gcr_decode.analyze_frame(words[0])
         return gcr_decode.analyze_capture(words, self.rx_clock_hz, self.expected_ratio, self.ratio_tolerance)
 
     # One shutdown-only wait, not on any hot path: the ESC's reply to the last

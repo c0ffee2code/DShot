@@ -7,22 +7,23 @@
 
 from array import array
 
-# Words in one capture: 128 samples, 32 per word
-WORDS = 4
-
 
 class CaptureMailbox:
     """
     One writer drains captures into it; any other core may read the latest one.
 
-    A reply arrives as exactly 4 words. drain() takes a whole capture from the
+    A reply arrives as a fixed number of words - 4 for dshot_bidir_rx's raw
+    samples, 1 for dshot_bidir_rx_rle's already-reconstructed frame - given as
+    capture_words at construction. drain() takes a whole capture from the
     source (the RX state machine's FIFO) in one bulk read, straight into the
     published slot. The slot keeps only the latest capture: the application
     samples telemetry, so a newer capture always replaces an older one.
 
-    Only whole captures are ever read. The RX FIFO is exactly one capture deep,
-    so a capture is complete when 4 words are waiting; with fewer, drain() leaves
-    them where they are, and the word grouping cannot slip.
+    Only whole captures are ever read: a capture is complete when capture_words
+    words are waiting; with fewer, drain() leaves them where they are, and the
+    word grouping cannot slip. How deep the source's own FIFO is relative to
+    capture_words - whether it can hold more than one capture at a time - is
+    the driver's concern, not this class's (see BidirectionalDShot).
 
     The two cores run in parallel with no global interpreter lock, and a
     capture is several stores, so a reader could otherwise see half of one
@@ -44,7 +45,7 @@ class CaptureMailbox:
     # giving up, so a reader can never spin
     LATEST_ATTEMPTS = 4
 
-    def __init__(self, source, limit, clock):
+    def __init__(self, source, limit, clock, capture_words=4):
         """
         Args:
             source: Where captures come from - anything with rx_fifo() (how many
@@ -53,17 +54,20 @@ class CaptureMailbox:
             limit: Most captures one drain() call takes.
             clock: Zero-argument callable returning a timestamp in microseconds
                 (utime.ticks_us on the device), used to stamp published captures.
+            capture_words: Words in one capture from this source (see the class
+                docstring). Default 4 matches dshot_bidir_rx's raw samples.
         """
         self.source = source
         self.limit = limit
         self.clock = clock
+        self.capture_words = capture_words
 
-        self.slot_words = array('I', [0] * WORDS)
+        self.slot_words = array('I', [0] * capture_words)
         self.slot_ticks_us = 0
         self.slot_seq = 0
 
         # Where a capture goes when it is being dropped rather than published
-        self.scratch = array('I', [0] * WORDS)
+        self.scratch = array('I', [0] * capture_words)
 
     def reset(self):
         """Discard the published capture (start of a run)."""
@@ -73,15 +77,16 @@ class CaptureMailbox:
         """
         Take up to `limit` whole captures from the source. Each is published,
         stamped with clock(), when `publish` is true and dropped otherwise.
-        Fewer than 4 words waiting means no complete capture yet: nothing is
-        taken, so get() can never block here.
+        Fewer than capture_words words waiting means no complete capture yet:
+        nothing is taken, so get() can never block here.
 
         Must be called from one place only: while running it is the only writer
         of the published slot.
         """
         source = self.source
         remaining = self.limit
-        while remaining and source.rx_fifo() >= WORDS:
+        capture_words = self.capture_words
+        while remaining and source.rx_fifo() >= capture_words:
             remaining -= 1
             if publish:
                 seq = self.slot_seq
@@ -99,8 +104,8 @@ class CaptureMailbox:
         since reset(), or the writer kept rewriting the slot for every attempt.
 
         sequence counts published captures since reset(), so a caller can tell
-        a fresh capture from one it has already seen. words is a tuple of the 4
-        raw 32-bit words.
+        a fresh capture from one it has already seen. words is a tuple of
+        capture_words raw 32-bit words.
         """
         for _ in range(self.LATEST_ATTEMPTS):
             seq = self.slot_seq
@@ -108,8 +113,7 @@ class CaptureMailbox:
                 return None
             if seq & 1:
                 continue
-            slot = self.slot_words
-            words = (slot[0], slot[1], slot[2], slot[3])
+            words = tuple(self.slot_words)
             ticks_us = self.slot_ticks_us
             if self.slot_seq == seq:
                 return (ticks_us, seq >> 1, words)

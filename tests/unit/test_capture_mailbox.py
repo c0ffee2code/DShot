@@ -131,5 +131,32 @@ class CaptureMailboxTest(unittest.TestCase):
         self.assertIsNone(self.mailbox.latest())
 
 
+class SingleWordCaptureTest(unittest.TestCase):
+    """capture_words=1, as BidirectionalDShot builds the mailbox for the
+    frame receiver (dshot_bidir_rx_rle publishes one word per reply,
+    not four)."""
+
+    def setUp(self):
+        self.source = FakeSource()
+        ticks = [0]
+
+        def clock():
+            ticks[0] += 100
+            return ticks[0]
+
+        self.mailbox = CaptureMailbox(self.source, 4, clock, capture_words=1)
+
+    def test_a_single_word_makes_a_whole_capture(self):
+        self.source.add([0x1FFFFF])
+        self.mailbox.drain(True)
+        self.assertEqual(self.mailbox.latest(), (100, 1, (0x1FFFFF,)))
+        self.assertEqual(self.source.words, [])
+
+    def test_several_single_word_captures_publish_the_latest(self):
+        self.source.add([1, 2, 3])
+        self.mailbox.drain(True)
+        self.assertEqual(self.mailbox.latest(), (300, 3, (3,)))
+
+
 if __name__ == "__main__":
     unittest.main()

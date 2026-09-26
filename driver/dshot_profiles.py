@@ -54,6 +54,6 @@ RLE_CYCLES_PER_BIT = 16
 
 
 def rle_rx_speed(dshot_speed):
-    """The run-length receiver's clock for a DShot speed, in Hz."""
+    """The frame receiver's clock for a DShot speed, in Hz."""
     profile = BIDIR_PROFILES[dshot_speed]
     return round(RLE_CYCLES_PER_BIT * profile["rx_speed"] / profile["expected_ratio"])

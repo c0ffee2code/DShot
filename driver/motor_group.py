@@ -361,9 +361,11 @@ class MotorGroup:
         Decode one capture returned by raw_telemetry() with that motor's own RX
         profile; see BidirectionalDShot.decode_capture() for the result.
 
-        Costs about 1.3ms, several command-loop ticks, so call it at whatever
-        pace the application can afford, never from the command loop. Raises UnsupportedOperationException for a
-        unidirectional motor.
+        Costs about 1.3ms with the sample receiver's default decode path,
+        several command-loop ticks - less with the frame receiver's cheaper
+        one, see BidirectionalDShot.decode_capture() - so call it at whatever
+        pace the application can afford, never from the command loop. Raises
+        UnsupportedOperationException for a unidirectional motor.
         """
         if motor_index < 0 or motor_index >= self.motor_count:
             raise MotorGroupException(
