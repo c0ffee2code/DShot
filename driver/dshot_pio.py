@@ -187,9 +187,12 @@ def dshot_bidir_rx():
 # 2. Count down from a preset while the pin holds its level: one pass of the
 #    counting loop is 2 cycles (a pin test and a decrement), the loop for the
 #    level the pin is at. When the pin flips, jump to the other level's loop with
-#    the counter set to a short count, so the next read lands about half a bit
-#    after the edge. When the counter runs out with no flip, the read lands one
-#    whole bit after the last one.
+#    the counter set to a short count, so the next read lands close to the edge -
+#    5 cycles for a low-to-high flip, 6 for high-to-low (traced against
+#    scripts/simulate_frame_receiver.py's instruction-level PROGRAM model, which
+#    is hand-transcribed from this one), not the half-bit point (8 of the 16
+#    cycles in FRAME_CYCLES_PER_BIT) a symmetric design might suggest. When the
+#    counter runs out with no flip, the read lands one whole bit after the last one.
 #
 # 3. Read the pin into the input shift register (autopush hands it over after 21
 #    reads), count the bit, and reload the counter for a whole bit.

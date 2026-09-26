@@ -210,6 +210,14 @@ class ThrottleProfileTest(unittest.TestCase):
         self.rejected([{"type": "repeat", "duration_ms": 100, "segments": [
             {"type": "hold", "throttle": 1, "duration_ms": 0}]}], "zero duration")
 
+    def test_hold_throttle_out_of_range_is_rejected(self):
+        self.rejected([{"type": "hold", "throttle": 2048, "duration_ms": 100}], "0..2047")
+        self.rejected([{"type": "hold", "throttle": -1, "duration_ms": 100}], "0..2047")
+
+    def test_ramp_target_out_of_range_is_rejected(self):
+        self.rejected([{"type": "ramp", "to": 2048, "step": 1, "duration_ms": 100}], "0..2047")
+        self.rejected([{"type": "ramp", "to": -1, "step": 1, "duration_ms": 100}], "0..2047")
+
 
 if __name__ == "__main__":
     unittest.main()

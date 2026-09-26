@@ -92,8 +92,9 @@ def check_expect(expect, largest_gap_us, records, elapsed_ms, loop_gap_us):
     if not expect:
         return
 
-    # The longest gap between two update() calls, measured on Core 1 itself. The
-    # ESC disarms on its own after 100-250ms without a frame.
+    # The longest gap between two update() calls, measured on Core 1 itself -
+    # checked against how long the ESC tolerates a stalled command loop before
+    # disarming on its own. See CLAUDE.md's disarm() notes for that timeout figure.
     max_loop_gap_ms = expect.get("max_loop_gap_ms")
     if max_loop_gap_ms is not None and loop_gap_us > max_loop_gap_ms * 1000:
         raise RuntimeError(

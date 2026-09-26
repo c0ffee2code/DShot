@@ -11,38 +11,43 @@ DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using
 
 ## Hardware
 
-This driver was developed and tested on a flight control test bench, against
-two different ESC firmware families with meaningfully different timing
-requirements (see "Verified Parameters" below):
+**AM32 is the only supported ESC firmware** (see CLAUDE.md's "Supported ESC targets") -
+no other ESC exists on this project's bench. An earlier BLHeli_S ESC was used before the
+project narrowed to AM32 only; its measurements live on in ADR-001/ADR-004 as the reasoning
+trail for some of the library's conservative defaults, not as current hardware.
 
 | Component | Model | Specifications |
 |-----------|-------|----------------|
 | **Controller** | Raspberry Pi Pico 2 | RP2350, dual ARM Cortex-M33, 150MHz |
 | **Motors** | BetaFPV Lava Series 1104 (×2) | 7200KV, 5g weight |
-| **ESC (1)** | JHEMCU Brushless Wing Dual 40A 2-in-1 | 40A×2, 2-6S (7.4-27V), 6.2g |
-| **Firmware (1)** | BLHeli_S | G-H-30 V16.7 |
-| **ESC (2)** | Skystar RC KM55A2 (4-in-1) | AM32 firmware |
+| **ESC** | Skystar RC KM55A2 (4-in-1) | AM32 firmware |
 
 ### Test Bench Configuration
 
+See `tests/harness/scenarios/*.json` for the source-of-truth wiring.
+
 ```
                     ┌─────────────┐
-                    │  Pico 2     │
+                    │   Pico 2    │
                     │  (RP2350)   │
-                    └──┬───────┬──┘
-                 GPIO4 │       │ GPIO5
-                       ▼       ▼
-              ┌────────────────────────┐
-              │  JHEMCU 2-in-1 ESC     │
-              │  (BLHeli_S firmware)   │
-              └────┬──────────────┬────┘
-                   ▼              ▼
+                    └─┬──┬──┬──┬──┘
+                 GPIO6│  │  │  │GPIO9
+                      │7 │  │8 │
+                      ▼  ▼  ▼  ▼
+              ┌─────────────────────────┐
+              │  Skystar KM55A2 (4-in-1) │
+              │      AM32 firmware       │
+              │  ch1  ch2  ch3  ch4      │
+              └──┬───────────┬───────────┘
+                 ▼           ▼
             ┌──────────┐   ┌──────────┐
             │ Motor 1  │   │ Motor 2  │
             │ 1104     │   │ 1104     │
             │ 7200KV   │   │ 7200KV   │
             └──────────┘   └──────────┘
 ```
+
+ch2 (GPIO7) and ch4 (GPIO9) are wired but idle in every scenario - only ch1/ch3 drive motors.
 
 ## Architecture
 
@@ -77,8 +82,8 @@ requirements that drive it.
 
 ESCs disarm if commands stop arriving, so whatever context you choose must call
 `update()` continuously, without long or irregular gaps. How fast depends on
-the ESC firmware - see "Verified Parameters" below; some ESCs need
-near-back-to-back frames just to complete arming. On this test bench that
+the ESC firmware - see "Verified Parameters" below; AM32 needs near-back-to-back
+frames just to complete arming. On this test bench that
 means a dedicated Core 1 thread, keeping Core 0 free for the display and
 buttons - see `tests/harness/core1_runner.py` for a ready-made example to copy into
 your project.
@@ -95,7 +100,7 @@ import utime
 motor = UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600)  # SM 0, GPIO 4
 motor.start()  # Activate PIO state machine
 
-# Arm ESC (send throttle=0 back-to-back for ~500ms). Some ESC firmware needs
+# Arm ESC (send throttle=0 back-to-back for ~500ms). AM32 needs
 # near-continuous frames to arm at all - see "Verified Parameters" below.
 arm_start = utime.ticks_ms()
 while utime.ticks_diff(utime.ticks_ms(), arm_start) < 500:
@@ -163,18 +168,17 @@ while True:
 
 ## Verified Parameters
 
-Timing requirements are ESC-firmware-dependent, not just protocol-dependent -
-the two ESCs tested needed meaningfully different arming behavior. The
-library's defaults (`MotorGroup.UPDATE_INTERVAL_US`,
-`DEFAULT_ARM_DURATION_MS`) target the more demanding of the two, since a
-faster/longer hold is always safe for the less demanding one too.
+Timing requirements are ESC-firmware-dependent, not just protocol-dependent. The library's
+defaults (`MotorGroup.UPDATE_INTERVAL_US`, `DEFAULT_ARM_DURATION_MS`) are tuned to AM32's
+measured requirements, which are demanding enough (see "Command interval" below) that they
+need no further headroom.
 
-| Parameter | JHEMCU / BLHeli_S | Skystar KM55A2 / AM32 |
-|-----------|---------------------|------------------------|
-| Protocol | DShot600 | DShot300 |
-| Minimum throttle | 70 (50-69 unreliable) | 100 confirmed working |
-| Command interval | 1ms (1kHz) tolerant | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
-| Arming duration | 500ms | 500ms - an earlier finding claimed 500ms never completed the ESC's own arm confirmation and set this to 3000ms, but that test predated a board-reset bug fix (see `driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`); re-tested 2026-09-12 with the corrected workflow and 500ms (down to 300ms) armed cleanly, confirmed via genuine telemetry replies |
+| Parameter | AM32 (Skystar KM55A2) |
+|-----------|------------------------|
+| Protocol | DShot300 |
+| Minimum throttle | 100 confirmed working |
+| Command interval | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
+| Arming duration | 500ms (down to 300ms) armed cleanly, confirmed via genuine telemetry replies; re-tested 2026-09-12 with the corrected board-reset workflow (see `driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`) |
 
 The AM32 ESC gave no indication via its beep pattern alone that arming was
 failing - it decodes individual commands correctly (confirmed via the DShot
@@ -224,9 +228,9 @@ See [DSHOT_PROTOCOL.md](specification/DSHOT_PROTOCOL.md) for complete protocol d
 
 | Feature | Status | Dependencies |
 |---------|--------|--------------|
-| **DShot commands** | Blocked | Several different ESCs required for testing |
-| **Bidirectional DShot** | Deferred | ESC firmware: Bluejay, BLHeli_32, or AM32 |
-| **Extended telemetry (EDT)** | Blocked | Bidirectional DShot + compatible firmware |
+| **DShot commands** | Blocked | ADR-003: several different ESCs required for testing |
+| **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, in production use |
+| **Extended telemetry (EDT)** | Blocked | Needs AM32-side EDT support to test against |
 
 See `decision/` folder for Architecture Decision Records (ADRs).
 
@@ -241,4 +245,4 @@ Original DShot PIO implementation from [jrddupont/DShotPIO](https://github.com/j
 - [DShot Protocol](https://brushlesswhoop.com/dshot-and-bidirectional-dshot/)
 - [RP2040 Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
 - [BetaFPV Lava 1104 Motors](https://betafpv.com/products/lava-series-1104-brushless-motors)
-- [JHEMCU Dual 40A ESC](https://www.jhemcu.com/e_productshow/?81-JHEMCU-BRUSELESS-WING-DUAL-40A-2IN1-ESC-81.html)
+- [AM32 Firmware](https://github.com/am32-firmware/AM32) - this project's ground truth for ESC behavior

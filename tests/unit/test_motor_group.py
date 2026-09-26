@@ -219,6 +219,24 @@ class DisarmTest(GroupTestCase):
         group.disarm()
         self.assertEqual(len(group.motors[0].sm.sent), sent)
 
+    def test_a_redundant_disarm_does_not_stop_the_motors_again(self):
+        # stop() is only meaningful on a state machine that was actually live -
+        # a repeat disarm() (or one before ever arming) has nothing to stop.
+        group = self.make([uni(0, 6), bidir(2, 8)])
+        self.arm_fully(group)
+        group.disarm()
+        restarts = [motor.sm.restarts for motor in group.motors]
+        rx_restarts = group.motors[1].rx_sm.restarts
+        group.disarm()
+        self.assertEqual([motor.sm.restarts for motor in group.motors], restarts)
+        self.assertEqual(group.motors[1].rx_sm.restarts, rx_restarts)
+
+    def test_disarm_before_arming_does_not_stop_the_motors(self):
+        group = self.make([uni(0, 6), bidir(2, 8)])
+        group.disarm()
+        self.assertEqual([motor.sm.restarts for motor in group.motors], [0, 0])
+        self.assertEqual(group.motors[1].rx_sm.restarts, 0)
+
     def test_disarm_before_arming_sends_nothing(self):
         group = self.make([uni(0, 6)])
         group.disarm()

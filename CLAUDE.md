@@ -9,12 +9,14 @@ DShot driver for Raspberry Pi Pico, part of a flight control systems test bench.
 Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0 license).
 
 **Supported ESC targets (design constraint):** This is a pet/exploration project — it does
-not aim to support the endless universe of ESCs. Exactly two firmware families are in scope:
-**BLHeli_S** (cheap, old, unidirectional DShot only in stock form) and **AM32** (modern,
-bidirectional-capable). AM32 has a further advantage: it is open source
+not aim to support the endless universe of ESCs. **AM32** is the sole firmware family in
+scope (modern, bidirectional-capable). AM32 has a further advantage: it is open source
 (https://github.com/am32-firmware/AM32), so behavior is verified against its actual
 firmware source rather than guessed from generic protocol articles — when a generic spec and AM32's source disagree, the source wins. Do not add
 abstraction layers or configuration surface for hypothetical other ESC families.
+**BLHeli_S** was an earlier bench target (see README's "Verified Parameters" table and
+ADR-001/ADR-004 for the timing data it produced) but is no longer supported — do not add
+code paths or timing accommodations to keep it working.
 
 ## Project Goals
 
@@ -23,7 +25,7 @@ abstraction layers or configuration surface for hypothetical other ESC families.
 | **Improve arming sequence** | Done | ADR-001: continuous 1kHz commands solve timing issues |
 | **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
 | **DShot commands** | Blocked | ADR-003: Several different ESCs required for testing |
-| **Bidirectional DShot** | Deferred | ADR-002: Needs Bluejay firmware or BLHeli_32/AM32 ESCs |
+| **Bidirectional DShot** | Done | ADR-002: frame receiver (`dshot_bidir_rx_frame`) bench-validated on AM32 and adopted as the sole production receiver (2026-09-26) |
 
 ## Development Environment
 
@@ -62,7 +64,7 @@ Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremo
 
 4. **`update()` is inert while disarmed**: a safety requirement, not an optimisation. Writing to deactivated state machines would fill the TX FIFO and block the calling core forever.
 
-5. **`disarm()` transmits its own zeros**, then drains them, then deactivates — in that order. It is the one method in the facade that blocks (a few hundred microseconds). Deactivating alone is not a stop: the motor keeps spinning at its last throttle until the ESC's own 100-250ms signal-loss timeout expires. Do not "optimise" the transmit away. Its `self.state` check makes it safe to call from a different core than `update()` without corrupting the group's own state, but nothing serialises its FIFO/state-machine calls against a concurrent `update()` still running on that other core — stop the loop first (see the usage example) rather than relying on `disarm()` to tolerate a still-running caller. A bidirectional motor's deactivated line is also left **actively driven low**, not merely released to its pull-up: a released, floating-high line leaves some ESC firmware (AM32 included) unable to time out of its own post-disarm reboot cleanly, and a driven-low line recovers it the same way a unidirectional motor's frozen-low line already does. `start()` reclaims the pin for PIO again.
+5. **`disarm()` transmits its own zeros**, then drains them, then deactivates — in that order. It is the one method in the facade that blocks (a few hundred microseconds). Deactivating alone is not a stop: the motor keeps spinning at its last throttle until the ESC's own signal-loss timeout expires (100-250ms, measured on the now-unsupported BLHeli_S ESC — see ADR-004; not re-verified against AM32, so treat it as an order-of-magnitude figure, not an exact one). Do not "optimise" the transmit away. Its `self.state` check makes it safe to call from a different core than `update()` without corrupting the group's own state, but nothing serialises its FIFO/state-machine calls against a concurrent `update()` still running on that other core — stop the loop first (see the usage example) rather than relying on `disarm()` to tolerate a still-running caller. A bidirectional motor's deactivated line is also left **actively driven low**, not merely released to its pull-up: a released, floating-high line leaves some ESC firmware (AM32 included) unable to time out of its own post-disarm reboot cleanly, and a driven-low line recovers it the same way a unidirectional motor's frozen-low line already does. `start()` reclaims the pin for PIO again.
 
 6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
 
