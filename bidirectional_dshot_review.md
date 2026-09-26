@@ -1091,7 +1091,7 @@ but not a squash).
 | W25a | Fix or bound the frame receiver's stalled-drain corruption | — | M | SKIPPED (2026-09-26) — premise invalidated: the "corruption" was the test's own command pacing interfering with the ESC's reply on the wire, not a receiver bug; fifo_join was added then reverted once the corrected test came back clean at the original FIFO depth |
 | W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | DONE (2026-09-26) — user decided: adopt as the sole production receiver, sample receiver moves to a standalone tool (W27, W28) |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
-| W27 | Port the harness to frame-only 1-word records | — | L | TODO |
+| W27 | Port the harness to frame-only 1-word records | — | L | IN PROGRESS (2026-09-26) — bench powered off, code changes only this session, hardware verification still needed |
 | W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | TODO |
 
 ### Work items
@@ -2240,6 +2240,35 @@ last, so a problem there doesn't surface after the rest of the port looks done.
 **Done when:** the full existing scenario suite passes against its existing thresholds
 (`min_crc_valid_pct`, `min_median_erpm`) using the frame receiver exclusively, including at least
 one two-bidirectional-motor scenario.
+
+**Code done 2026-09-26; hardware verification still needed - the bench was powered off partway
+through this session.** `run_scenario.py`'s `build_motor()` now passes
+`receiver=BidirectionalDShot.FRAME_RECEIVER` and `RECORD_ZERO_WORDS` is a 1-tuple.
+`bidir_capture_sink.py`'s `RECORD_FMT` shrank to `<I4H4I` (one word per motor instead of four),
+and its `rx_clock_hz` now comes from `dshot_profiles.rle_rx_speed()` instead of
+`BIDIR_PROFILES[...]["rx_speed"]` (the sample receiver's clock, which is no longer what the
+harness's receiver actually runs at). `dshot_bidir_decode.py` gained `decode_frame()`/
+`analyze_frame()`, the PC-side counterpart to the driver's own, and `analyze_bidir_capture_log.py`
+uses them instead of `analyze_capture()`. `verify_gcr_decode_port.py` gained a synthetic
+`verify_frame_parity()` check (4096 values, 0 mismatches) alongside its existing real-session
+sweep, since there are no real frame-receiver capture sessions yet to diff against.
+
+The ENOMEM risk this item's own note warned about was real: every scenario with a bidirectional
+motor had a unidirectional motor sharing its PIO block (`sm_id` 2 alongside the channel-1 pair's
+0/1, and `sm_id` 6 alongside the channel-3 pair's 4/5 in the two-motor scenarios) - a wiring that
+was safe for the sample receiver but not the frame receiver, which fills its block alone. Caught
+by adding a new fail-fast check to `scenario.py` itself (a unidirectional motor cannot share a
+PIO block with a bidirectional one; two bidirectional motors may still share one, since identical
+programs load once per block) rather than only fixing the JSON files and hoping - a scenario
+author making the same mistake in the future gets a clear message instead of an on-device ENOMEM.
+All affected scenarios rewired: the idle unidirectional motors move to PIO2 (`sm_id` 8, 9, 10),
+which was otherwise unused by any current scenario. `smoke_unidirectional.json` and
+`two_channel_unidirectional_300.json` (no bidirectional motors) are untouched.
+
+Not yet done: running any of this on the bench, including the two-bidirectional-motor scenario
+this item's own note flagged as the untested full-block combination. `scripts/pull_captures.py`
+and `scripts/analyze_bidir_capture_log.py`'s full pipeline (parsing a real 1-word-record
+`capture.bin`, not just the synthetic parity check) are also unverified against real data.
 
 **W28 — Hygiene: delete the sample receiver from the driver; move raw capture and calibration to
 a standalone script** · `driver/dshot_pio.py`, `driver/capture_mailbox.py`, `driver/gcr_decode.py`,

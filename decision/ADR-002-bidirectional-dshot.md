@@ -2059,6 +2059,17 @@ that consumes raw captures directly) and moves to a standalone script instead. T
 (port the harness to frame-only 1-word records) and W28 (remove the sample receiver from the
 driver, build the standalone tool) in the backlog.
 
+*Harness port (2026-09-26), code done, hardware verification pending.* Porting `run_scenario.py`
+to build bidirectional motors with the frame receiver surfaced the risk the adoption decision
+above only described in the abstract: every existing scenario with a bidirectional motor wired a
+unidirectional motor onto the same PIO block (safe for the sample receiver, which leaves room in
+its block; not safe for the frame receiver, which fills its block alone). `scenario.py` gained a
+fail-fast check for exactly this - a scenario JSON that makes the same mistake in the future gets
+a clear message instead of an on-device ENOMEM - and every affected scenario was rewired, moving
+the idle unidirectional motors onto the otherwise-unused PIO2 block. Full detail, including the
+capture-format and PC-tooling changes, is in the backlog's W27 entry. None of this has run on the
+bench yet.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
