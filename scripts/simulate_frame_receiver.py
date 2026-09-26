@@ -1,5 +1,5 @@
 """
-PC-side model of driver/dshot_pio.py's dshot_bidir_rx_rle, replayed on real captures.
+PC-side model of driver/dshot_pio.py's dshot_bidir_rx_frame, replayed on real captures.
 
 The frame receiver is a PIO program; this checks its logic and timing
 before it runs on hardware. For each CRC-valid reply in a stored capture session
@@ -9,7 +9,7 @@ the 2-cycle input synchroniser) with the receiver clock set as the driver sets
 it, and compares the frame the model pushes with the one
 gcr_decode.reconstruct_frame() builds from the same samples.
 
-PROGRAM below is hand-transcribed from dshot_bidir_rx_rle: change one and the
+PROGRAM below is hand-transcribed from dshot_bidir_rx_frame: change one and the
 other has to follow. Run from the project root:
   python scripts/simulate_frame_receiver.py
 
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "driver"))
 
 import gcr_decode
-from dshot_profiles import BIDIR_PROFILES, DSHOT_SPEEDS, RLE_CYCLES_PER_BIT
+from dshot_profiles import BIDIR_PROFILES, DSHOT_SPEEDS, FRAME_CYCLES_PER_BIT
 
 RECORD_FMT = "<I4H16I"
 FRAME_BITS = 21
@@ -141,7 +141,7 @@ def replay(session, dshot_speed, mistune, rng):
     """Returns (CRC-valid replies in the capture, how many the model rebuilt identically)."""
     ratio = BIDIR_PROFILES[dshot_speed]["expected_ratio"]
     # capture cycles per receiver cycle; mistune skews it as a wrongly tuned clock would
-    scale = ratio / RLE_CYCLES_PER_BIT * (1 + mistune)
+    scale = ratio / FRAME_CYCLES_PER_BIT * (1 + mistune)
     valid = identical = 0
     for words in load(session):
         edges = gcr_decode.find_edges(words)

@@ -1939,7 +1939,7 @@ bits into the ISR, so the CPU receives the finished 21-bit frame (decode about 0
 Core 0 headroom, a smaller FIFO payload and no per-speed oversampling density to tune; it does not
 speed up the command loop, since decode is already off it.
 
-Spike outcome: step 1 and parts of 2 and 3 are done - the program exists (`dshot_bidir_rx_rle`, 19 of the block's
+Spike outcome: step 1 and parts of 2 and 3 are done - the program exists (`dshot_bidir_rx_frame`, 19 of the block's
 32 slots, which fills the block with the transmit program), a PC model matches the current decoder on
 10,867 stored replies, and the bench shows 9,971 of 9,971 replies CRC-valid at DSHOT300 with a decode of
 214us (raw path 1.27ms); DSHOT600 on the bench: 10,009 of 10,009, 212us. Still open: no-reply/partial/pre-arming behaviour, a
@@ -2134,7 +2134,7 @@ is what W25's "decode cost" note already flags as open, not settled by this comp
 
 **Depends on W23.** Three behaviors the sample receiver has documented and the frame receiver
 does not:
-1. **Arming window.** `dshot_bidir_rx_rle` waits for a falling edge exactly like `dshot_bidir_rx`,
+1. **Arming window.** `dshot_bidir_rx_frame` waits for a falling edge exactly like `dshot_bidir_rx`,
    so it can just as easily capture the TX's own waveform as a "reply" before the ESC arms. What
    a mis-triggered frame looks like (marker_ok, CRC) has not been checked - it may differ from the
    sample receiver's version of the same problem, since the frame receiver commits to reading 21
@@ -2184,7 +2184,7 @@ Full numbers in ADR-002's "Hardware validation, part 4".
 
 **No reply: DONE 2026-09-26, reasoned from source, not bench-forced** (depowering or
 disconnecting the ESC mid-run needed physical access this session didn't have).
-`dshot_bidir_rx_rle`'s marker-wait has no timeout, identical to `dshot_bidir_rx`'s own - a
+`dshot_bidir_rx_frame`'s marker-wait has no timeout, identical to `dshot_bidir_rx`'s own - a
 never-answered frame blocks the state machine there indefinitely, and the next real reply's own
 edge is what unblocks and resyncs it, the same way the stalled-drain test's FIFO-push stall
 already showed resuming cleanly after 60 frames of inactivity. `CaptureMailbox.latest()` already
@@ -2195,7 +2195,7 @@ All three W25 behaviors are now checked. W25a (below) is the one gap this work f
 retracted the same day - see its own entry.
 
 **W25a — Fix or bound the frame receiver's stalled-drain corruption** ·
-`driver/dshot_pio.py` (`dshot_bidir_rx_rle`)
+`driver/dshot_pio.py` (`dshot_bidir_rx_frame`)
 
 **SKIPPED 2026-09-26 - the premise it was opened on was wrong.** Opened the same day as the
 stalled-drain finding above, on the belief that a drain falling behind corrupted captures and
@@ -2204,7 +2204,7 @@ practice - a real problem if W26 removes the sample receiver as a fallback. `fif
 was implemented (doubling the FIFO from 4 one-word captures to 8, the same fix `dshot_bidir_rx`
 already has) and bench-verified... except the "fix" made no measurable difference, which is what
 exposed the original finding as a test-pacing artifact rather than a receiver defect (see W25's
-own note above). The fix was reverted along with the finding - `dshot_bidir_rx_rle` has no
+own note above). The fix was reverted along with the finding - `dshot_bidir_rx_frame` has no
 `fifo_join`, matching its state before this item was opened.
 
 **W26 — Decision: adopt the frame receiver as the sole production receiver (idea)** ·
@@ -2247,7 +2247,7 @@ one two-bidirectional-motor scenario.
 through this session.** `run_scenario.py`'s `build_motor()` now passes
 `receiver=BidirectionalDShot.FRAME_RECEIVER` and `RECORD_ZERO_WORDS` is a 1-tuple.
 `bidir_capture_sink.py`'s `RECORD_FMT` shrank to `<I4H4I` (one word per motor instead of four),
-and its `rx_clock_hz` now comes from `dshot_profiles.rle_rx_speed()` instead of
+and its `rx_clock_hz` now comes from `dshot_profiles.frame_rx_speed()` instead of
 `BIDIR_PROFILES[...]["rx_speed"]` (the sample receiver's clock, which is no longer what the
 harness's receiver actually runs at). `dshot_bidir_decode.py` gained `decode_frame()`/
 `analyze_frame()`, the PC-side counterpart to the driver's own, and `analyze_bidir_capture_log.py`
@@ -2281,7 +2281,7 @@ ramping/diverging throttles): 14,922/14,922 CRC-valid on both motors, eRPMs corr
 `scripts/analyze_bidir_capture_log.py` both ran clean against the real 1-word-record data - the
 offline re-decode of all 14,922 records agreed with the device's own sampled tally exactly
 (746/746 both ways), and `rx_clock_hz` in the pulled meta.txt correctly reflects
-`rle_rx_speed()`, confirming the `bidir_capture_sink.py` fix.
+`frame_rx_speed()`, confirming the `bidir_capture_sink.py` fix.
 
 `two_channel_gc_600.json` hit BUG-002 (the pre-existing, already-documented intermittent
 "motor doesn't spin" issue) on its first run, cleared on immediate retry per that report's own
@@ -2315,7 +2315,7 @@ tests pass, and the standalone script can still take a raw calibration capture a
 
 **Code done 2026-09-26; hardware verification of the new calibration tool still needed - the bench
 was powered off.** `BidirectionalDShot` no longer takes a `receiver=` argument at all; it always
-builds `dshot_bidir_rx_rle`. `SAMPLE_RECEIVER`/`FRAME_RECEIVER` are gone. `CaptureMailbox` lost its
+builds `dshot_bidir_rx_frame`. `SAMPLE_RECEIVER`/`FRAME_RECEIVER` are gone. `CaptureMailbox` lost its
 `capture_words` parameter too - nothing constructs it with any value but 1 any more, so it went
 back to a fixed `WORDS = 1` module constant, the shape it had before the sample receiver needed
 something wider. `dshot_bidir_rx` and `gcr_decode.py`'s raw-decode functions were kept, exactly as

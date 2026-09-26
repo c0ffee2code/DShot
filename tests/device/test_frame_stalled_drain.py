@@ -1,7 +1,7 @@
 # Test: an undrained frame receiver holds a correct capture, it does not
 # corrupt one.
 #
-# Purpose: W25 (bidirectional_dshot_review.md). dshot_bidir_rx_rle's own
+# Purpose: W25 (bidirectional_dshot_review.md). dshot_bidir_rx_frame's own
 # comment argues a full RX FIFO cannot corrupt a capture, only delay
 # delivering an already-complete one: the 21st of its 21 reads is the one
 # autopush fires on, and every bit is already shifted into the ISR by then, so

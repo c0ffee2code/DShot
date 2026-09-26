@@ -7,7 +7,7 @@
 
 from array import array
 
-# Words in one capture: dshot_bidir_rx_rle pushes one already-reconstructed
+# Words in one capture: dshot_bidir_rx_frame pushes one already-reconstructed
 # 21-bit frame per reply.
 WORDS = 1
 

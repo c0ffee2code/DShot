@@ -1802,7 +1802,7 @@ result on the same reply. Agreement over many thousands of real replies, includi
 during arming and after a stall, is the bar before it replaces anything.
 
 *Spike result (2026-09-20).* A level-2 receiver was built as a second receiver
-program, `dshot_bidir_rx_rle`, and run on the bench. It differs from the sketch
+program, `dshot_bidir_rx_frame`, and run on the bench. It differs from the sketch
 above in how it finds bit boundaries: instead of subtracting the bit period in a
 loop it runs a per-bit timer - a count-down of 2-cycle passes that tests the
 pin on every pass. When the timer runs out with no flip, it reads the pin (one
@@ -1815,7 +1815,7 @@ a frame never has to be detected.
 
 - **Clock.** The bit is 16 receiver cycles at both levels, so the receiver clock
   is 16 times the reply bit rate: 6.20MHz at DSHOT300 and 12.40MHz at DSHOT600
-  (`rle_rx_speed()`; the rate is `rx_speed / expected_ratio`, the measured value).
+  (`frame_rx_speed()`; the rate is `rx_speed / expected_ratio`, the measured value).
   The two levels' paths are made the same length with a nop; before that, high
   bits took 15 cycles and low bits 16, and the last read drifted early enough to
   fail 1.4% of replays.
@@ -1830,8 +1830,8 @@ a frame never has to be detected.
 
   | Block | State machines | Programs loaded | Slots used |
   |---|---|---|---|
-  | PIO0 | sm0 TX + sm1 RX (motor 1), sm2 TX + sm3 RX (motor 2) | `dshot_bidir_tx` + `dshot_bidir_rx_rle` | 32 of 32 |
-  | PIO1 | sm4 TX + sm5 RX (motor 3), sm6 TX + sm7 RX (motor 4) | `dshot_bidir_tx` + `dshot_bidir_rx_rle` | 32 of 32 |
+  | PIO0 | sm0 TX + sm1 RX (motor 1), sm2 TX + sm3 RX (motor 2) | `dshot_bidir_tx` + `dshot_bidir_rx_frame` | 32 of 32 |
+  | PIO1 | sm4 TX + sm5 RX (motor 3), sm6 TX + sm7 RX (motor 4) | `dshot_bidir_tx` + `dshot_bidir_rx_frame` | 32 of 32 |
   | PIO2 | free (sm8 to sm11): unidirectional motors go here | `dshot` | 4 of 32 |
 
   Two of these pairs on one exactly-full block has not been run on hardware.
@@ -1969,7 +1969,7 @@ it, based on `tests/experimental/test_rle_stalled_drain.py`: a burst of 20 frame
 all came back with 3 of 5 drained captures corrupted (bad CRC; one also failing `marker_ok`). A
 fix (`fifo_join=PIO.JOIN_RX`, doubling the FIFO to 8 one-word captures, the same fix
 `dshot_bidir_rx` already has) was implemented on that basis. Both the finding and the fix were
-wrong, and both are reverted - `dshot_bidir_rx_rle` has no `fifo_join`.
+wrong, and both are reverted - `dshot_bidir_rx_frame` has no `fifo_join`.
 
 The finding was a bug in the test, not the receiver. The burst paced commands at `motor.frame_us`
 (~54us at DSHOT300) - the TX bit-shift time only, not the ESC's own reply (another ~54us at this
@@ -1981,7 +1981,7 @@ Re-running the same burst with the interval widened to comfortably exceed a full
 with zero drains, both with and without the (now-reverted) `fifo_join`. Every run showed the same
 pattern: exactly depth+1 captures drained (5 at depth 4, 9 at depth 8) regardless of how many
 frames were sent beyond that, all of them `marker_ok` and CRC-valid. This matches
-`dshot_bidir_rx_rle`'s own comment, and the structural read that motivated it: the 21st of 21
+`dshot_bidir_rx_frame`'s own comment, and the structural read that motivated it: the 21st of 21
 reads is the one autopush fires on, and every bit is already shifted into the ISR by then, so a
 full FIFO stalls holding a complete, correct value - it does not corrupt one. The cost of a long
 stall is silently missing later replies (the state machine does not resume watching for the next
@@ -1996,7 +1996,7 @@ hardware result that disagrees with it.
 Not yet checked: the arming-window and no-reply behaviours this section's "Not settled" list
 still names.
 
-*Hardware validation, part 4 - arming window (2026-09-26).* `dshot_bidir_rx_rle` waits for a
+*Hardware validation, part 4 - arming window (2026-09-26).* `dshot_bidir_rx_frame` waits for a
 falling edge exactly like `dshot_bidir_rx`, so early in arming - before the ESC has locked onto
 bidirectional DShot - a capture could in principle be TX's own waveform rather than a genuine
 reply. `tests/experimental/test_rle_arming_echo.py` drove a lone bidirectional motor plus the
@@ -2018,7 +2018,7 @@ information should the arming duration or lock-on timing ever need tuning.
 *Hardware validation, part 5 - no reply (2026-09-26, reasoned from source, not bench-forced).*
 Simulating "the ESC never replies" needs depowering or disconnecting it mid-run, which this
 session's remote access to the bench can't do. Reasoning from the program instead:
-`dshot_bidir_rx_rle`'s `wait(0, pin, 0)` marker-wait has no timeout, identical to
+`dshot_bidir_rx_frame`'s `wait(0, pin, 0)` marker-wait has no timeout, identical to
 `dshot_bidir_rx`'s own step 3 - if the ESC never replies to a given frame, the state machine
 blocks there indefinitely, and does not return to `wrap_target()` to watch for the *next* frame's
 release IRQ until some falling edge, any falling edge, finally arrives. When the ESC eventually

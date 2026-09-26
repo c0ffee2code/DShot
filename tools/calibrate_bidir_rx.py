@@ -2,7 +2,7 @@
 # oversampled replies (dshot_bidir_rx) for measuring a real
 # driver/dshot_profiles.py BIDIR_PROFILES expected_ratio for a specific ESC
 # unit. Not wired into MotorGroup or BidirectionalDShot (which only has the
-# frame receiver, dshot_bidir_rx_rle, with no period search of its own to
+# frame receiver, dshot_bidir_rx_frame, with no period search of its own to
 # fall back on - see decision/ADR-002-bidirectional-dshot.md's "run-length
 # capture" section) - this builds a bare TX/raw-RX pair directly, the way the
 # low-level usage example in CLAUDE.md does for a single motor.

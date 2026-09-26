@@ -25,7 +25,7 @@ class DSHOT_SPEEDS:
 #
 #   rx_speed         the sample receiver's own clock (dshot_bidir_rx, used
 #                    directly by the standalone calibration tool, and by
-#                    rle_rx_speed() below to derive the frame receiver's).
+#                    frame_rx_speed() below to derive the frame receiver's).
 #                    Independent of the DShot speed (TX and RX have separate
 #                    clock dividers on the same PIO block) and sets how many
 #                    samples land in each bit of the ESC's reply.
@@ -49,13 +49,13 @@ BIDIR_PROFILES = {
     DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129, "ratio_tolerance": 0.0},
 }
 
-# Cycles per reply bit that dshot_pio.dshot_bidir_rx_rle's per-bit path takes,
+# Cycles per reply bit that dshot_pio.dshot_bidir_rx_frame's per-bit path takes,
 # fixed by its instructions. Its receiver clock is this many times the reply bit
 # rate, which is expected_ratio's measured rate: rx_speed / expected_ratio.
-RLE_CYCLES_PER_BIT = 16
+FRAME_CYCLES_PER_BIT = 16
 
 
-def rle_rx_speed(dshot_speed):
+def frame_rx_speed(dshot_speed):
     """The frame receiver's clock for a DShot speed, in Hz."""
     profile = BIDIR_PROFILES[dshot_speed]
-    return round(RLE_CYCLES_PER_BIT * profile["rx_speed"] / profile["expected_ratio"])
+    return round(FRAME_CYCLES_PER_BIT * profile["rx_speed"] / profile["expected_ratio"])

@@ -11,7 +11,7 @@
 import struct
 
 from capture_sink import CaptureSinkBase
-from dshot_profiles import rle_rx_speed
+from dshot_profiles import frame_rx_speed
 
 COPY_CHUNK_SIZE = 512
 
@@ -30,7 +30,7 @@ class BidirCaptureSink(CaptureSinkBase):
         as scenario.json - full provenance for the PC-side analyzer.
         """
         bidir_indices = ",".join(str(i) for i in scenario.bidir_indices)
-        rx_clock_hz = rle_rx_speed(scenario.dshot_speed) if scenario.bidir_indices else 0
+        rx_clock_hz = frame_rx_speed(scenario.dshot_speed) if scenario.bidir_indices else 0
 
         self.create_session_dir({
             "dshot_speed": str(scenario.dshot_speed),

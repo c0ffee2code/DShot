@@ -314,7 +314,7 @@ def decode_frame(frame):
     """
     Differential-decode + GCR table lookup directly on a reconstructed
     integer frame (marker at the top, FRAME_LENGTH_BITS wide) - the format
-    dshot_bidir_rx_rle's already-reconstructed captures use. Counterpart to
+    dshot_bidir_rx_frame's already-reconstructed captures use. Counterpart to
     decode() above, which takes a bit list built from raw oversampled
     words; this is the integer-native path driver/gcr_decode.py's decode()
     also uses, since the frame receiver needs no bit-list reconstruction.
@@ -333,7 +333,7 @@ def decode_frame(frame):
 
 def analyze_frame(frame):
     """
-    Full pipeline for one frame the frame receiver (dshot_bidir_rx_rle)
+    Full pipeline for one frame the frame receiver (dshot_bidir_rx_frame)
     already reconstructed - PC-side counterpart to driver/gcr_decode.py's
     analyze_frame(). No period fields (nothing is measured per capture,
     the frame receiver's bit period is fixed by its clock divider).

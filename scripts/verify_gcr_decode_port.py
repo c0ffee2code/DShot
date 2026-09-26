@@ -208,7 +208,7 @@ def verify_frame_parity():
     (the harness only produces frame-receiver captures once BidirectionalDShot
     is built with it - see decision/ADR-002-bidirectional-dshot.md's "run-length
     capture" section), so this synthesizes every 12-bit value instead: GCR-encode
-    it with the inverted CRC into the 21-bit frame dshot_bidir_rx_rle would push,
+    it with the inverted CRC into the 21-bit frame dshot_bidir_rx_frame would push,
     and check both implementations agree on the whole result dict.
 
     Returns a list of (data12, field, reference_value, port_value) mismatches.

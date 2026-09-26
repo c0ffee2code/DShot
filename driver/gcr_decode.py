@@ -2,7 +2,7 @@
 On-device bidirectional DShot GCR telemetry decoder - MicroPython.
 
 Two entry points, one per receiver in driver/dshot_pio.py. analyze_frame()
-decodes the frame receiver's (dshot_bidir_rx_rle) already run-length-
+decodes the frame receiver's (dshot_bidir_rx_frame) already run-length-
 reconstructed 21-bit frame - the path BidirectionalDShot uses.
 analyze_capture() decodes the sample receiver's (dshot_bidir_rx) raw
 oversampled waveform instead, doing the run-length reconstruction here on
@@ -324,7 +324,7 @@ def analyze_capture(words, rx_clock_hz, expected_ratio, ratio_tolerance=0.0):
 
 def analyze_frame(frame):
     """
-    Full pipeline for one frame the frame receiver (dshot_bidir_rx_rle, the
+    Full pipeline for one frame the frame receiver (dshot_bidir_rx_frame, the
     only receiver BidirectionalDShot has) already reconstructed in hardware:
     the same FRAME_LENGTH_BITS-bit integer, marker at the top, that
     reconstruct_frame() builds from raw samples. Skips find_edges(),
@@ -333,7 +333,7 @@ def analyze_frame(frame):
 
     Same result shape as analyze_capture(), with period_cycles, period_us and
     bitrate_bps all None: the frame receiver's bit period is fixed by its
-    clock divider (driver/dshot_profiles.py's rle_rx_speed()), not measured
+    clock divider (driver/dshot_profiles.py's frame_rx_speed()), not measured
     per capture, so there is nothing to report there.
     """
     result = decode_result(frame)

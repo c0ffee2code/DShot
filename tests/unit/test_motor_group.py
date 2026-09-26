@@ -12,8 +12,8 @@ import unittest
 import fakes
 from fakes import Clock, Pin
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, UnsupportedOperationException,
-                       DSHOT_SPEEDS, dshot_bidir_rx_rle)
-from dshot_profiles import rle_rx_speed
+                       DSHOT_SPEEDS, dshot_bidir_rx_frame)
+from dshot_profiles import frame_rx_speed
 from motor_group import (MotorGroup, MotorGroupException,
                                   DISARMED, ARMING, ARMED)
 
@@ -363,20 +363,20 @@ class TelemetryTest(GroupTestCase):
 
     def test_every_arm_reinitializes_the_receiver_program_and_jmp_pin(self):
         # start() calls rx_sm.init() on every arm(), the first one included,
-        # not only a restart after a stop() - and dshot_bidir_rx_rle fills its
+        # not only a restart after a stop() - and dshot_bidir_rx_frame fills its
         # PIO block on its own (see BidirectionalDShot's constructor
         # docstring), so it is worth checking both calls get it right.
         self.arm_fully(self.group)
         first_program, first_freq, first_kwargs = self.motor.rx_sm.init_calls[-1]
-        self.assertEqual(first_program, dshot_bidir_rx_rle)
-        self.assertEqual(first_freq, rle_rx_speed(SPEED))
+        self.assertEqual(first_program, dshot_bidir_rx_frame)
+        self.assertEqual(first_freq, frame_rx_speed(SPEED))
         self.assertEqual(first_kwargs["jmp_pin"], self.motor.pin)
 
         self.group.disarm()
         self.group.arm(ARM_MS)
         program, freq, kwargs = self.motor.rx_sm.init_calls[-1]
-        self.assertEqual(program, dshot_bidir_rx_rle)
-        self.assertEqual(freq, rle_rx_speed(SPEED))
+        self.assertEqual(program, dshot_bidir_rx_frame)
+        self.assertEqual(freq, frame_rx_speed(SPEED))
         self.assertEqual(kwargs["jmp_pin"], self.motor.pin)
 
 

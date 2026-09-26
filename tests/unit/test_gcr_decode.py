@@ -248,7 +248,7 @@ class SyntheticRoundTripTest(unittest.TestCase):
 
 
 class AnalyzeFrameTest(unittest.TestCase):
-    """gcr_decode.analyze_frame(): the frame receiver (dshot_bidir_rx_rle)
+    """gcr_decode.analyze_frame(): the frame receiver (dshot_bidir_rx_frame)
     already reconstructed the frame, so this skips find_edges(),
     estimate_bit_period_fixed() and reconstruct_frame() - unlike
     analyze_capture(), it takes the 21-bit frame directly, and has no period
