@@ -14,7 +14,7 @@
 # so the same core that sends commands also drains rx_read() every iteration,
 # with no second core/thread reading the same FIFO concurrently. Commands are
 # paced at BURST_INTERVAL_US, well above a full reply's duration (see
-# test_rle_stalled_drain.py's header on why this matters - too fast corrupts
+# test_frame_stalled_drain.py's header on why this matters - too fast corrupts
 # replies by TX interference, which looks identical to a receiver bug).
 #
 # Sends zero throttle for ARM_MS (mirroring MotorGroup's own arming window),
@@ -24,8 +24,8 @@
 # bucket. Not a pass/fail check - a wrong/echoed frame during arming is
 # already known to be discarded by the group; this is characterization.
 #
-# Wiring: as rle_bench.py - channel 1 (GPIO 6) frame receiver, channels 2-4
-# (GPIO 7/8/9) idle unidirectional on the next PIO block.
+# Wiring: channel 1 (GPIO 6) frame receiver, channels 2-4 (GPIO 7/8/9) idle
+# unidirectional on the next PIO block.
 
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
@@ -36,7 +36,7 @@ ARM_MS = 3000
 BUCKET_MS = 500
 SPIN_MS = 2000
 THROTTLE = 100
-BURST_INTERVAL_US = 200  # see test_rle_stalled_drain.py's header - must exceed a full reply
+BURST_INTERVAL_US = 200  # see test_frame_stalled_drain.py's header - must exceed a full reply
 DISARM_FRAMES = 4
 
 

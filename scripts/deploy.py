@@ -59,14 +59,13 @@ LIBRARY_FILES = [
     ("tests/harness/capture_sink.py", "capture_sink.py"),
     ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
     ("tests/harness/decode_tally.py", "decode_tally.py"),
-    ("tests/experimental/rle_bench.py", "rle_bench.py"),
 ]
 
 DEFAULT_TEST_SCRIPT = "run_scenario.py"
 
 # Where a script named on the command line is looked for, in order. tests/unit is
 # not here: those tests run on a PC, not on the Pico.
-SCRIPT_DIRS = ["tests/harness", "tests/device", "tests/experimental"]
+SCRIPT_DIRS = ["tests/harness", "tests/device", "tools"]
 
 # Fixed device-side name run_scenario.py opens - mpremote's `run`
 # has no mechanism to pass an extra file/argument into the running script,

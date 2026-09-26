@@ -1093,6 +1093,8 @@ but not a squash).
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
 | W27 | Port the harness to frame-only 1-word records | — | L | DONE (2026-09-26) — bench-verified: single motor and two-full-block scenarios all clean at both speeds, offline analysis pipeline confirmed against real data |
 | W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Driver removal DONE and bench-verified (unaffected by W27's tests). The new calibrate_bidir_rx.py standalone tool is BROKEN - see its own header and the note below |
+| W29 | Tooling cleanup: retire rle_bench.py and its duplicates, fix PIO-block conflicts in device tests, move the calibration tool out of tests/ | — | M | DONE (2026-09-26) |
+| W30 | Investigate and fix calibrate_bidir_rx.py's broken capture (reads TX's own echo, not the ESC's reply) | — | M | TODO |
 
 ### Work items
 
@@ -2360,3 +2362,64 @@ to `verify_gcr_decode_port.py` or `tally_period_cycles.py` - both of which exist
 analyze 4-word raw sample groups, which a frame-receiver session no longer contains at all. Not a
 correctness bug in the harness; a possible robustness improvement for those two PC tools (skip an
 unrecognized format rather than crash) that was out of scope for this pass.
+
+**W29 — Tooling cleanup: retire rle_bench.py and its duplicates, fix PIO-block conflicts in device
+tests, move the calibration tool out of tests/** · `tests/experimental/`, `tests/device/`, `tools/`,
+`scripts/deploy.py`
+
+**Depends on W28.** A full audit of `scripts/`, `tests/harness/`, `tests/experimental/` and
+`tests/device/` turned up several items W27/W28 didn't touch:
+
+- `tests/experimental/rle_bench.py` and its two entry-point scripts (`test_rle_receiver_300.py`,
+  `test_rle_receiver_600.py`) duplicated what W27's harness scenarios now cover on real hardware -
+  removed, per W28's own note that this was safe once W27 was bench-verified.
+- `scripts/decode_bidir_capture.py` was an early, superseded offline decoder - removed.
+- `tests/device/test_bidir_restart_cycles.py` and `tests/device/test_pio_lifecycle.py` both put a
+  unidirectional motor on `sm_id=2`, the same PIO block as the bidirectional pair's frame receiver.
+  That block is now exactly full (13+19 of 32 slots - see CLAUDE.md), so both would fail with
+  ENOMEM on the next bench run. Fixed by moving the unidirectional motor(s) to an unused block
+  (`sm_id=8/9/10` in the restart-cycles test, matching the harness scenarios' own W27 fix;
+  `sm_id=4` in the lifecycle test, which only has one).
+- `tests/experimental/test_rle_restart_cycles.py` turned out to be a near-duplicate of the now-fixed
+  `test_bidir_restart_cycles.py` (same arm/spin/disarm/reboot-gap cycle, same pass criteria, just
+  fewer cycles) - removed rather than graduated.
+- `test_rle_arming_echo.py` and `test_rle_stalled_drain.py` both bench-verified real, permanent
+  properties of the frame receiver (arming-window echo characterization; FIFO-overrun drain safety)
+  that nothing else in the suite covers. Graduated to `tests/device/` as `test_frame_arming_echo.py`
+  and `test_frame_stalled_drain.py` - named for what they test (the frame receiver/decoder), not
+  the retired PIO-internal "rle" label, matching the SAMPLE_RECEIVER/FRAME_RECEIVER rename in W26.
+  `test_frame_stalled_drain.py`'s header also carried the full W25a retraction narrative
+  (test-pacing bug, since fixed) - trimmed to the durable fact plus a pointer to W25a, per the
+  driver-wide comment-style convention from the docstring distillation pass.
+- `tests/experimental/calibrate_bidir_rx.py` is a diagnostic tool, not a test (no pass/fail
+  assertion) - moved to a new top-level `tools/` directory for on-Pico, non-test scripts, and
+  `scripts/deploy.py`'s `SCRIPT_DIRS` updated accordingly. `tests/experimental/` is now empty and
+  was removed.
+- `scripts/simulate_rle_receiver.py` renamed to `scripts/simulate_frame_receiver.py` - same reason,
+  it models the frame receiver's PIO logic specifically, not an "rle" implementation choice.
+
+`scripts/tally_period_cycles.py` and `scripts/capture_session.py`'s crash-on-unrecognized-format
+issue (noted in W28) were raised but are not part of this item's scope: `tally_period_cycles.py`
+works with the sample receiver's raw captures, not the frame receiver, so it keeps its own name.
+
+**Done when:** the deleted/moved files are gone from their old locations, `scripts/deploy.py` can
+still find every script it references, and all 152 unit tests pass.
+
+**DONE 2026-09-26.** Verified: unit test suite green after every step; `deploy.py`'s `LIBRARY_FILES`
+and `SCRIPT_DIRS` updated to match; grepped the whole tree for `tests/experimental` and `rle_bench`
+to confirm no dangling references remained in comments.
+
+**W30 — Investigate and fix calibrate_bidir_rx.py's broken capture** · `tools/calibrate_bidir_rx.py`
+
+W28 built this tool to measure a real ESC unit's bit period for `BIDIR_PROFILES`, since the frame
+receiver has no period search of its own. Bench-tested four times in W28 (send intervals of 700us
+and 5000us; both RX/TX activation orders) - all four produced the same result: word 0 varies by
+exactly one bit across 200 captures at constant throttle, words 1-3 are always `0xffffffff`. That
+reads as the receiver sampling TX's own fixed, repeating command waveform, not a genuine ESC reply;
+bidirectional mode likely never engaged. Send pacing and activation order were ruled out as the
+cause; the actual cause (vs. `BidirectionalDShot`'s own construction, which this tool deliberately
+doesn't reuse) was not isolated - see the tool's own header for the full diagnostic history.
+
+**Done when:** the tool captures a real, varying-with-eRPM 4-word GCR reply from a spinning motor,
+matching what the sample receiver produced when it was still wired into `BidirectionalDShot` (see
+W24's comparison).

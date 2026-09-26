@@ -95,9 +95,9 @@ def run_one_cycle(group, runner, cycle):
 def main():
     motors = [
         BidirectionalDShot(0, Pin(6), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=1),
-        UnidirectionalDShot(2, Pin(7), DSHOT_SPEEDS.DSHOT300),
-        UnidirectionalDShot(4, Pin(8), DSHOT_SPEEDS.DSHOT300),
-        UnidirectionalDShot(6, Pin(9), DSHOT_SPEEDS.DSHOT300),
+        UnidirectionalDShot(8, Pin(7), DSHOT_SPEEDS.DSHOT300),
+        UnidirectionalDShot(9, Pin(8), DSHOT_SPEEDS.DSHOT300),
+        UnidirectionalDShot(10, Pin(9), DSHOT_SPEEDS.DSHOT300),
     ]
     group = MotorGroup(motors)
     runner = Core1Runner(group.update, group.UPDATE_INTERVAL_US)

@@ -1835,7 +1835,7 @@ a frame never has to be detected.
   | PIO2 | free (sm8 to sm11): unidirectional motors go here | `dshot` | 4 of 32 |
 
   Two of these pairs on one exactly-full block has not been run on hardware.
-- **Model.** A PC model of the program (`scripts/simulate_rle_receiver.py`)
+- **Model.** A PC model of the program (`scripts/simulate_frame_receiver.py`)
   replays stored captures with the pin's waveform rebuilt from the raw samples.
   At the profile's clock it rebuilds the frame `gcr_decode` builds for all 10,867
   CRC-valid replies in four sessions (three DSHOT300, one DSHOT600). With the
@@ -1954,7 +1954,7 @@ the frame receiver's real 19-instruction program fills its PIO block alongside `
 (32 of 32 slots), so there is no room left for `dshot_bidir_rx` on the same block to capture the
 same live reply the way the original validation plan assumed a spare state machine could. The
 frame-for-frame check that *is* possible stays the offline one already done: the PC model
-(`scripts/simulate_rle_receiver.py`) against 10,867 stored raw captures.
+(`scripts/simulate_frame_receiver.py`) against 10,867 stored raw captures.
 
 The two "records published but never seen" counts from these runs (sample: 10,039 of 12,029 at
 300; frame: 5,017 of ~9,430 at 300) are not a fair receiver-to-receiver comparison either -
@@ -2054,7 +2054,7 @@ cost of a testing/analysis harness that would otherwise support two capture form
 for no production benefit, now that the replacement is validated. Raw capture is not deleted
 outright: it still has two uses beyond diagnostics (measuring `BIDIR_PROFILES`' `expected_ratio`
 for a new ESC unit, since the frame receiver has no period search of its own to fall back on; and
-the PC-side tooling - `scripts/simulate_rle_receiver.py`, `scripts/verify_gcr_decode_port.py` -
+the PC-side tooling - `scripts/simulate_frame_receiver.py`, `scripts/verify_gcr_decode_port.py` -
 that consumes raw captures directly) and moves to a standalone script instead. Tracked as W27
 (port the harness to frame-only 1-word records) and W28 (remove the sample receiver from the
 driver, build the standalone tool) in the backlog.

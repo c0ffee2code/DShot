@@ -15,7 +15,9 @@
 #      the receiver captures again, and the published capture starts over.
 #
 # No ESC and no motor: the motors sit on unused GPIO 10 (bidirectional, state
-# machines 0 and 1) and 11 (unidirectional, state machine 2), and nothing is wired
+# machines 0 and 1) and 11 (unidirectional, state machine 4 - a different PIO
+# block, since the bidirectional pair's frame receiver fills block 0 on its
+# own and cannot share it with a unidirectional motor), and nothing is wired
 # to them. With no ESC replying, the receiver captures the transmitter's own
 # waveform, which is enough to show it is running.
 
@@ -37,7 +39,7 @@ RUN_MS = 60
 def build():
     return MotorGroup([
         BidirectionalDShot(0, Pin(BIDIR_PIN), DSHOT_SPEED, rx_state_machine_id=1),
-        UnidirectionalDShot(2, Pin(UNI_PIN), DSHOT_SPEED),
+        UnidirectionalDShot(4, Pin(UNI_PIN), DSHOT_SPEED),
     ])
 
 

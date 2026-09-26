@@ -54,7 +54,7 @@ ARM_MS = 3000
 CAPTURES_WANTED = 200
 
 # Comfortably longer than one command+reply cycle at either supported speed -
-# see tests/experimental/test_rle_stalled_drain.py's header comment on why an
+# see tests/device/test_frame_stalled_drain.py's header comment on why an
 # interval this generous matters: too fast re-arms TX before the ESC's reply
 # has finished, corrupting it by interference in a way indistinguishable from
 # a receiver bug once only the captured words are inspected.

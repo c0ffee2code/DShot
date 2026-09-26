@@ -8,19 +8,12 @@
 # the stall holds a finished value rather than an in-progress one - unlike
 # dshot_bidir_rx, which autopushes mid-capture and can push a torn one.
 #
-# An earlier version of this test (and this comment) concluded the opposite:
-# a burst with no drains came back mostly corrupted. That was a test bug, not
-# a receiver bug - the burst paced commands at motor.frame_us (~54us at
-# DSHOT300), which is only the TX bit-shift time. It does not include the
-# ESC's own reply (another ~54us at this profile's bit period, after a ~4us
-# predelay), so re-arming TX that fast drove the line again before the ESC's
-# reply had finished, corrupting it by interference - a failure that looks
-# identical to a genuine RX-FIFO-stall corruption from the drained result
-# alone. Re-run with a wide enough interval to let a full reply complete
-# (BURST_INTERVAL_US below), the corruption disappeared - including with the
-# FIFO at its unmodified default depth, and at bursts up to 60 frames with
-# zero drains. Lesson for any future version of this test: pace a burst
-# against the reply's own duration, not the command's.
+# Commands are paced at BURST_INTERVAL_US, wide enough for a full ESC reply to
+# complete before the next command re-arms TX - a tighter pacing (e.g.
+# motor.frame_us alone, which is only the TX bit-shift time) corrupts replies
+# by TX interference on the wire, indistinguishable from a genuine RX-FIFO-
+# stall corruption in the drained result alone (see bidirectional_dshot_review.md's
+# W25a).
 #
 # Method: arm and settle normally, then take manual control of the command
 # loop (stop Core1Runner) and send a burst of frames with no drain at all in
@@ -37,8 +30,8 @@
 # resumes. That capture loss is expected and not itself a failure here; only
 # a corrupted (not merely missing) capture is.
 #
-# Wiring: as rle_bench.py - channel 1 (GPIO 6) frame receiver, channels 2-4
-# (GPIO 7/8/9) idle unidirectional on the next PIO block.
+# Wiring: channel 1 (GPIO 6) frame receiver, channels 2-4 (GPIO 7/8/9) idle
+# unidirectional on the next PIO block.
 
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
@@ -54,11 +47,7 @@ RESYNC_MS = 300  # normal draining between bursts, so each starts from a clean s
 SMALL_BURST = 4    # the RX FIFO's default one-word-capture depth
 LARGE_BURST = 20   # several times the depth, to confirm the property holds at scale
 
-# motor.frame_us is only the TX bit-shift time - it does NOT include the
-# ESC's own reply. See this file's header comment: pacing a burst at
-# frame_us alone re-arms TX before the reply finishes, corrupting it by
-# interference - a test artifact that looks identical to genuine RX-FIFO-stall
-# corruption unless the interval is wide enough for a full reply to complete.
+# See this file's header comment for why this must exceed a full reply's duration.
 BURST_INTERVAL_US = 200
 
 

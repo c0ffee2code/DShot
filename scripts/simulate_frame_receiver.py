@@ -1,7 +1,7 @@
 """
 PC-side model of driver/dshot_pio.py's dshot_bidir_rx_rle, replayed on real captures.
 
-The run-length receiver is a PIO program; this checks its logic and timing
+The frame receiver is a PIO program; this checks its logic and timing
 before it runs on hardware. For each CRC-valid reply in a stored capture session
 it rebuilds the pin's waveform from the raw 128 samples, runs the program's
 instruction list on a small PIO model (1 instruction per cycle, delay slots,
@@ -11,7 +11,7 @@ gcr_decode.reconstruct_frame() builds from the same samples.
 
 PROGRAM below is hand-transcribed from dshot_bidir_rx_rle: change one and the
 other has to follow. Run from the project root:
-  python scripts/simulate_rle_receiver.py
+  python scripts/simulate_frame_receiver.py
 
 The waveform comes from samples 2 cycles apart at the capture clock, so each
 edge is only known to about +-1 capture cycle (about +-1.8 receiver cycles) -
