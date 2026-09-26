@@ -1963,6 +1963,37 @@ motors, work `rle_bench.py`'s loop doesn't do at all, so they measure two differ
 overhead more than the two receivers' relative cost. Separating decode cost from loop overhead is
 still open, per part 1's note above.
 
+*Hardware validation, part 3 - stalled drain (2026-09-26).* `dshot_bidir_rx_rle`'s own comment
+claimed the program "cannot stall the FIFO mid-frame" - true for the bit-counting logic (unlike
+`dshot_bidir_rx`, it never idles waiting for a sample slot partway through a count), but that
+turns out not to mean a full FIFO is harmless. `tests/experimental/test_rle_stalled_drain.py`
+armed and settled a motor normally, then stopped the command loop and sent 20 frames with no
+drain at all - several times the RX FIFO's default 4-word (4-capture) depth. Result: 5 captures
+came back on drain, and 3 of them were corrupted (bad CRC; one also failed `marker_ok`), not
+merely delayed. The comment is corrected in the driver.
+
+The mechanism: the 21st of the 21 reads is also the one autopush fires on. On a full FIFO that
+`in_` instruction stalls, and - unlike the sample receiver's stall, which merely leaves later
+samples untaken - when this one resumes it samples the pin at whatever the wire happens to be
+doing by then, not at that bit's real centre. It corrupts the reply's tail rather than holding a
+complete value ready to deliver late, which is what analysis of the program's structure (all 21
+bits already shifted into the ISR before autopush fires) suggested before this test. Read the
+structure, then test it: this is that lesson again.
+
+This is the same failure family `dshot_bidir_rx`'s `fifo_join=PIO.JOIN_RX` (2026-09-20, above) was
+built to fix, and `dshot_bidir_rx_rle` has no equivalent. It is not currently known to bite in
+practice: `MotorGroup.update()` drains every command-loop tick unconditionally, the same
+discipline that already keeps the sample receiver's own version of this problem from surfacing
+outside a deliberately pathological test, and there is no evidence the frame receiver has a
+narrower tolerance for a merely-late (not 20-commands-late) drain. That comparison - how many
+consecutive late drains each receiver actually tolerates - is not yet measured, and matters for
+the adoption decision (W26 in the backlog): the frame receiver's smaller per-capture FIFO
+footprint (1 word vs. 4) was assumed to be strictly safer than the sample receiver's; this result
+says the two failure modes need to be compared properly, not assumed.
+
+Not yet checked: the arming-window and no-reply behaviours this section's "Not settled" list
+still names.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
