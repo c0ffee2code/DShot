@@ -282,6 +282,13 @@ class AnalyzeFrameTest(unittest.TestCase):
             result = gcr_decode.analyze_frame(frame)
             self.assertTrue(result["crc_ok"], data12)
             self.assertEqual(result["data12"], data12)
+            self.assertEqual(result["not_running"], data12 == gcr_decode.AM32_NOT_RUNNING_DATA12, data12)
+
+    def test_not_running_is_none_without_a_crc_valid_reply(self):
+        valid = GCR_CODE[3]
+        frame = frame_for([valid, 0b00001, valid, valid])  # invalid symbol -> no full number
+        result = gcr_decode.analyze_frame(frame)
+        self.assertIsNone(result["not_running"])
 
     def test_a_false_marker_bit_is_reported(self):
         frame = frame_for([GCR_CODE[n] for n in (0xA, 0x5, 0x0, 0xF)])

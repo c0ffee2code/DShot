@@ -178,15 +178,23 @@ need no further headroom.
 | Protocol | DShot300 |
 | Minimum throttle | 100 confirmed working |
 | Command interval | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
-| Arming duration | 500ms (down to 300ms) armed cleanly, confirmed via genuine telemetry replies; re-tested 2026-09-12 with the corrected board-reset workflow (see `driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`) |
+| Arming duration | 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below |
 
-The AM32 ESC gave no indication via its beep pattern alone that arming was
-failing - it decodes individual commands correctly (confirmed via the DShot
-`BEEP1` special command) regardless of whether its arm state machine has
-ever been satisfied. The only reliable signal was the ESC's own "3 short
-beeps, then 2 deeper beeps" arm confirmation tone; current draw at the power
-supply (near-zero until genuinely armed and driving) was the second
-confirming signal.
+Earlier revisions of this table claimed 500ms (down to 300ms) armed cleanly, "confirmed via
+genuine telemetry replies". That reasoning was wrong: per AM32's source
+(`specification/AM32_SOURCE_VERIFICATION.md`, findings 1-2), a telemetry reply proves nothing
+about arm state - AM32 replies whether armed or disarmed, with the same at-rest sentinel eRPM
+either way - and a bench re-test at 300/500/1000ms confirmed the ESC was replying but the motor
+never actually spun at any of those durations (eRPM stayed at rest for the whole run; it only
+reached a real value in a 3000ms control). AM32's own arming gate needs more than 1s of continuous
+zero throttle after it starts listening, plus a 600ms startup tune after a cold boot, hence the
+2000ms default with margin. Likewise, the ESC's beep pattern was previously read as decoding
+commands "regardless of whether its arm state machine has ever been satisfied" - per source, AM32
+only executes DShot commands (including `BEEP1`) while armed, so a `BEEP1` that audibly beeped
+actually confirms the ESC **was** armed at that moment, not that arm state is irrelevant to command
+execution. The ESC's own "3 short beeps, then 2 deeper beeps" arm confirmation tone, and current
+draw at the power supply (near-zero until genuinely armed and driving), remain the reliable signals
+that the motor is actually armed and spinning.
 
 ## Project Structure
 

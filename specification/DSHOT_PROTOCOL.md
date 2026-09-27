@@ -224,8 +224,8 @@ firmware-specific; generic write-ups quote ~300 ms for Bluejay, which does not a
 5. Bidirectional detection (below) completes during this window, after about 101 frames.
 
 A zero-throttle window must therefore last more than 1 s after the ESC starts listening; after a
-reboot, allow ≥2 s. The driver's default is shorter (`MotorGroup.DEFAULT_ARM_DURATION_MS`, 500 ms,
-verification finding 1). Every test scenario uses 3000 ms.
+reboot, allow ≥2 s. The driver's default (`MotorGroup.DEFAULT_ARM_DURATION_MS`) is 2000 ms for this
+reason (verification finding 1). Every test scenario uses 3000 ms.
 
 ## Special Commands (0-47)
 

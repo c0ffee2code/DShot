@@ -1927,6 +1927,15 @@ for 3000ms explicitly and check eRPM, the code comment says what is and is not e
 the minimum window that reliably starts the motor has not been measured. Lesson recorded in
 `tests/test_motor_group_telemetry.py`: CRC-valid replies do not prove the motor spun.
 
+*Update (2026-09-26).* `specification/AM32_SOURCE_VERIFICATION.md` (finding 1) source-grounds this:
+AM32's own arming gate needs more than 1s of continuous zero throttle after it starts listening,
+plus a 600ms startup tune after a cold boot - about 2s worst case, well above the 500ms default.
+`DEFAULT_ARM_DURATION_MS` was raised to 2000ms on that basis (user decision, same date). The
+500/1000ms non-arming result above is now explained, not just observed: those windows were simply
+shorter than AM32's own gate. Offline re-analysis of BUG-002's stored captures the same day found a
+2.0-2.5s CRC-failing prefix at the start of every affected motor's log, in the same range as this
+gate - see that bug report's "Offline re-analysis" section; not confirmed as the same mechanism.
+
 **W19 — Run-length capture in the PIO receiver (idea)** · `driver/dshot_pio.py` (`dshot_bidir_rx`), `driver/gcr_decode.py`, `driver/dshot_profiles.py`, `decision/ADR-002-bidirectional-dshot.md`
 
 **IDEA, added 2026-09-20; spike built the same day on branch `feature/pio-run-length-capture`, results in ADR-002's "Spike result".** Raised while explaining the integer

@@ -110,6 +110,11 @@ GCR_DECODE_TABLE = {symbol: nibble for nibble, symbol in enumerate(GCR_ENCODE_TA
 MOTOR_POLES = 14  # AM32 EEPROM default (wiki.am32.ca) - unverified for this specific ESC
 FRAME_LENGTH_BITS = 21  # marker (1) + 20 differentially-encoded data bits - see module docstring
 
+# AM32's fixed "motor not running" payload - mirrors driver/gcr_decode.py's
+# AM32_NOT_RUNNING_DATA12 (see that module for the rationale); duplicated
+# here rather than imported, per this file's own stated divergence policy.
+AM32_NOT_RUNNING_DATA12 = 0xFFF
+
 # Exact per-sample cycle position for dshot_bidir_rx's nested 4-outer x
 # 32-inner sample loop (see dshot_bidir_rx's comment for the instruction
 # accounting this derives from): pass p in 0..3, inner index i in 0..31,
@@ -349,6 +354,7 @@ def analyze_frame(frame):
         "crc_kind": None,
         "data12": None,
         "erpm": None,
+        "not_running": None,
     }
     if full is None:
         return result
@@ -357,6 +363,7 @@ def analyze_frame(frame):
     result["data12"] = data12
     result["crc_ok"] = crc_kind is not None
     if crc_kind is not None:
+        result["not_running"] = data12 == AM32_NOT_RUNNING_DATA12
         mantissa = data12 & 0x1FF
         exponent = (data12 >> 9) & 0x7
         eperiod_us = mantissa << exponent
@@ -384,6 +391,9 @@ def analyze_capture(words, rx_clock_hz, expected_ratio=None, ratio_tolerance=0.0
       crc_kind       - "plain"/"inverted" on a CRC hit, else None
       data12         - the 12-bit payload (mantissa + exponent), if decoded
       erpm           - electrical RPM, or None if not decodable/CRC-invalid
+      not_running    - True if data12 is AM32's fixed not-running sentinel
+                        (AM32_NOT_RUNNING_DATA12), else False; None if
+                        CRC-invalid
     """
     samples = raw_samples(words)
     edges = find_edges(samples)
@@ -407,6 +417,7 @@ def analyze_capture(words, rx_clock_hz, expected_ratio=None, ratio_tolerance=0.0
         "crc_kind": None,
         "data12": None,
         "erpm": None,
+        "not_running": None,
     }
     if full is None:
         return result
@@ -415,6 +426,7 @@ def analyze_capture(words, rx_clock_hz, expected_ratio=None, ratio_tolerance=0.0
     result["data12"] = data12
     result["crc_ok"] = crc_kind is not None
     if crc_kind is not None:
+        result["not_running"] = data12 == AM32_NOT_RUNNING_DATA12
         mantissa = data12 & 0x1FF
         exponent = (data12 >> 9) & 0x7
         eperiod_us = mantissa << exponent

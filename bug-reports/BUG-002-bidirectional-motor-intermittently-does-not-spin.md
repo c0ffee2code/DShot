@@ -8,9 +8,11 @@ see "What's been ruled out" below for what it is *not*.
 
 ## Summary
 
-A bidirectional motor occasionally arms, replies with mostly-CRC-valid telemetry, and never
-actually spins — the decoded eRPM sits at 917, the documented at-rest sentinel value AM32 sends
-for an armed motor that isn't turning, for the whole run. The same scenario, run again
+A bidirectional motor occasionally replies with CRC-valid telemetry and never actually spins — the
+decoded eRPM sits at 917 (payload `0xFFF`), AM32's fixed "motor not running" sentinel, for the rest
+of the run. Per `specification/AM32_SOURCE_VERIFICATION.md` (findings 1-2), AM32 sends replies -
+and this exact sentinel - whether the ESC is armed or disarmed, so a CRC-valid reply does **not**
+mean the ESC ever armed; only a non-sentinel eRPM would show that. The same scenario, run again
 immediately after with no other change, has spun cleanly every time this has been observed. Not
 reproduced on demand; only ever seen as a sporadic result within an otherwise-passing regression
 run.
@@ -92,6 +94,79 @@ logic change, and by the clean DSHOT300 run using the identical renamed code mom
 Noted for the record, not treated as a cause - the symptom, channel, and even the co-occurring
 invalid-decode pattern all match the pre-rename 2026-09-25 and 2026-09-26 instances above.
 
+## Offline re-analysis of stored captures (2026-09-26)
+
+Prompted by `specification/AM32_SOURCE_VERIFICATION.md` findings 1-3, which show two AM32
+mechanisms ("never armed" and "stuck-rotor protection") both reproduce this bug's signature. The
+four sessions already on disk that correspond to occurrences above -
+(`2026-09-25_22-20-07`, `2026-09-26_14-28-18`, `2026-09-26_14-29-42`, `2026-09-26_17-01-04`,
+matched to this report's entries by their recorded CRC-valid/invalid counts) - were decoded
+offline, per-record, with timestamps, using the project's own `analyze_frame`/`analyze_capture`
+(no hardware involved; a script, not committed, reused `driver/gcr_decode.py` and
+`driver/dshot_profiles.py` directly). This gives a finer view than the sampled/aggregate figures
+already in this report.
+
+**Consistent findings, 4/4 instances:**
+
+- Every affected motor's log has exactly the same two-phase shape: a single contiguous block of
+  CRC-**failing** replies at the very start (roughly 2.0-2.5s long), immediately followed by a
+  switch to CRC-**valid** replies that decode to `data12 == 0xFFF` - not approximately, *exactly*
+  0xFFF, with zero variation - for the entire rest of the run (up to 58s of continuous logging).
+  The healthy motor in the same run shows normal, continuously-varying telemetry starting within
+  about 8s of the profile beginning.
+- This rules out a clean spin-up followed by a mid-run drop-out: there is no window of real,
+  varying eRPM anywhere in the affected motor's log, in any instance. Whatever happens, happens
+  before any real telemetry is ever seen.
+- This does **not** distinguish "never armed" from "armed, then stuck-rotor-latched" - per AM32
+  source, both end with `running=0`, which forces the same 0xFFF sentinel, and the CRC-failing
+  prefix carries no decodable payload either way. Confirming which needs bench observation (the
+  ESC's arming tune vs. its stuck-rotor behavior sound different - see "Suggested next steps"),
+  not more log-reading.
+- New fact, not previously recorded: in the one both-motors-affected session
+  (`2026-09-26_14-28-18`), the CRC-fail-to-0xFFF transition happens at the **same microsecond** on
+  both independently-decoded channels (1,984,441us and 1,988,204us respectively, both motors, to
+  the microsecond). Two unrelated per-ESC coincidences landing on the same tick is implausible;
+  this points at something shared on the Pico side of that moment (e.g. the arm-window-end / first
+  non-zero-throttle transition, which `MotorGroup` applies to all motors in the same `update()`
+  tick) rather than two independent ESC-side faults.
+- The CRC-failing prefix's length (2.0-2.5s across all four instances) is close to AM32's own
+  computed worst-case arming latency from finding 1 (>1s zero-throttle gate, plus a 600ms startup
+  tune after a cold boot, plus margin - about 2s). Worth checking as a lead, not established as the
+  cause: the prefix's replies fail CRC rather than being absent, which a coincidence in gate timing
+  alone does not obviously explain.
+
+**2026-09-27 update: reproduced on demand, 3 runs in a row.** With the bench up, `deploy.py` was
+run against `two_channel_divergent_600.json`, `two_channel_gc_600.json` and
+`single_channel_baseline.json` in sequence (the first bench session since `DEFAULT_ARM_DURATION_MS`
+was raised 500->2000ms and the `not_running`/`AM32_NOT_RUNNING_DATA12` change landed - neither is
+implicated, since every scenario still passes its own explicit `arm_duration_ms: 3000`). Both
+two-bidirectional-motor DSHOT600 scenarios hit this bug again, back to back
+(`2026-09-27_10-56-43`, `2026-09-27_11-01-37`); the DSHOT300 single-motor baseline
+(`2026-09-27_11-02-16`) passed cleanly (100% CRC-valid, median eRPM 75949, real spin). Offline
+re-analysis of the two new sessions shows the exact same signature as all four prior instances: one
+CRC-failing prefix, then permanently exact `data12 == 0xFFF` for the rest of the run, no exceptions
+- 6 for 6 sessions checked so far. New wrinkle: in `2026-09-27_10-56-43`, the two motors' prefixes
+are no longer the same length or in sync (motor 0: 4.45s, motor 2: 1.98s) - the exact-synchronization
+observed in the one prior both-motors-affected session was not a general rule.
+
+This makes the failure look considerably more frequent than "intermittent, sporadic result within
+an otherwise-passing run" (the original framing above) - it hit on the first attempt at each of the
+last three two-bidirectional-motor DSHOT600 runs. Whether that is a real increase in rate (something
+changed since this bug was first filed - the frame-receiver adoption, wiring, ESC firmware state
+from repeated arm/disarm cycles) or small-sample noise is not established. Worth deliberately
+tracking the occurrence rate on this exact scenario pair going forward rather than treating each
+instance as a one-off anecdote.
+
+**Same session, full 8-scenario suite run (after the scenario reorganization/rename/duration cut):**
+`two_channel_divergent_600.json` (`2026-09-27_11-23-10`, the just-compressed 30s version) hit it
+again on both motors - **7 for 7** capture sessions now show the identical signature (CRC-failing
+prefix, then permanent exact `0xFFF`). The two motors' prefixes were close in length again this time
+(1.985s and 1.982s, ~3ms apart), more like the one prior synced instance than the 4.45s/1.98s
+mismatch seen earlier same day. All other 6 scenarios in the suite (both single-motor scenarios at
+both speeds, `two_channel_divergent_300`, both `two_channel_gc_*`) passed cleanly with real,
+plausible eRPM. The failure continues to look specific to the two-bidirectional-motor DSHOT600
+combination, not to the scenario compression or any of today's code changes.
+
 ## What's been ruled out
 
 - **Not caused by BUG-001 (the disarm-hang fix), and not fixed by it either.** The no-spin
@@ -105,22 +180,29 @@ invalid-decode pattern all match the pre-rename 2026-09-25 and 2026-09-26 instan
   simply not driving the motor, not like a corrupted or lost link.
 - **Not power-related in any way visible so far** — no brownout, no voltage sag reported, ESC
   behaves normally in every other respect during the same run.
+- **Not a clean spin-up that later drops out.** Offline re-analysis of all four stored instances
+  (see above) found no window of real, varying eRPM anywhere in an affected motor's log — only a
+  CRC-failing prefix followed immediately by the permanent at-rest sentinel. Whatever happens,
+  happens before the motor is ever seen to actually turn.
 
 ## Untested leads
 
-- **A pre-arm timing window, flagged during the BUG-001 investigation, not confirmed.**
-  `BidirectionalDShot.__init__` applies the pull-up at construction time, before `arm()` is ever
-  called, and scenario/SD-card setup happens in that gap. If that gap, combined with DSHOT600's
-  tighter timing, ever pushes into the ESC's own 2-second unarmed signal-loss window, arming
-  could begin while the ESC is mid-reboot. Weighed against this: AM32's own bootloader escapes
-  quickly once real DShot frames start arriving (each failed-framing attempt bumps its internal
-  counter toward a fast exit), so the more likely effect of this window, if it matters at all,
-  is a **late** application start eating into the arm window — not a clean arm followed by a
-  silent refusal to spin. Whether that's consistent with what's observed (motor arms, replies
-  correctly, just doesn't spin) hasn't been reasoned through carefully. Flagged as a lead worth
-  checking first, not a working theory.
-- **The invalid-decode correlation noted above** — worth deliberately trying to reproduce with
-  the invalid-decode count as the thing being watched, rather than noticing it after the fact.
+- **A pre-arm/late-arming timing window — sharpened by the 2026-09-26 offline re-analysis above,
+  still not confirmed.** `BidirectionalDShot.__init__` applies the pull-up at construction time,
+  before `arm()` is ever called, and scenario/SD-card setup happens in that gap. If that gap,
+  combined with DSHOT600's tighter timing, ever pushes into the ESC's own 2-second unarmed
+  signal-loss window, arming could begin while the ESC is mid-reboot. The offline re-analysis found
+  a CRC-failing prefix of 2.0-2.5s at the start of every affected motor's log, close to AM32's own
+  worst-case arming latency (finding 1: >1s gate + 600ms startup tune + margin) - consistent with
+  the ESC still being mid-arm (or freshly rebooted and re-arming) when the Pico's own arm window
+  had already closed and the throttle profile started sending non-zero commands, which per AM32
+  source resets its arming counter on every non-zero-throttle tick and keeps it disarmed for the
+  rest of the run. This does not yet explain why the prefix *fails CRC* rather than being silent or
+  simply absent, which needs more thought or a bench capture to resolve.
+- **The invalid-decode correlation noted above** — largely explained by the offline re-analysis:
+  the "invalid decodes" mixed into these runs sit inside the same CRC-failing prefix window
+  identified above, not scattered randomly through the run. Superseded by that finding; no longer a
+  separate lead to chase on its own.
 - **DSHOT600-specific:** every documented instance is at 600, none at 300 despite comparable
   total runtime at both speeds across this project's regression history - including a clean 300
   run immediately preceding the 2026-09-26 `two_channel_divergent_600` instance, on the same
@@ -142,8 +224,17 @@ it's a different, lower-severity bug than BUG-001 and the fix for that was the p
    (and a DSHOT600 equivalent at other throttle profiles) enough times, watching both the
    invalid-decode count and the motor, to get a real occurrence rate instead of two anecdotes.
 2. If reproduced, capture what the ESC's beeps/tone sound like during a no-spin run specifically
-   — a silent failure and an ESC stuck in some other state would sound different.
+   — a silent failure and an ESC stuck in some other state would sound different. Per
+   `AM32_SOURCE_VERIFICATION.md` finding 3's table: an arming tune (`playInputTune`) heard right
+   around the transition favors "never armed" reconnecting mid-run; a motor twitch/buzz with no
+   tune favors stuck-rotor protection. The offline re-analysis above narrows *when* to listen: the
+   transition happens 2.0-2.5s after the throttle profile starts, not at an arbitrary point in the
+   run.
 3. Test the pre-arm timing window lead directly: deliberately delay the gap between motor
    construction and `arm()` past 2 seconds and see if that reproduces the symptom on demand.
+4. To directly separate "never armed" from "stuck-rotor protection" from a capture alone (no bench
+   time): send a throttle-to-0 for ≥1.5s mid-run, then back up, per finding 3's own discriminator -
+   "never armed" arms and then spins; stuck-rotor clears at once and retries the start. Needs a new
+   scenario/profile, not existing captures.
 4. Once reproducible, this becomes a tractable investigation like BUG-001 was — right now it
    isn't, because it can't be reproduced at will.

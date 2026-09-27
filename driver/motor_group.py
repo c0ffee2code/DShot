@@ -71,17 +71,25 @@ class MotorGroup:
     # hardware-verified at (see the "Verified Parameters" table in README.md).
     UPDATE_INTERVAL_US = 0
 
-    # Default arming window in milliseconds. A telemetry reply only shows that
-    # the ESC is armed, not that the motor is running: an armed ESC replies
-    # with an at-rest eRPM even when the motor does not start. The library
+    # Default arming window in milliseconds. A telemetry reply proves nothing
+    # about arm state at all: AM32 replies whether armed or disarmed once
+    # bidirectional mode is latched, and its at-rest eRPM sentinel (917, from
+    # the 0xFFF payload) is identical either way (see
+    # specification/AM32_SOURCE_VERIFICATION.md, findings 1-2). The library
     # cannot observe whether the motor started (or whether the ESC is beeping,
     # or the Pico has hung), so an application should not treat "armed" or
     # "replying" as "spinning" - see bug-reports/BUG-002 for a case this
-    # distinction matters for. A longer window only costs startup time.
-    DEFAULT_ARM_DURATION_MS = 500
+    # distinction matters for. 2000ms covers AM32's own gate from a cold boot
+    # (>1s zero-throttle requirement, plus its 600ms startup tune, plus
+    # margin) - below that, AM32 itself may still be arming when the
+    # application's throttle profile starts. A longer window only costs
+    # startup time.
+    DEFAULT_ARM_DURATION_MS = 2000
 
-    # A gap longer than this between update() calls restarts the arming window,
-    # because the ESC resets its own arming counter when commands stop arriving
+    # A gap longer than this between update() calls restarts the arming
+    # window. AM32 does not reset its own arming counter on a gap - only
+    # non-zero throttle does that, per source - so this is conservative
+    # margin, not a modeled ESC mechanism.
     ARM_GAP_TOLERANCE_MS = 10
 
     # Highest throttle a motor will transmit; set_throttle() clamps to it

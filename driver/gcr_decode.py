@@ -64,6 +64,13 @@ GCR_DECODE_TABLE = {symbol: nibble for nibble, symbol in enumerate(GCR_ENCODE_TA
 
 FRAME_LENGTH_BITS = 21  # marker (1) + 20 differentially-encoded data bits - see module docstring
 
+# AM32's fixed "motor not running" payload (mantissa 0x1FF, exponent 0b111 -
+# all 12 data bits set): sent whether the ESC is armed-but-stopped or fully
+# disarmed, so a CRC-valid reply of exactly this value proves nothing about
+# arm state, only that the motor isn't turning right now (see
+# specification/AM32_SOURCE_VERIFICATION.md, finding 2).
+AM32_NOT_RUNNING_DATA12 = 0xFFF
+
 # Exact per-sample cycle position for dshot_bidir_rx's nested 4-outer x
 # 32-inner sample loop: pass p in 0..3, inner index i in 0..31, global
 # sample index = p*32+i. Within a pass, samples are 2 cycles apart; each
@@ -268,6 +275,12 @@ def decode_result(frame):
       crc_kind  - "inverted" on a CRC hit, else None
       data12    - the 12-bit payload (mantissa + exponent), if decoded
       erpm      - electrical RPM, or None if not decodable/CRC-invalid
+      not_running - True if data12 is AM32's fixed not-running sentinel
+                  (AM32_NOT_RUNNING_DATA12), else False; None if CRC-invalid.
+                  Deliberately not folded into erpm: erpm keeps reporting the
+                  same ~917 either way, so callers that already threshold on
+                  eRPM magnitude are unaffected, while callers that need an
+                  exact answer (not a fuzzy eRPM range) can check this instead.
     """
     full = decode(frame)
     result = {
@@ -277,6 +290,7 @@ def decode_result(frame):
         "crc_kind": None,
         "data12": None,
         "erpm": None,
+        "not_running": None,
     }
     if full is None:
         return result
@@ -285,6 +299,7 @@ def decode_result(frame):
     result["data12"] = data12
     result["crc_ok"] = crc_kind is not None
     if crc_kind is not None:
+        result["not_running"] = data12 == AM32_NOT_RUNNING_DATA12
         mantissa = data12 & 0x1FF
         exponent = (data12 >> 9) & 0x7
         eperiod_us = mantissa << exponent
