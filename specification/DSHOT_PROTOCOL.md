@@ -225,7 +225,10 @@ firmware-specific; generic write-ups quote ~300 ms for Bluejay, which does not a
 
 A zero-throttle window must therefore last more than 1 s after the ESC starts listening; after a
 reboot, allow ≥2 s. The driver's default (`MotorGroup.DEFAULT_ARM_DURATION_MS`) is 2000 ms for this
-reason (verification finding 1). Every test scenario uses 3000 ms.
+reason (verification finding 1), and every test scenario uses 2000 ms too. A fixed window is not
+enough on its own: it assumes the ESC is already listening when `arm()` is called. See
+[`AM32_ARMING_AND_BETAFLIGHT.md`](AM32_ARMING_AND_BETAFLIGHT.md) for the full sequence and how
+Betaflight gates arming instead.
 
 ## Special Commands (0-47)
 
