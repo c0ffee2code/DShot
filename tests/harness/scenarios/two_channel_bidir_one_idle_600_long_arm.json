@@ -1,0 +1,72 @@
+{
+  "_comment": "BUG-002 request R8: two_channel_bidir_one_idle_600 with a 4500 ms arming window instead of 2000 ms, nothing else changed. The R3 runs showed each failing ESC resetting 1.85-2.3 s after arm() and coming back up ~0.7 s later, under throttle 100 with a 2000 ms window; AM32 then needs >1 s of zeros before it arms (about 3.6 s after arm()), which a 3000 ms window also misses (the earlier A/B retest) but 4500 ms covers. Passing 3/3 confirms that timing chain; motor 0 failing with a second reset in arming.bin means the reset repeats.",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 20000,
+  "arm_duration_ms": 4500,
+  "status_interval_ms": 5000,
+  "poll_ms": 1,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 100,
+    "min_crc_valid_pct": {
+      "0": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 8,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "bidirectional": true,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 9,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0
+}

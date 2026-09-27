@@ -23,6 +23,8 @@ class BidirCaptureSink(CaptureSinkBase):
     # all-zero word.
     RECORD_FMT = "<I4H4I"
 
+    arming_file = None
+
     def init_session(self, scenario, scenario_path):
         """Create a timestamped run directory and open the capture log.
 
@@ -48,6 +50,8 @@ class BidirCaptureSink(CaptureSinkBase):
                 dst.write(chunk)
 
         self.open_capture()
+        if scenario.bidir_indices:
+            self.open_arming()
 
     def finalize(self, outcome, total_records, missed, largest_gap_us, published, tallies, verdict,
                  extra=None):
@@ -83,12 +87,29 @@ class BidirCaptureSink(CaptureSinkBase):
                 fields[key] = str(extra[key])
         self.finalize_meta(outcome, fields)
 
-    def write_record(self, ticks_us, throttles, words):
+    def write_record(self, ticks_us, throttles, words, file=None):
         """Write one record: `throttles` is the 4 motors' throttle values, `words`
-        the 4 motors' captures (a 1-tuple each - see RECORD_FMT)."""
+        the 4 motors' captures (a 1-tuple each - see RECORD_FMT). Goes to
+        capture.bin unless `file` names another open file (arming.bin)."""
         fields = [ticks_us]
         fields.extend(throttles)
         for group in words:
             fields.extend(group)
         struct.pack_into(self.RECORD_FMT, self.pack_buf, 0, *fields)
-        self.file.write(self.pack_buf)
+        (file or self.file).write(self.pack_buf)
+
+    def open_arming(self):
+        """Open arming.bin: records of the captures taken while the group was
+        still ARMING, in capture.bin's format. capture.bin keeps only the ARMED
+        phase, so the analyzer's thresholds and tallies are unchanged."""
+        self.arming_file = open(self.run_dir + "/arming.bin", "wb")
+
+    def close_arming(self):
+        if self.arming_file:
+            self.arming_file.flush()
+            self.arming_file.close()
+            self.arming_file = None
+
+    def close(self):
+        self.close_arming()
+        super().close()

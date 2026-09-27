@@ -331,6 +331,17 @@ class TelemetryTest(GroupTestCase):
         self.assertEqual(self.motor.rx_sm.rx_fifo(), 0, "they were taken from the receiver...")
         self.assertIsNone(self.group.raw_telemetry(0), "...but not published")
 
+    def test_publish_while_arming_keeps_arming_replies_on_the_motor_only(self):
+        self.group.publish_while_arming = True
+        self.group.arm(ARM_MS)
+        self.motor.rx_sm.feed(self.CAPTURE)
+        self.group.update()
+        self.assertEqual(self.motor.latest_capture()[1:], (1, self.CAPTURE),
+                         "published to the motor's slot...")
+        self.assertIsNone(self.group.raw_telemetry(0), "...but still withheld by the group")
+        self.run_until_armed(self.group)
+        self.assertEqual(self.group.raw_telemetry(0)[1:], (1, self.CAPTURE))
+
     def test_a_reply_after_arming_is_handed_out_with_its_sequence(self):
         self.arm_fully(self.group)
         self.motor.rx_sm.feed(self.CAPTURE)

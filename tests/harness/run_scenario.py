@@ -17,6 +17,9 @@
 # Captures published but never seen (the sequence jumped) are counted as missed;
 # they are not an error, because reading the latest is the contract - the
 # scenario's `expect` thresholds say how much sampling a run must achieve.
+# Captures taken while the group is still arming go to a separate arming.bin in
+# the same format (see arm_group()), so capture.bin, and everything judged on
+# it, still starts at ARMED; meta.txt's armed_ticks_us marks the boundary.
 #
 # Fail-fast, deliberately: a Core 1 error, a gap/rate violation of the
 # scenario's own "expect" thresholds, a tripped reply failsafe (see
@@ -164,9 +167,20 @@ def build_motor(spec, dshot_speed):
     return UnidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed)
 
 
-def arm_group(group, scenario, runner, bidir_indices):
-    """Arm, and check that no capture is handed out before the group is ARMED."""
+def arm_group(group, scenario, runner, bidir_indices, sink, last_seq):
+    """
+    Arm, and check that no capture is handed out before the group is ARMED.
+
+    Every capture taken while arming is logged to arming.bin (BUG-002: what the
+    ESC did before ARMED - replying, silent, or rebooting - is otherwise
+    invisible). The group publishes them to each motor's own slot because
+    publish_while_arming is set; they are read from the motor directly, since
+    raw_telemetry() withholds them. `last_seq` is left at the last sequence seen
+    per motor, so the main loop starts after them. Returns ARMED's ticks_us.
+    """
     print("Arming for {}ms...".format(scenario.arm_duration_ms))
+    group.publish_while_arming = bool(bidir_indices)
+    gc.collect()  # start the window with a clean heap: fewer collections pausing Core 1 while arming
     group.arm(scenario.arm_duration_ms)
     arm_start = utime.ticks_ms()
     arm_timeout_ms = scenario.arm_duration_ms + ARM_TIMEOUT_MARGIN_MS
@@ -176,11 +190,37 @@ def arm_group(group, scenario, runner, bidir_indices):
         if utime.ticks_diff(utime.ticks_ms(), arm_start) > arm_timeout_ms:
             raise RuntimeError("arming did not complete within " + str(arm_timeout_ms) + "ms")
         for index in bidir_indices:
-            if group.raw_telemetry(index) is not None:
+            # Re-check the state: the group may have become ARMED since the
+            # loop test, and then the slot legitimately holds a capture
+            if group.raw_telemetry(index) is not None and not group.is_armed():
                 raise RuntimeError("raw_telemetry(" + str(index) + ") returned a capture while arming")
+        log_new_captures(group, bidir_indices, last_seq, sink.arming_file, sink)
         utime.sleep_ms(1)
+    armed_us = utime.ticks_us()
+    sink.close_arming()
     print("Armed.")
     print()
+    return armed_us
+
+
+def log_new_captures(group, bidir_indices, last_seq, file, sink):
+    """Write one record of the captures each motor published since `last_seq`,
+    read straight from the motors (the group withholds them while arming)."""
+    words = [RECORD_ZERO_WORDS] * 4
+    record_us = None
+    for index in bidir_indices:
+        capture = group.motors[index].latest_capture()
+        if capture is None:
+            continue
+        ticks_us, seq, capture_words = capture
+        if seq == last_seq[index]:
+            continue
+        last_seq[index] = seq
+        words[index] = capture_words
+        if record_us is None or utime.ticks_diff(ticks_us, record_us) > 0:
+            record_us = ticks_us
+    if record_us is not None:
+        sink.write_record(record_us, group.get_all_throttles(), words, file)
 
 
 def run_scenario():
@@ -211,6 +251,8 @@ def run_scenario():
     gc_runs = 0
     gc_max_us = 0
     outcome = "failed"
+    armed_us = None
+    arming_seq = {}
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
     failures = []
@@ -223,7 +265,8 @@ def run_scenario():
         runner = Core1Runner(measured(group.update, loop_times), interval_us)
         runner.start()
 
-        arm_group(group, scenario, runner, bidir_indices)
+        armed_us = arm_group(group, scenario, runner, bidir_indices, sink, last_seq)
+        arming_seq = {i: last_seq[i] for i in bidir_indices}
 
         print("Running scenario for {}ms...".format(scenario.duration_ms))
         run_start = utime.ticks_ms()
@@ -333,8 +376,14 @@ def run_scenario():
             verdict = "fail: " + "; ".join(failures)
         else:
             verdict = "pass"
-        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict,
-                      {"max_loop_gap_us": loop_times[1], "gc_runs": gc_runs, "gc_max_us": gc_max_us})
+        extra = {"max_loop_gap_us": loop_times[1], "gc_runs": gc_runs, "gc_max_us": gc_max_us}
+        if armed_us is not None:
+            # Time 0 for scripts/classify_reply_timeline.py; arming.bin's records are before it.
+            # captures_published counts from arm(), the arming ones included
+            extra["armed_ticks_us"] = armed_us
+            for index in arming_seq:
+                extra["motor" + str(index) + "_captures_while_arming"] = arming_seq[index]
+        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict, extra)
         sink.close()
         print("SD card flushed and unmounted.")
 

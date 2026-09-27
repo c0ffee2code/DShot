@@ -62,6 +62,13 @@ Betaflight never relies on a timer alone
      AM32 detects bidirectional mode ~101 frames *after* its arming count starts, so 1.2 s after
      the first valid reply its >1.02 s gate is complete.
    - `now - ready_last_ms <= READY_FRESH_MS` (~50 ms): it is still replying right now.
+   - **A gap in replies of ≥ 450 ms clears `ready_first_ms`**, so the 1.2 s count starts again at
+     the next reply. BUG-002's R3 captures show why: ESCs that had started replying reset ~1.85 s
+     after `arm()`. They were silent for ~680 ms (startup tune plus the latch) and then needed
+     their full >1 s gate again. Measuring from the first reply would have declared `ARMED` while
+     the ESC was mid-reboot. The arming tune's ~300 ms gap stays under the threshold. With
+     low-voltage cutoff it repeats once per cell and can exceed it, and that only delays `ARMED`
+     by 1.2 s while zeros keep flowing, which is safe.
 
    Until then the group stays in `ARMING` and keeps sending zeros, which is safe.
 4. **Optional stronger confirmation.** AM32 plays its arming tune with interrupts disabled

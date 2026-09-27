@@ -156,6 +156,14 @@ class MotorGroup:
         # One of DISARMED / ARMING / ARMED
         self.state = DISARMED
 
+        # Diagnostic: when True, replies drained while ARMING are published to
+        # each bidirectional motor's latest capture instead of being dropped.
+        # raw_telemetry() still hands nothing out before ARMED; a caller that
+        # wants the arming-phase replies reads motor.latest_capture() itself.
+        # The bench harness sets it to log what the ESC did while arming
+        # (bug-reports/BUG-002). Set it before arm().
+        self.publish_while_arming = False
+
         self.arm_duration_ms = self.DEFAULT_ARM_DURATION_MS
         self.arm_started_ms = 0
         self.last_update_ms = utime.ticks_ms()
@@ -269,7 +277,8 @@ class MotorGroup:
         replies until it is drained again, so it must not depend on the
         application remembering a second call. Replies drained while ARMING
         are discarded - not yet trusted, since the ESC may still be
-        completing bidirectional detection.
+        completing bidirectional detection - unless publish_while_arming is
+        set (a diagnostic; raw_telemetry() withholds them either way).
 
         The drain comes first, before any command is queued, so a new reply's
         words never have to wait behind an undrained old one - see ADR-002
@@ -292,8 +301,9 @@ class MotorGroup:
             if utime.ticks_diff(now, self.last_update_ms) > self.ARM_GAP_TOLERANCE_MS:
                 self.arm_started_ms = now
 
+            publish = self.publish_while_arming
             for motor in self.bidir_motors:
-                motor.drain_rx(False)
+                motor.drain_rx(publish)
 
             # Send literal zeros rather than the throttle array, so the arming
             # window stays genuinely at zero even if the application sets a

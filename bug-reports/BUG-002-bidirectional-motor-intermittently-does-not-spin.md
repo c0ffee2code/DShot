@@ -1,6 +1,7 @@
 # BUG-002: A bidirectional motor sometimes doesn't spin despite valid telemetry
 
-**Status:** OPEN — not investigated to a root cause
+**Status:** OPEN — narrowed 2026-09-27: the failing ESC resets during our arming window and
+comes back after ARMED, under non-zero throttle (see "Analysis of R3"); why it resets is open
 **Severity:** Medium — intermittent, the ESC and telemetry link both stay healthy and the ESC
 recovers normally afterward, but the motor silently fails to do the one thing it's told to do.
 **Component:** unclear — could be driver timing, ESC-side arming state, or something environmental;
@@ -771,3 +772,205 @@ confound, since the padded-tick control ran a *slower* single-bidirectional-moto
 failure) already answers the tick-period half of that question independently, so R4's own result
 here is best read as: no failure at all when neither line is released, consistent with R3's
 "a released line is what matters" reading rather than contradicting it.
+
+## Analysis of R3 (cloud session, 2026-09-27): every failing ESC rebooted around ARMED
+
+### The "silences" were the line held low
+
+The classifier used for R3 treated an all-zero word as "no capture" and skipped it. That was a bug
+in the classifier, and it hid the key signal:
+- `motor0_captures_published` equals `motor2_captures_published` to the unit in all three sessions
+  (26561, 26648, 26655). Both receivers pushed a word on every frame, including during motor 0's
+  "607 ms without a capture".
+- Those words were all zero. The line was low from ~2 µs after our release to the end of the
+  ~27 µs capture, on every frame. Nothing we transmit produces that, so the ESC side held the line
+  low.
+
+`classify_reply_timeline.py` now labels these words `low`, and reports the AM32 events it finds.
+Re-run on the same three sessions, times from ARMED:
+
+| Session | Motor (throttle) | Line held low | First reply | Arming tune (no replies) | Outcome |
+|---------|------------------|---------------|-------------|--------------------------|---------|
+| `14-12-21` | 0 (100) | 0.274 - 0.874 s (600 ms) | 0.953 s | none | never armed |
+| `14-12-21` | 2 (0) | - | replying from the first record | before the first record, if any | - |
+| `14-22-14` | 0 (100) | before 0 - 0.453 s | 0.532 s | none | never armed |
+| `14-22-14` | 2 (0) | before 0 - 0.453 s | 0.536 s | 1.505 - 1.774 s | armed |
+| `14-22-57` | 0 (100) | 0.180 - 0.779 s (599 ms) | 0.860 s | none | never armed |
+| `14-22-57` | 2 (0) | before 0 - 0.452 s | 0.534 s | 1.505 - 1.773 s | armed |
+
+Every stretch matches AM32's boot sequence, to the millisecond where it is measurable:
+
+| What the receiver sees | Length | AM32 |
+|------------------------|--------|------|
+| Line held low | 599-600 ms | Startup tune, 3 × 200 ms with interrupts off ([`sounds.c#L118-L146`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/sounds.c#L118-L146)). The signal pin gets its capture setup and pull-up only after the tune ([`main.c#L1893-L1933`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1893-L1933)). Why the line reads *low* rather than floating up to our pull-up is not established; the timing identifies the tune regardless. |
+| `echo`, then the first `stop` | 79-83 ms | Detection, then >100 frames before the bidirectional latch ([`dshot.c#L86-L95`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/dshot.c#L86-L95)); 100 frames at our 0.753 ms tick are 75 ms |
+| `echo` between two runs of `stop` | ~270 ms, 1.05 s after the ESC came up | Arming tune after >1 s of zero throttle ([`main.c#L1360-L1400`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1360-L1400), [`sounds.c#L219-L237`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/sounds.c#L219-L237)) |
+
+So R3 confirms path A and explains it. In 3 of 3 runs motor 0's ESC reset, came back up after
+ARMED, found throttle 100, and never armed. Motor 2's ESC reset too in 2 of 3 runs, at the same
+moment as motor 0's in `14-22-14`. Held at zero, it armed ~1 s later. So whichever ESC resets late
+enough to come up under non-zero throttle is the one that "does not spin".
+
+Corrections to the text above:
+- "2 of 3 runs": it is 3 of 3. In `14-22-14` the reboot started before ARMED. The old classifier
+  therefore printed no segment before 0.40 s.
+- "motor 0's silence/echo window and motor 2's arming-tune window are ... not simultaneous": in
+  `14-22-14` both ESCs were in their startup tune together. Their low stretches end within 1 ms of
+  each other.
+- Motor 2's mid-run `echo` is its arming tune after its own reboot. It is not a first arming from a
+  healthy state.
+
+### When the resets happen: inside our arming window, on a fixed clock
+
+ARMED is 2.000 s after `arm()`. The low stretch starts at the reset plus the bootloader's and the
+app's start-up time:
+- 1.853 s after `arm()` for three ESC instances in two runs (motor 2 in `14-22-57`, both in
+  `14-22-14`). Their starts are before the first record, so this is their end (0.452-0.453 s
+  after ARMED, agreeing to within 1 ms) minus the 600 ms the two complete stretches measured.
+- 2.180 s and 2.274 s for motor 0 in the other two runs.
+
+Three of the five resets happen before ARMED. So the throttle step at ARMED is not the trigger;
+something inside the arming window is. Timing that repeats to the millisecond across ESCs and runs
+means a fixed chain that starts when our first frames arrive at `arm()`. The two later resets fit
+the same chain started 0.33-0.42 s late, for example an ESC that was still in its own startup tune
+when `arm()` began.
+
+**A chain in AM32's source with that timing (leading hypothesis, not confirmed):**
+1. At `arm()` the ESC detects our signal.
+2. It counts zero-throttle captures **without validating them**: `zero_input_count++` runs for
+   every capture whether or not it passed the frame check
+   ([`signal.c#L166-L178`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/signal.c#L166-L178)).
+   So it arms ~1.05 s later even if it accepted none of our frames
+   ([`main.c#L1360-L1400`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1360-L1400)).
+3. Its arming tune (~0.3 s) ends by clearing `signaltimeout`
+   ([`sounds.c#L234`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/sounds.c#L234)).
+4. Armed, it resets after 0.5 s in which no capture passes the frame-length window of
+   `computeDshotDMA()`
+   ([`dshot.c#L72-L77`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/dshot.c#L72-L77),
+   [`main.c#L1992-L2004`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1992-L2004)).
+
+That totals 1.05 + ~0.3 + ~0.52 s ≈ 1.87 s, plus the boot time, against 1.853 s measured. The
+chain is close enough to test, but not a fit to the millisecond. The bench's firmware and
+bootloader versions (R0) would pin the tune lengths. The disarmed 2 s reset
+([`main.c#L2006-L2017`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L2006-L2017))
+does not fit as well: it counts from the ESC's last accepted frame or tune, and that depends on
+what the ESC was doing before `arm()`, so it would not repeat to the millisecond.
+
+The chain needs an ESC that, armed, stops accepting our frames. Two ways, which the arming-phase
+log separates:
+- **(a) It never accepted them.** AM32 learns the frame-length window once, from the 7th-14th
+  capture after detection, at ±1/16, and never relearns it before a reset
+  ([`signal.c#L166-L174`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/signal.c#L166-L174)).
+  One misaligned capture among those 8 skews the window, and every correct frame after that is
+  rejected. A misaligned capture is one with an extra edge on the line or a missed edge. The ESC
+  then never latches bidirectional mode, so it never replies. **Signature: no `stop` at all
+  between `arm()` and the reset.**
+- **(b) It accepted them until it armed, then lost them.** **Signature: `stop` from ~75 ms after
+  `arm()`, the arming tune at ~1.05 s, then `stop` or nothing until the reset at ~1.85 s.**
+
+Either way, whether an ESC loses our frames is decided per ESC and per run. It happens with two
+bidirectional DSHOT600 lines and not with one (R3 vs the single-motor scenarios, R4). Which
+property of the second line causes it is the open question. Candidates are coupling onto a
+released line, or edge timing at DSHOT600 (both two-motor DSHOT300 scenarios pass).
+
+**This also explains the earlier A/B retest.** Suppose the reset lands at ~1.85 s and the ESC is
+back ~0.68 s later. It then needs >1 s of zeros, so it can arm no earlier than ~3.6 s after
+`arm()`. That fails with a 2000 ms window and with a 3000 ms window alike, which is what the
+retest found. A 4500 ms window should pass if the ESC keeps our frames after its reboot. Motor 2
+did in 2 of 2 runs.
+
+### Consequence for BUG-003
+
+A reply seen early in the arming window does not mean the ESC will still be there at ARMED. The
+evidence gate must restart its 1.2 s count after any reply gap long enough to be a reboot. A gap of
+≥ 450 ms is longer than the arming tune and shorter than a reboot's ~680 ms. See BUG-003's fix
+plan, step 3.
+
+## Verification requests, round 2 (2026-09-27)
+
+Same reporting rules as round 1: add a `### Results: R<n>` subsection, commit the sessions with
+`git add -f captures/<session>`, and paste the classifier output verbatim. This round's sessions
+also contain `arming.bin`; commit it.
+
+**R6 is now implemented** (this commit), so it no longer needs a code change on the bench side:
+- `MotorGroup.publish_while_arming`: a diagnostic flag, default off. `raw_telemetry()` still
+  returns `None` until ARMED.
+- `run_scenario.py` sets the flag and logs every arming-phase capture to `arming.bin`, in
+  `capture.bin`'s format.
+- `meta.txt` gains `armed_ticks_us` and `motor<i>_captures_while_arming`.
+- `capture.bin` still starts at ARMED, so `analyze_bidir_capture_log.py` and the scenario verdicts
+  are unchanged. `motor<i>_captures_published` now counts from `arm()`; subtract
+  `motor<i>_captures_while_arming` to get the ARMED-phase count.
+- `classify_reply_timeline.py` shows the arming window at negative times.
+
+`scripts/run_test.py --scenario <file>` uploads the changed driver and harness before each run,
+as usual.
+
+### R7 - The arming window, logged (bench, no code change)
+
+Run `two_channel_bidir_one_idle_600` 3 times and `two_channel_gc_600` 2 times, plus
+`single_channel_bidirectional_600` once as the healthy reference. For each bidirectional motor,
+from the classifier's segments and events:
+
+| Session | Motor | First class after `arm()` | First `stop` | Arming tune(s) | Line held low (reset) | Outcome |
+|---------|-------|---------------------------|--------------|----------------|-----------------------|---------|
+
+Times are relative to ARMED; `arm()` is at -2.000 s. What each hypothesis predicts for a failing
+ESC:
+- **(a) never accepted:** `echo` (or `garbled`) from -2.0 s with no `stop` at all, then `low` from
+  about -0.15 s.
+- **(b) accepted until armed:** `stop` from about -1.92 s, `echo` ~0.3 s at about -0.95 s (its
+  arming tune), then `echo`, `garbled` or `stop`, then `low` from about -0.15 s.
+- **Neither:** a `low` stretch at a different time, or one that does not follow an arming tune,
+  means the chain above is wrong. That points to the IWDG (1.6 s nominal,
+  [`peripherals.c#L139-L145`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Mcu/f051/Src/peripherals.c#L139-L145))
+  or to power. Report `low` stretches that are not ~600 ms too.
+- **Healthy ESC**, for comparison: `echo` ~80 ms, then `stop`, with its arming tune about 1.05 s
+  after `arm()`, and no `low` at all.
+- **Also note the first class right at `arm()`:** `low` means the ESC was already in its startup
+  tune, and `echo` means it was listening or in its bootloader. A mix of `echo` and short `low` or
+  `garbled` would be the bootloader answering our frames with its 0xC1/0xC2 NACK bytes.
+
+### R8 - A 4500 ms arming window (bench, no code change)
+
+Run `two_channel_bidir_one_idle_600_long_arm` (new; the same as `two_channel_bidir_one_idle_600`
+except `arm_duration_ms: 4500`) 3 times.
+
+| Session | Motor 0 outcome | Motor 0 reset(s) in the arming log | Motor 0 arming tune |
+|---------|-----------------|------------------------------------|---------------------|
+
+- **Prediction: motor 0 spins 3/3.** It resets at about -2.65 s, is back about 0.7 s later, and
+  arms about 1.05 s after that, all before ARMED. That confirms the timing chain and gives a
+  workaround until the cause is found; BUG-003 is the general form of that workaround.
+- A second reset in the log means the loss of our frames repeats after a reboot. The cause then
+  has to be found (R10) before any workaround can hold.
+
+### R9 - Listen during R7 (no extra runs)
+
+With the arming log, listening only confirms. The hypothesis predicts this for a failing ESC:
+- the arming tune (3 short beeps) ~1 s after `Arming for 2000ms...` prints;
+- the startup tune (3 longer beeps) ~0.8 s after that;
+- no tune from that ESC afterwards.
+
+Report only a sequence that differs.
+
+### R10 - Only if R7 shows (a): find the extra edge
+
+1. **Scope or logic analyser** on both signal lines at the ESC pads. Trigger on the first frame
+   after `arm()` and capture 20 ms at ≥ 50 MS/s. Report any transition on a line between its own
+   frames, when it happens relative to the other line's frame, and its amplitude.
+2. **Pull-up test**, no code change. Fit a 2.2-4.7 kΩ pull-up from each bidirectional signal line
+   to 3.3 V at the Pico end. That stiffens the released line about tenfold against coupling, and
+   AM32's push-pull reply drives it easily. Re-run `two_channel_bidir_one_idle_600` 3 times.
+   - Passes 3/3: coupling onto the released line is the cause. The fix is hardware (pull-ups,
+     wiring), or frame staggering in `MotorGroup.update()`.
+   - Still fails: look at edge timing at DSHOT600 instead.
+
+### How round 2 decides the next step
+
+| Result | Meaning | Next |
+|--------|---------|------|
+| R7 (a) + R8 passes | The ESC never takes our frames on its first boot; a reboot clears it | R10 for the cause. Land BUG-003 with the reboot-aware gate either way. |
+| R7 (b) | The ESC loses our frames when it arms | Read AM32's armed input path (deferred `processDshot()`) against the arming log. R10 step 1 still applies. |
+| R7: `low` without an arming tune before it | Not the armed-timeout chain | IWDG or power: R0's PSU facts, supply rail on the scope |
+| R8 fails with one reset | Arming too slow even with 4.5 s | Read the log's timings; widen the window again only if the ESC is still arming at ARMED |
