@@ -75,29 +75,40 @@ def main():
     # above still holds; teed into `lines` so the console log can be saved
     # next to the session's own captures once its name is known (only
     # run_scenario.py prints one - another script's run has nothing to match).
+    # Relayed as bytes, not decoded text. Decoding with the default code page
+    # (cp1252 on Windows) raises on some bytes, and that would stop this reader
+    # mid-run while the Pico kept going and mpremote blocked on a full pipe.
     proc = subprocess.Popen(
         [PYTHON, "-m", "mpremote", "connect", COM_PORT, "run", str(test_script)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
+    # A daemon, and cancelled in `finally`, so neither an error here nor Ctrl-C
+    # leaves this process waiting out the timer
     watchdog = threading.Timer(RUN_TIMEOUT_S, proc.kill)
+    watchdog.daemon = True
     watchdog.start()
 
+    out = sys.stdout.buffer
+    sys.stdout.flush()  # the text printed so far goes out before the raw bytes
     lines = []
     session_name = None
-    for line in proc.stdout:
-        print(line, end="")
-        lines.append(line)
-        if session_name is None:
-            match = SESSION_LINE_RE.search(line)
-            if match:
-                session_name = match.group(1)
-    returncode = proc.wait()
-    watchdog.cancel()
+    try:
+        for line in iter(proc.stdout.readline, b""):
+            out.write(line)
+            out.flush()
+            lines.append(line)
+            if session_name is None:
+                match = SESSION_LINE_RE.search(line.decode("utf-8", "replace"))
+                if match:
+                    session_name = match.group(1)
+        returncode = proc.wait()
+    finally:
+        watchdog.cancel()
 
     if session_name:
         log_dir = ROOT / "captures" / session_name
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "run.log").write_text("".join(lines))
+        (log_dir / "run.log").write_bytes(b"".join(lines))
         print(f"Saved run log -> captures/{session_name}/run.log")
 
     sys.exit(returncode)
