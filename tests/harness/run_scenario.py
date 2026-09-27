@@ -69,6 +69,17 @@ REPLY_FAILSAFE_GRACE_MS = 2000
 # (bug-reports/BUG-003). The error then says which motor never replied.
 ARM_TIMEOUT_MARGIN_MS = 8000
 
+# Grace window, after ARMED, before a bidirectional motor commanded to nonzero
+# throttle that has never once decoded a real (non-"not running") eRPM is
+# treated as stuck rather than still starting up. With the reply-gated ARMED
+# transition (bug-reports/BUG-003), reaching ARMED already means the ESC was
+# replying steadily - this catches the remaining case, where it replies but
+# the motor still never turns (per the user: "if it continuously returns this
+# eRPM constant - no point to run the test scenario, motors won't spin").
+# Matches REPLY_FAILSAFE_GRACE_MS - every healthy spin-up on this bench starts
+# well inside it.
+STUCK_AT_REST_GRACE_MS = 2000
+
 RECORD_ZERO_WORDS = (0,)
 
 
@@ -92,6 +103,30 @@ def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
             "ms elapsed (every captured record's words are still all-zero) "
             "- check ESC power/arming/bidir mode before continuing"
         )
+
+
+def check_stuck_at_rest_failsafe(bidir_indices, real_spin_seen, throttles, elapsed_ms):
+    """
+    A bidirectional motor commanded to nonzero throttle that has never once
+    decoded a real eRPM is BUG-002's own signature: CRC-valid replies, no
+    error state, and no spin, ever. Past the grace window this stops the run
+    instead of waiting out its full duration for a result already decided.
+
+    A motor deliberately held at 0 throttle (an idle bidirectional motor used
+    as a second-line control - see two_channel_bidir_one_idle_600) legitimately
+    replies the same sentinel forever and must not trip this - only checked
+    for motors with nonzero commanded throttle right now.
+    """
+    if elapsed_ms < STUCK_AT_REST_GRACE_MS:
+        return
+    for index in bidir_indices:
+        if throttles[index] > 0 and not real_spin_seen[index]:
+            raise RuntimeError(
+                "stuck-at-rest failsafe tripped: motor " + str(index) + " has been commanded a "
+                "nonzero throttle for " + str(elapsed_ms) + "ms since ARMED and every decoded "
+                "reply is still AM32's not-running sentinel (917 eRPM) - it is not going to start "
+                "on its own this run (see bug-reports/BUG-002-bidirectional-motor-intermittently-does-not-spin.md)"
+            )
 
 
 def check_expect(expect, largest_gap_us, records, elapsed_ms, loop_gap_us):
@@ -263,6 +298,7 @@ def run_scenario():
     arming_seq = {}
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
+    real_spin_seen = [False, False, False, False]  # per motor: ever decoded a non-"not running" eRPM
     failures = []
 
     try:
@@ -292,6 +328,8 @@ def run_scenario():
             for index, spec in enumerate(scenario.motors):
                 group.set_throttle(index, spec.profile.throttle_at(elapsed_ms))
 
+            throttles = group.get_all_throttles()
+
             # One record per pass in which any motor has a capture it has not
             # shown before; the other motors' word slots stay zero
             words = [RECORD_ZERO_WORDS] * 4
@@ -311,7 +349,10 @@ def run_scenario():
                 if any(capture_words):
                     seen[index] += 1
                     if is_sampled(seen[index], scenario.decode_every):
-                        tallies[index].add(group.decode_telemetry(index, capture_words))
+                        result = group.decode_telemetry(index, capture_words)
+                        tallies[index].add(result)
+                        if result is not None and result["crc_ok"] and not result["not_running"]:
+                            real_spin_seen[index] = True
                 if record_us is None or utime.ticks_diff(ticks_us, record_us) > 0:
                     record_us = ticks_us
                 age_us = utime.ticks_diff(utime.ticks_us(), ticks_us)
@@ -322,7 +363,6 @@ def run_scenario():
                 total_records += 1
                 if any(any(w) for w in words):
                     total_nonzero_records += 1
-                throttles = group.get_all_throttles()
                 sink.write_record(record_us, throttles, words)
                 if last_record_us is not None:
                     gap = utime.ticks_diff(record_us, last_record_us)
@@ -331,6 +371,7 @@ def run_scenario():
                 last_record_us = record_us
 
             check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
+            check_stuck_at_rest_failsafe(bidir_indices, real_spin_seen, throttles, elapsed_ms)
             check_expect(scenario.expect, largest_gap_us, total_records, elapsed_ms, loop_times[1])
 
             if scenario.gc_every_ms and utime.ticks_diff(utime.ticks_ms(), last_gc_ms) >= scenario.gc_every_ms:
