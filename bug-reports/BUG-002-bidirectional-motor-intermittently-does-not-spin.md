@@ -253,6 +253,55 @@ The full, unabridged investigation log (every hypothesis tried, every intermedia
 original verification-request scaffolding) is preserved in git history:
 `git show 2c94f2f:bug-reports/BUG-002-bidirectional-motor-intermittently-does-not-spin.md`.
 
+## Follow-up test: power-cycling the ESC does not raise the first-contact accept rate
+(2026-09-27, does not replicate)
+
+The "where the rejections concentrate" table above found all 5 recorded accepts of our very first
+frame at `arm()` came from sessions after one incidental ESC power-off/power-on
+(`2026-09-27_18-48-15`): 5 of 14 after that event, 0 of 28 before it. Tested directly with a
+controlled A/B, since that finding was an incidental before/after split around one point in time,
+not a designed experiment: 5 pairs, interleaved, `two_channel_arming_check_600`, 10 runs total.
+Each "A" run followed a fresh manual power-cycle of the ESC immediately beforehand; each "B" run
+followed immediately after the previous run's `disarm()`, no power action.
+
+| Pair | Session (A, power-cycled) | `ARMED` | Session (B, no power-cycle) | `ARMED` |
+|---|---|---|---|---|
+| 1 | `2026-09-27_20-09-49` | 4.547s | `2026-09-27_20-10-22` | 4.543s |
+| 2 | `2026-09-27_20-12-01` | 2.547s | `2026-09-27_20-12-35` | 14.372s |
+| 3 | `2026-09-27_20-15-18` | 9.457s | `2026-09-27_20-15-59` | 4.547s |
+| 4 | `2026-09-27_20-17-06` | 5.027s | `2026-09-27_20-17-39` | 2.076s |
+| 5 | `2026-09-27_20-18-44` | 4.543s | `2026-09-27_20-19-17` | 2.305s |
+
+For each motor whose listening period started idle right at `arm()` (excluding periods that
+started mid-tune, already in progress when `arm()` was called - not a first-contact test):
+
+| Condition | First-contact instances | Accepted | Rejected |
+|---|---|---|---|
+| A (power-cycled) | 6 | 3 | 3 |
+| B (no power-cycle) | 8 | 4 | 4 |
+
+**Exactly 50% either way - no measurable difference, and both rates far above the historical 0/28
+"before" baseline.** Getting 3 accepts out of 6 draws here would be a very unlikely coincidence if
+that baseline genuinely reflects a ~0% underlying rate, so this reads as a real discrepancy, not
+sampling noise on top of a small effect. Likely explanation: the original finding compared *before
+and after one point in time* within a running sequence of sessions, which could track something
+else that also changed then (bench/ESC state drifting over a session, temperature, an unrelated
+firmware-side change over the accumulated on-time) rather than the power-cycle action itself. This
+test isolated power-cycling specifically, repeated within one sitting, and found nothing.
+
+**Also checked, informally:** the operator's live impression of a "smooth" vs. "rough" start
+tracked `ARMED` time / reboot count directly (fast arm -> smooth, slow arm -> rough) across all 10
+runs, far more reliably than it tracked the power-cycle condition - both conditions produced both
+smooth and rough starts.
+
+**For the cloud session:** this directly contradicts the "All 5 accepts... came after the ESC
+power cycle" reading above. Worth reconciling before leaning further on that finding - possibly by
+checking whether something else correlates with session order/count-since-boot better than the
+power-cycle timestamp does, in the original 42-instance dataset.
+
+Session captures for all 10 runs are committed under `captures/<session>/` per the usual
+convention.
+
 ## Related
 
 - BUG-001 (disarm-hang fix) - ruled out as cause or fix, see above.
