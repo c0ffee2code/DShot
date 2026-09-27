@@ -167,6 +167,41 @@ both speeds, `two_channel_divergent_300`, both `two_channel_gc_*`) passed cleanl
 plausible eRPM. The failure continues to look specific to the two-bidirectional-motor DSHOT600
 combination, not to the scenario compression or any of today's code changes.
 
+**2026-09-27, A/B retest: `arm_duration_ms` 3000 -> 2000ms, all 8 scenarios re-run.** Per
+`AM32_SOURCE_VERIFICATION.md` finding 1, every scenario's `arm_duration_ms` was lowered from 3000ms
+(the older, empirically-chosen figure) to 2000ms (the source-computed floor: >1s gate + 600ms
+startup tune + margin), and the full suite re-run back to back. Result: **identical pass/fail
+pattern to the 3000ms run**, scenario for scenario -
+`single_channel_unidirectional_{300,600}`, `single_channel_bidirectional_{300,600}` and
+`two_channel_divergent_300`/`two_channel_gc_300` all passed cleanly (real eRPM, matching the 3000ms
+run's values closely); `two_channel_divergent_600` and `two_channel_gc_600` both hit BUG-002 again,
+both motors, same exact signature. This is a clean, direct falsification of "the arm window is too
+short" as a sufficient explanation for BUG-002 as observed here: shortening the Pico's own arm
+window by a third neither fixed nor worsened it, on the exact same two scenarios, in the exact same
+way. It doesn't rule out finding 1's mechanism as *a* real issue elsewhere, but it means finding
+1(a) - "never armed because the Pico's own window was too short" - is not what's producing this
+specific, repeatable failure.
+
+Offline re-analysis of the two new instances adds a data point against the arming-gate theory more
+generally: the CRC-failing prefix length, which had ranged 1.98-4.45s across all prior instances,
+was much shorter this time - **887ms** (`two_channel_divergent_600`,
+`2026-09-27_11-33-24`) and **76ms** (`two_channel_gc_600`, `2026-09-27_11-34-47`), both still
+closely synced between the two motors (within a few ms of each other). A fixed ESC-clock arming
+gate (finding 1's >1s-plus-tune mechanism) would be expected to produce a fairly consistent absolute
+delay run to run, not one that swings from 76ms to 4.45s (a ~60x range) across 9 total instances.
+That variability is easier to reconcile with finding 3(b), stuck-rotor protection: a real,
+mechanical retry-until-timeout process (`bemf_timeout_happened` accumulating over failed start
+attempts) is inherently variable in a way a fixed timer gate is not. Not proven - no bench
+observation (tune vs. twitch) has been made yet - but the balance of evidence collected purely from
+logs now leans toward (b) over (a) for this specific, repeatable failure.
+
+**Sharpest characterization of the trigger condition to date:** across all 9 instances, the failure
+has occurred if and only if the run had **both** DSHOT600 **and** two bidirectional motors running
+simultaneously. Neither condition alone reproduces it - `single_channel_bidirectional_600` (DSHOT600,
+one motor) has passed cleanly every time, and `two_channel_divergent_300`/`two_channel_gc_300`
+(DSHOT300, two motors) have passed cleanly every time. Only the combination fails, and it has failed
+100% of the times it's been tried (both scenarios, both arm durations tested).
+
 ## What's been ruled out
 
 - **Not caused by BUG-001 (the disarm-hang fix), and not fixed by it either.** The no-spin
@@ -184,30 +219,41 @@ combination, not to the scenario compression or any of today's code changes.
   (see above) found no window of real, varying eRPM anywhere in an affected motor's log — only a
   CRC-failing prefix followed immediately by the permanent at-rest sentinel. Whatever happens,
   happens before the motor is ever seen to actually turn.
+- **Not explained by the Pico's own arm window being too short, at least not fully.** The
+  2026-09-27 A/B retest (`arm_duration_ms` 3000ms vs. 2000ms, both source-derived-or-above per
+  finding 1) produced the identical pass/fail pattern on the identical two scenarios. If "the
+  Pico's own window doesn't give AM32 enough time" were the whole story, the two durations should
+  not have failed identically - either the shorter one should fail more, or (if 2000ms already
+  covers AM32's own gate, per finding 1) both should have passed. Neither happened.
 
 ## Untested leads
 
-- **A pre-arm/late-arming timing window — sharpened by the 2026-09-26 offline re-analysis above,
-  still not confirmed.** `BidirectionalDShot.__init__` applies the pull-up at construction time,
-  before `arm()` is ever called, and scenario/SD-card setup happens in that gap. If that gap,
-  combined with DSHOT600's tighter timing, ever pushes into the ESC's own 2-second unarmed
-  signal-loss window, arming could begin while the ESC is mid-reboot. The offline re-analysis found
-  a CRC-failing prefix of 2.0-2.5s at the start of every affected motor's log, close to AM32's own
-  worst-case arming latency (finding 1: >1s gate + 600ms startup tune + margin) - consistent with
-  the ESC still being mid-arm (or freshly rebooted and re-arming) when the Pico's own arm window
-  had already closed and the throttle profile started sending non-zero commands, which per AM32
-  source resets its arming counter on every non-zero-throttle tick and keeps it disarmed for the
-  rest of the run. This does not yet explain why the prefix *fails CRC* rather than being silent or
-  simply absent, which needs more thought or a bench capture to resolve.
+- **A pre-arm/late-arming timing window — weakened by the 2026-09-27 arm-duration A/B retest.**
+  `BidirectionalDShot.__init__` applies the pull-up at construction time, before `arm()` is ever
+  called, and scenario/SD-card setup happens in that gap. If that gap, combined with DSHOT600's
+  tighter timing, ever pushes into the ESC's own 2-second unarmed signal-loss window, arming
+  could begin while the ESC is mid-reboot - that was consistent with the 2.0-2.5s CRC-failing
+  prefixes originally seen, close to AM32's own worst-case arming latency (finding 1). But shortening
+  the Pico's own arm window (`arm_duration_ms` 3000ms -> 2000ms) neither fixed nor worsened the
+  failure, and the prefix length turned out much more variable than a fixed arming-gate timer would
+  predict (76ms to 4.45s across 9 instances - see "What's been ruled out"). Still possible as a
+  contributing factor, but no longer the leading explanation on its own.
 - **The invalid-decode correlation noted above** — largely explained by the offline re-analysis:
   the "invalid decodes" mixed into these runs sit inside the same CRC-failing prefix window
   identified above, not scattered randomly through the run. Superseded by that finding; no longer a
   separate lead to chase on its own.
-- **DSHOT600-specific:** every documented instance is at 600, none at 300 despite comparable
-  total runtime at both speeds across this project's regression history - including a clean 300
-  run immediately preceding the 2026-09-26 `two_channel_divergent_600` instance, on the same
-  boot. Could be coincidence given the small sample, could be a real timing-margin issue specific
-  to 600's tighter bit period.
+- **The trigger condition, now the leading lead: DSHOT600 AND two bidirectional motors together,
+  not either alone.** 9 for 9 instances have needed both conditions at once -
+  `single_channel_bidirectional_600` (DSHOT600, one motor) and `two_channel_divergent_300`/
+  `two_channel_gc_300` (DSHOT300, two motors) have never once failed, at either arm duration tested.
+  `two_channel_divergent_600` and `two_channel_gc_600` have never once passed on a first attempt in
+  this session's testing. This is no longer "could be coincidence given the small sample" - it's a
+  100% reproduction rate on a specific combination, and 100% clean on every scenario missing either
+  half of it. Worth investigating what's specific to two bidirectional motors' PIO/timing
+  interaction *at DSHOT600's tighter bit period specifically* (half of DSHOT300's, per finding 4) -
+  something in the frame receiver's shared timing/IRQ path, or in how two ESCs on the bench
+  interact electrically at that speed, that doesn't show up with only one bidirectional motor or at
+  the more forgiving DSHOT300 timing.
 
 ## Why this hasn't been investigated further
 
@@ -220,21 +266,28 @@ it's a different, lower-severity bug than BUG-001 and the fix for that was the p
 
 ## Suggested next steps, if picked up
 
-1. Try to reproduce on demand rather than waiting for it — repeat `two_channel_divergent_600`
-   (and a DSHOT600 equivalent at other throttle profiles) enough times, watching both the
-   invalid-decode count and the motor, to get a real occurrence rate instead of two anecdotes.
-2. If reproduced, capture what the ESC's beeps/tone sound like during a no-spin run specifically
-   — a silent failure and an ESC stuck in some other state would sound different. Per
+**Reproduction is no longer the blocker.** As of 2026-09-27, `two_channel_divergent_600` and
+`two_channel_gc_600` have failed 100% of the times they've been run this session (4 attempts
+between them, across two different `arm_duration_ms` values), while every other scenario has passed
+100% of the time. This is now a tractable, on-demand-reproducible investigation, not a wait-for-it
+anecdote.
+
+1. **Bench-observe one of the two known-failing scenarios directly** (`two_channel_gc_600` is
+   shorter, 20s) - watch/listen with the operator present, per
    `AM32_SOURCE_VERIFICATION.md` finding 3's table: an arming tune (`playInputTune`) heard right
-   around the transition favors "never armed" reconnecting mid-run; a motor twitch/buzz with no
-   tune favors stuck-rotor protection. The offline re-analysis above narrows *when* to listen: the
-   transition happens 2.0-2.5s after the throttle profile starts, not at an arbitrary point in the
-   run.
-3. Test the pre-arm timing window lead directly: deliberately delay the gap between motor
-   construction and `arm()` past 2 seconds and see if that reproduces the symptom on demand.
-4. To directly separate "never armed" from "stuck-rotor protection" from a capture alone (no bench
+   around the transition favors "never armed" (re)arming mid-run; a motor twitch/buzz with no tune
+   favors stuck-rotor protection; silence with neither favors something not yet in either AM32
+   mechanism. The transition point varies run to run (76ms-4.45s after the profile starts per the
+   offline re-analysis) so watch/listen for the whole run, not just a narrow window.
+2. **Chase the sharpened trigger condition** (DSHOT600 + two bidirectional motors, not either
+   alone) rather than the arm-window lead, which the 2026-09-27 A/B retest weakened. Candidates
+   worth checking: whether the frame receiver's shared IRQ/timing path behaves differently with two
+   bidirectional pairs active at DSHOT600's tighter bit period specifically (half of DSHOT300's,
+   per finding 4), or whether it's electrical (two ESCs interacting on the bench's shared power/
+   ground at that speed) rather than a Pico-side timing issue at all.
+3. To directly separate "never armed" from "stuck-rotor protection" from a capture alone (no bench
    time): send a throttle-to-0 for ≥1.5s mid-run, then back up, per finding 3's own discriminator -
    "never armed" arms and then spins; stuck-rotor clears at once and retries the start. Needs a new
-   scenario/profile, not existing captures.
-4. Once reproducible, this becomes a tractable investigation like BUG-001 was — right now it
-   isn't, because it can't be reproduced at will.
+   scenario/profile, not existing captures. Given step 2's sharpened lead, build this specifically
+   on `two_channel_gc_600` or `two_channel_divergent_600` rather than a new single-motor scenario -
+   the failure has never been seen outside the two-bidirectional-motor DSHOT600 combination.
