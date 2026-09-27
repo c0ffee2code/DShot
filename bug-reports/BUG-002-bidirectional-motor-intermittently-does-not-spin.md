@@ -542,3 +542,232 @@ the reference. For each motor, report from `arm()` to ARMED + 5 s:
 | R1/R2: path B, R4 fails too | Electrical or power | Wiring and PSU per R0; not a driver change |
 | R1/R2: path B, R4 passes, R5 passes | A low-throttle start fails with two bidirectional motors | Start at ≥200 in the scenarios (Betaflight idles at ~158); keep investigating as noise on the released lines |
 | R3 fails | One extra released bidirectional line is enough | Focus on the released-line window between frames (coupling), not on motor power |
+
+---
+
+**The steps below (steps 4 and 5, run before this session pulled the classification-plan commits
+above) independently arrived at R3 and R4 - built as standalone new scenarios rather than by
+editing `two_channel_gc_600.json` in place, but functionally the same experiments.
+`### Results: R3` and `### Results: R4` below re-run the classifier against those sessions and
+report per the format requested above.**
+
+### Steps 4 and 5 run, 2026-09-27
+
+**Step 4, `two_channel_unidirectional_600` (new scenario, mirrors `two_channel_gc_600`'s exact
+wiring - sm_ids 0/8/4/9, pins 6-9, throttle 100 held for 20s - with both motor-mounted channels
+flipped to plain unidirectional DShot600, no telemetry at all):** 1 run, operator-observed (no
+telemetry proxy exists for this scenario). Both motors spun. Run completed cleanly, longest
+`update()` gap 8.3ms.
+
+**Caveat raised before running this** (see this investigation's own history): flipping both motors
+to unidirectional removes two things at once, not one - the released/floating lines (B4), and all
+RX-drain work from `update()`, which drops Core 1's tick well below the two-bidirectional-motor
+tick that sits right at AM32's ~360µs (F051, DSHOT600) mid-frame-capture rejection limit (ADR-002's
+~366µs average / 448µs worst for that configuration). **A clean pass here is therefore not
+decisive on its own** - it does not distinguish "no released lines fixed it" from "a faster tick
+fixed it" from "both". Only a *failure* here would have been decisive (electrical/ESC-side, ruling
+out bidirectional logic entirely). It passed, so step 4 is inconclusive; step 5 below is what
+actually narrows things down.
+
+**Step 5, `two_channel_bidir_one_idle_600` (new scenario): both motor-mounted channels stay
+bidirectional, but only channel 1 (pin 6) is commanded to a real throttle (100) - channel 3 (pin 8)
+holds throttle 0 for the entire 20s run, so it never spins or switches phases, even though its line
+still releases every frame and its receiver still runs (`MotorGroup.update()` drains every
+bidirectional motor's RX FIFO regardless of that motor's commanded throttle - see
+`driver/motor_group.py`).** 1 run: **BUG-002 reproduced, on the spinning motor.** Motor 0 (channel
+1, commanded to 100): 251 decoded, 247 CRC-valid (98.4%), 3 CRC failures, 1 invalid, **median eRPM
+917** - the exact signature. Motor 2 (channel 3, held at 0 throttle throughout): 259/259 CRC-valid,
+median eRPM 917 - correct and expected, since a motor legitimately at rest replies the same
+sentinel (finding 2); this motor's eRPM was deliberately excluded from `expect` for exactly that
+reason and its clean CRC rate here is not itself informative about the bug. Longest `update()` gap
+8.2ms, same range as every prior run, passing or failing.
+
+**Why this result matters:** channel 3 never physically turned during this run. That rules out
+"two motors' physical commutation/EMI" as a *necessary* trigger - the failing configuration's only
+requirement, per this data, is two bidirectional TX/RX pairs both active at DSHOT600, independent
+of whether either one is actually spinning. It directly confirms step 5's own predicted reading
+from the fix plan table: "a second released line alone is enough."
+
+**Offline replay, 3/3 step-5 runs, with a purpose-written timeline script (not committed - reused
+`scripts/dshot_bidir_decode.py`'s `analyze_frame` directly against each session's raw
+`capture.bin`) to find not just *whether* each motor had CRC failures, but *when*, and whether any
+gap between two successfully-decoded replies was a real silence (no capture at all, any CRC) or
+just a run of CRC failures with captures still arriving on schedule:**
+
+**Superseded by `scripts/classify_reply_timeline.py`** (pulled from `origin` after this analysis was
+first drafted - see "Results: R3" below for its verbatim output): that tool tells a real silence
+apart from an **echo** (the receiver capturing our own next frame because the ESC stayed silent
+past the release - recognisable because its words depend only on our own throttle, simulated via
+`simulate_frame_receiver.run()`) instead of lumping both into "CRC failure". Re-reading the same
+three sessions through it changes the count: **motor 0 matches AM32 path A - "silent
+(echo)...then not running to the end...never armed" - in 3 of 3 runs, not 2 of 3.** The
+run my ad hoc script called "no real silence" (`2026-09-27_14-22-14`) does have an echo window
+(0.40-0.50s, 100% echo) - just shorter and without a single fully-dead (zero-word) stretch inside
+it, which is why a cruder "any nonzero word = alive" check missed it. Once "echo" is counted
+correctly, motor 0's outcome is unanimous, tool-verified, across all three runs: **it was never
+listening when our `ARMED` transition started sending it throttle 100, came up (if it ever fully
+"comes up" rather than staying mid-detection) under non-zero throttle, and so never armed** -
+AM32 path A, not path B (stuck-rotor) or path C.
+
+Motor 2's classified timeline also sharpens what a "clean" idle motor's echo window looks like:
+in `2026-09-27_14-22-14` and `_14-22-57` it goes `stop` (already replying) → **echo, ~1.5-1.8s in,
+~80% of that window** → `stop` again - a brief return to silence in the *middle* of otherwise
+continuous replying, not a cold start. That is what AM32's **arming tune** looks like from the
+receiver's side (interrupts off, so no reply, but only for the tune's duration, not a full
+reboot) - motor 2 arming legitimately mid-run, consistent with the timing match to AM32's ~300ms
+tune duration already noted. `2026-09-27_14-12-21`'s motor 2 shows no echo window at all (100%
+`stop` throughout) - its own arming tune must have landed before this scenario's published window
+starts (during our own `ARMING` phase, which discards every reply - see "Results: R3" and R6 below
+for why that gap matters). The tool's built-in `reading()` heuristic has no case for this
+stop-echo-stop shape and prints "no single AM32 state matches" for both instances - worth a small
+addition if this script is extended further, but the segments themselves are unambiguous by eye.
+
+**What still holds:** motor 0's silence/echo window and motor 2's arming-tune window are at
+different elapsed times in every run (motor 0's within the first second, motor 2's around
+1.5-1.8s) and are not simultaneous - so whatever makes the second motor's presence matter here is
+not a single shared-instant corruption of both receivers at once.
+
+**Follow-up experiment: is it Core 1's tick period?** Before this offline replay, the leading
+candidate was that having two bidirectional motors drains two RX FIFOs every `update()` call,
+slowing Core 1's tick - and that AM32 rejects a mid-frame capture once the frame-to-frame period
+gets too long (`AM32_SOURCE_VERIFICATION.md` section 1, `~360µs` on this bench's F051-class ESCs).
+Tested directly with a new scenario,
+`single_channel_bidirectional_600_padded_tick` (identical to `single_channel_bidirectional_600`
+except `core1_interval_us: 250` pads Core 1's sleep, on a **single** bidirectional motor, no second
+motor at all): **passed cleanly** - 6179/6179 CRC-valid (100%), 0 fail streak, median eRPM 21,246 (a
+real, correctly-spinning motor).
+
+The scenario's own `_comment` guessed this would produce a ~400-425µs tick, based on ADR-002's
+~175µs one-motor / ~366µs two-motor figures. **Those figures do not hold today.** The actual
+average tick period, computed from each session's own published-capture count over its 20s ARMED
+window (`captures published` in the summary, which only increments once ARMED - see
+`driver/capture_mailbox.py`'s `drain(publish)` and `motor_group.py`'s `drain_rx(False)` during
+arming):
+
+| Session | Config | Captures published (20s) | Average tick period |
+|---|---|---|---|
+| `2026-09-27_14-12-21` (step 5) | 2 bidirectional (1 idle) | 26,561 (both motors) | **~753µs** |
+| `2026-09-27_14-15-34` (padded) | 1 bidirectional, `core1_interval_us=250` | 21,562 | **~927µs** |
+
+**The padded single-motor run's tick (927µs) is slower than step 5's two-motor tick (753µs), and
+both are already several times past the ~360µs figure - yet the slower one passed and the faster
+one failed.** This directly falsifies "the tick period alone, once it crosses AM32's mid-frame
+window, is what triggers BUG-002" - the ADR-002 figures this bench previously relied on for that
+argument are stale (from an earlier version of this code) and should not be cited for today's
+timing without re-measuring. Combined with the offline replay above, the tick-period hypothesis is
+now dropped in favor of the ESC-side-failure reading.
+
+**Updated leading hypothesis, now tool-confirmed 3/3 (see "Results: R3" below):** motor 0 (the
+commanded motor) matches AM32 path A in every step-5 run - not listening when our `ARMED`
+transition started sending it throttle 100, so it either never completed detection/latching or
+came back from a reset under non-zero throttle, and either way could never satisfy AM32's own
+"more than 1s of continuous zero throttle" arming gate afterward, because `MotorGroup` never sends
+it zero again once `ARMED`. This matches the upstream classification plan's own reading for path A
+exactly (see the table above: "Land BUG-003. Then find what delays or reboots the ESC with two
+bidirectional lines at DSHOT600.") and directly answers request **R3**: a second bidirectional
+line is enough on its own, with no second motor spinning required - per the plan's own decision
+table, that points at "the released-line window between frames (coupling), not motor power" as the
+next thing to focus on, not another trigger-config sweep. Whether motor 0 is genuinely
+resetting (as the ~600ms-scale silence windows in 2 of 3 runs suggest) or simply never getting
+past AM32's own multi-stage detection/latch process before non-zero throttle arrives, is still
+open - request **R6** (log the arming-phase replies) is what would settle that, since everything
+before our own `ARMED` is currently invisible to every capture gathered so far
+(`MotorGroup.update()` drains arming-phase replies with `drain_rx(False)`, so `CaptureMailbox`
+never records them).
+
+**Cheapest next check (no code change, no new scenario, same as request R2):** replicate
+`two_channel_bidir_one_idle_600` again with the operator listening for two different tunes at two
+different times - an early one within the first second of `ARMED` (motor 0, if it is genuinely
+rebooting) and a later one around 1.5-1.8s in (motor 2's own normal arming tune, expected and
+harmless - do not mistake it for a fault). **Most useful next code change: request R6** - log the
+arming-phase replies (flagged, still hidden from the application) so motor 0's state going into
+`ARMED` is finally on the record instead of inferred from what happens just after it.
+
+### Results: R3 (one motor spinning, both bidirectional)
+
+Built as a standalone scenario, `two_channel_bidir_one_idle_600.json`, rather than by editing
+`two_channel_gc_600.json` in place (functionally the same experiment: channel 1 at throttle 100,
+channel 3 held at 0, both bidirectional, DSHOT600, 20s). 3 runs, all reproduced the bug.
+
+| Session | Motor | Path | Transition time after ARMED | Longest stretch without capture |
+|---------|-------|------|------------------------------|----------------------------------|
+| `2026-09-27_14-12-21` | 0 (throttle 100) | **A** (echo, then stop - never armed) | 0.953 s | 607.6 ms |
+| `2026-09-27_14-12-21` | 2 (throttle 0) | stop only (already armed/replying at ARMED) | - | 14.9 ms |
+| `2026-09-27_14-22-14` | 0 (throttle 100) | **A** (echo, then stop - never armed) | 0.532 s | 13.9 ms |
+| `2026-09-27_14-22-14` | 2 (throttle 0) | stop→echo→stop (own arming tune mid-run, ~1.5-1.8s) | - | 13.9 ms |
+| `2026-09-27_14-22-57` | 0 (throttle 100) | **A** (echo, then stop - never armed) | 0.860 s | 606.3 ms |
+| `2026-09-27_14-22-57` | 2 (throttle 0) | stop→echo→stop (own arming tune mid-run, ~1.5-1.8s) | - | 16.6 ms |
+
+**3/3: motor 0 matches path A.** A second bidirectional line is enough on its own - no second
+motor spinning is required to reproduce this. Per the decision table above, this points at "the
+released-line window between frames (coupling), not motor power" as the next focus.
+
+Classifier output verbatim:
+
+```
+Session: captures\2026-09-27_14-12-21  (DSHOT600, bidirectional motors [0, 2], 5192 records, outcome=completed)
+
+Motor 0: 5033 captures - stop 4943, echo 83, garbled 7
+      0.00 -     0.30 s  echo     92.9% of    70 captures  throttle 100
+      0.80 -     1.00 s  echo     58.1% of    31 captures  throttle 100
+      1.00 -    20.00 s  stop    100.0% of  4932 captures  throttle 100
+  longest stretch with no capture: 607.6 ms, from 0.270 s
+  reading: silent until 0.953 s after ARMED, then 'not running' to the end: the ESC was not listening when throttle started (rebooting, before bidirectional detection, or in an interrupts-off tune), came up under non-zero throttle, and so never armed
+
+Motor 2: 5192 captures - stop 5192
+      0.00 -    20.00 s  stop    100.0% of  5192 captures  throttle 0
+  longest stretch with no capture: 14.9 ms, from 0.000 s
+  reading: 'not running' from the first capture to the last: the ESC was replying already at ARMED but never started the motor - it had not armed (AM32 needs >1 s of zero throttle after it starts listening), or it rejected our throttle frames
+
+Session: captures\2026-09-27_14-22-14  (DSHOT600, bidirectional motors [0, 2], 5177 records, outcome=completed)
+
+Motor 0: 5056 captures - stop 5036, echo 19, garbled 1
+      0.40 -     0.50 s  echo    100.0% of    12 captures  throttle 100
+      0.50 -    20.00 s  stop     99.8% of  5044 captures  throttle 100
+  longest stretch with no capture: 13.9 ms, from 15.827 s
+  reading: silent until 0.532 s after ARMED, then 'not running' to the end: the ESC was not listening when throttle started (rebooting, before bidirectional detection, or in an interrupts-off tune), came up under non-zero throttle, and so never armed
+
+Motor 2: 5056 captures - stop 4957, echo 89, garbled 10
+      0.40 -     0.50 s  echo     91.7% of    12 captures  throttle 0
+      0.50 -     1.50 s  stop     94.2% of   259 captures  throttle 0
+      1.50 -     1.80 s  echo     82.3% of    79 captures  throttle 0
+      1.80 -    20.00 s  stop    100.0% of  4706 captures  throttle 0
+  longest stretch with no capture: 13.9 ms, from 15.827 s
+  reading: no single AM32 state matches; read the segments above
+
+Session: captures\2026-09-27_14-22-57  (DSHOT600, bidirectional motors [0, 2], 5173 records, outcome=completed)
+
+Motor 0: 5011 captures - stop 4945, echo 62, garbled 4
+      0.00 -     0.20 s  echo     97.8% of    46 captures  throttle 100
+      0.70 -     0.90 s  echo     56.7% of    30 captures  throttle 100
+      0.90 -    20.00 s  stop    100.0% of  4935 captures  throttle 100
+  longest stretch with no capture: 606.3 ms, from 0.177 s
+  reading: silent until 0.860 s after ARMED, then 'not running' to the end: the ESC was not listening when throttle started (rebooting, before bidirectional detection, or in an interrupts-off tune), came up under non-zero throttle, and so never armed
+
+Motor 2: 5051 captures - stop 4954, echo 88, garbled 9
+      0.40 -     0.50 s  echo     92.3% of    13 captures  throttle 0
+      0.50 -     1.50 s  stop     94.6% of   258 captures  throttle 0
+      1.50 -     1.80 s  echo     80.5% of    77 captures  throttle 0
+      1.80 -    20.00 s  stop    100.0% of  4703 captures  throttle 0
+  longest stretch with no capture: 16.6 ms, from 2.246 s
+  reading: no single AM32 state matches; read the segments above
+```
+
+### Results: R4 (two unidirectional motors spinning)
+
+Built as a standalone scenario, `two_channel_unidirectional_600.json` (both motor-mounted channels
+flipped to plain unidirectional, throttle 100, DSHOT600, 20s, no telemetry at all - so no
+classifier output is possible here, per the request's own note). 4 runs total (sessions
+`2026-09-27_14-10-12`, `_14-34-04`, `_14-34-39`, `_14-35-58`), all completed cleanly with no Core 1
+stall or error (longest `update()` gap 7.9-8.4ms across all four). **Operator-confirmed both motors
+spinning on 2 of the 4** (the first and last run; the operator was away from the bench for the
+middle two and couldn't confirm by eye, though the harness itself reported the same clean
+completion for those two as the confirmed ones). No failure in 4/4 attempts.
+
+This scenario also changes Core 1's tick (no RX drain at all) at the same time as removing the
+released lines, so a pass here is not decisive on its own between "no released lines" and "a faster
+tick" - but R3's result (a second released line alone reproduces the bug with no tick-speed
+confound, since the padded-tick control ran a *slower* single-bidirectional-motor tick with no
+failure) already answers the tick-period half of that question independently, so R4's own result
+here is best read as: no failure at all when neither line is released, consistent with R3's
+"a released line is what matters" reading rather than contradicting it.

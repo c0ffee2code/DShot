@@ -1,0 +1,61 @@
+{
+  "_comment": "BUG-002 investigation, step 4 of the fix/investigation plan (bug-reports/BUG-002-...md, 'Fix and investigation plan'): mirrors two_channel_gc_600's wiring and throttle exactly (same pins, sm_ids 0/8/4/9, same 20s hold at throttle 100) but with both motor-mounted channels (1 and 3) as plain unidirectional DShot600 instead of bidirectional - no released/floating line on either motor, no RX drain in update() at all. If this scenario also fails to spin a motor, the cause is electrical or ESC-side (shared power/ground, DSHOT600-specific bus behavior), not the bidirectional TX/RX PIO logic. A clean pass here is NOT decisive on its own: dropping both motors' RX drain also speeds up Core 1's update() tick well below the two-bidirectional-motor case's, so a pass leaves open whether it was the released lines, the faster tick, or both that mattered - see the advisor discussion in this investigation's history before treating a pass as ruling out bidirectional logic. Nothing is read back, so a person must watch/listen for a motor that doesn't spin - there is no telemetry proxy for BUG-002's symptom here. Channels 2 and 4 idle (no motor mounted).",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 20000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 5000,
+  "poll_ms": 1,
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 7,
+      "sm_id": 8,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 9,
+      "sm_id": 9,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0,
+  "expect": {}
+}

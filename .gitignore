@@ -21,3 +21,6 @@ Thumbs.db
 
 # Pulled raw capture sessions (see scripts/pull_captures.py)
 captures/
+
+# Claude Code machine-local settings (permission allow-list etc.) - not for a public repo
+.claude/settings.local.json
