@@ -106,11 +106,9 @@ are committed - see "Evidence" below for how to regenerate any of this):
       by 20-30 ms, from 4.93-4.95 s to 4.91-4.94 s.
     - **Ruled out:** the scenario file (identical before and after), and Core 1's longest loop gap
       (~8.5 ms in all but two sessions, both before).
-    - **Tests that would separate the candidates:**
-      - 5 runs after the ESC has been powered and idle for ≥ 40 min;
-      - 5 runs with the gap-reset temporarily restored in `motor_group.py`.
-
-      It would also help to know when the ESC was powered on before 17:57.
+    - **Not pursued.** Pinning this down would not change what we build. "Next: find the fix"
+      tests candidate fixes directly instead, with its configurations interleaved so a drift
+      like this one hits them all alike.
 - **Leading hypothesis (not observed): an edge left in the ESC's input capture when our first
   frame arrives.**
   - AM32 re-arms its capture right after its startup tune
@@ -138,27 +136,71 @@ are committed - see "Evidence" below for how to regenerate any of this):
     about a second at that rate
     ([`bootloader/main.c#L1275-L1286`](https://github.com/am32-firmware/AM32-bootloader/blob/578ff29cb6774c5ce491075ec9b7f05e9781acd6/bootloader/main.c#L1275-L1286)).
 - **Not yet explained: why the ESC rejects our frames**, or why it takes the
-  two-bidirectional-pairs configuration. Next, at the bench:
-  - **A scope on both signal lines comes first.** Capture from before the motors are constructed
-    (before `Arming for ...` prints) through the first 20 ms of frames. Report every transition
-    on either line before its first frame, and any transition on a line between its own frames.
-    Also trigger on a reset, capturing the 100 ms before a startup tune, to see the bootloader's
-    line check. A recurrence of `18-55-34`'s state is worth a capture too: bootloader bytes are
-    52 µs per bit and obvious on a scope.
-  - **Then the pull-up test,** with a caution. A 2.2-4.7kΩ pull-up to 3.3V on each bidirectional
-    line stiffens the released line against coupling, but it also changes what the ESC is doing
-    at `arm()`.
-    - **The bootloader's rule.** After a software reset it checks the line for up to ~50 ms, and
-      stays put if the line reads high and never low. That is the configurator's entry condition
-      ([`bootloader/main.c#L1095-L1157`](https://github.com/am32-firmware/AM32-bootloader/blob/578ff29cb6774c5ce491075ec9b7f05e9781acd6/bootloader/main.c#L1095-L1157)).
-    - **Today.** The line between runs is low: `stop()` drives it low, and after the Pico's reset
-      the RP2350's default pull-down holds it low. So an idle ESC boot-loops through its firmware,
-      mid-tune at `arm()` in 14 of 56 motor-runs.
-    - **With the pull-up.** The line sits high for the seconds between the Pico's reset and
-      `arm()`. An ESC that resets in that time likely parks in its bootloader and meets our first
-      frame there, so the arming logs must be checked for that before reading a pass or fail.
-  - **Waiting longer before `arm()` has the same problem.** A line held idle-high with no frames
-    lets an ESC reset into its bootloader.
+  two-bidirectional-pairs configuration. See "Next: find the fix" below for the runs that narrow
+  it down. A caution for any hardware change, such as a pull-up on each line: after a software
+  reset AM32's bootloader stays put if the line reads high and never low, the configurator's
+  entry condition
+  ([`bootloader/main.c#L1095-L1157`](https://github.com/am32-firmware/AM32-bootloader/blob/578ff29cb6774c5ce491075ec9b7f05e9781acd6/bootloader/main.c#L1095-L1157)).
+  - Today the line between runs is low. `stop()` drives it low, and after the Pico's reset the
+    RP2350's default pull-down holds it there.
+  - A pull-up would hold it high for the seconds before `arm()`, so an ESC that resets then
+    likely parks in its bootloader. Waiting longer before `arm()` with the line idle-high has
+    the same problem.
+
+## Next: find the fix
+
+**Why software.** The ESCs, wiring and power are fine: unidirectional DShot spins both motors
+cleanly. Other evidence points away from the wiring too:
+- **The same neighbouring wire is active when nothing fails.** In the single-motor scenario,
+  pins 7, 8 and 9 all carry DSHOT600 frames (unidirectional zeros), including pin 8, the wire
+  that is bidirectional when things fail.
+- **Our receiver sees no disturbance from the second line.** On a silent ESC's line it reads the
+  same ~11% unrecognised captures whatever the other line is doing: one bidirectional motor or
+  two, the other ESC replying or silent.
+- **The other ESC's replies make no difference.** An ESC that starts listening while the other is
+  already replying accepts our frames 63% of the time; while the other is silent, 61%.
+
+What triggers the rejections is **a second pair running our bidirectional driver at DSHOT600**.
+The runs below change one thing about that pair at a time. Each configuration is judged by how
+often an ESC accepts our frames on first contact at `arm()`. The baseline is 12 of 56 (21%),
+against 59% for an ESC booting into our running signal.
+
+**Configurations:**
+
+| | Scenario | What changes from A |
+|---|---|---|
+| A | `two_channel_arming_check_600` | nothing: the baseline |
+| B | `two_channel_arming_check_300` | DSHOT300 |
+| C | `two_channel_arming_check_600_same_block` | both bidirectional pairs on PIO0 (SM 0/1 and 2/3) instead of PIO0 and PIO1 |
+| D | `two_channel_arming_check_600_spaced` | while arming, motor 2's frame goes out 300 µs after motor 0's, not right behind it (`arming_frame_gap_us`) |
+| E | `single_channel_bidirectional_600` | control: one bidirectional pair, pin 8 unidirectional. Only motor 0 counts |
+
+**Procedure (hardware session).**
+1. Run 10 rounds of A, B, C, D, E in that order, not 10 of A then 10 of B: first-contact
+   acceptance drifted during 2026-09-27, and interleaving spreads any drift over every
+   configuration.
+2. Use `python scripts/run_test.py --scenario tests/harness/scenarios/<name>.json`, with the usual
+   spacing between runs and no power action.
+3. Pull the sessions, then run `python scripts/arming_stats.py --since <first session's name>`.
+   It groups the sessions by configuration and prints, per configuration:
+   - runs, armed and refused;
+   - the median time from `arm()` to `ARMED`;
+   - first contact, after tune and after reset, each as accepted out of decided.
+4. Commit the sessions, and paste that output verbatim under "Results: find the fix".
+
+**Reading the result.** About 15 first contacts per configuration separate 21% from 70% or more
+clearly, but not 21% from 35%. A configuration counts as a hit only if it clears roughly 10 of
+15.
+- **E high and A low.** This confirms the second bidirectional pair is the trigger. It is
+  expected; E has never failed.
+- **B high.** The problem is specific to DSHOT600. Two-motor DSHOT300 is a working setup today,
+  and the fix is in how our two DSHOT600 pairs time their frames.
+- **D high.** The two lines' frames going out close together is the trigger. The fix is to space
+  them in `MotorGroup.update()`, when ARMED as well, and make that the default.
+- **C different from A.** Which PIO blocks the pairs share matters. The fix is in the per-block
+  PIO setup.
+- **Nothing moves.** Next, bisect the second pair's receiver: run it with its RX state machine
+  stopped. Then scope both lines around the first frames.
 
 ## The fix
 
@@ -324,7 +366,8 @@ power-cycle timestamp does, in the original 42-instance dataset.
   first contact went from 0 of 28 accepted (17:57-18:34) to 12 of 28 (18:49-20:19),
   p ≈ 5e-5. After a reset, acceptance stayed at 59% in both periods.
 - **What is left.** Something acting on an ESC waiting before `arm()` changed around 18:48. The
-  candidates and the tests to separate them are under "Where the rejections concentrate" above.
+  candidates are under "Where the rejections concentrate" above. They are not being pursued
+  further: "Next: find the fix" tests fixes directly, interleaved against drift.
 
 Session captures for all 10 runs are committed under `captures/<session>/` per the usual
 convention.

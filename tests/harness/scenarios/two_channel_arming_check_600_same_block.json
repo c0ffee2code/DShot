@@ -1,0 +1,74 @@
+{
+  "_comment": "BUG-002 bisection (see its 'Next: find the fix' section): two_channel_arming_check_600 with both bidirectional pairs on PIO0 (state machines 0/1 and 2/3) instead of one per block (0/1 on PIO0, 4/5 on PIO1). Unidirectional channels stay on PIO2. Tests whether running the two pairs on separate PIO blocks matters. Run interleaved with the other arming-check configurations and read with scripts/arming_stats.py.",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 3000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 1000,
+  "poll_ms": 1,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 150,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "2": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "2": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 3000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 8,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 3000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 2,
+      "bidirectional": true,
+      "rx_sm_id": 3,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 3000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 9,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 3000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0
+}
