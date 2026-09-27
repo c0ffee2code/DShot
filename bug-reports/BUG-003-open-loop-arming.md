@@ -111,12 +111,16 @@ Betaflight never relies on a timer alone
    - **An armed ESC that is not taking our frames resets 0.5 s later**
      ([`main.c#L1992-L2004`][am32-armed-timeout]). The chain ends ~1.8 s after the first reply.
 
-   This chain was the working hypothesis when the span was chosen. Bench-verified since (28 runs,
-   see BUG-002.md's "Verification"): BUG-002's resets don't actually fit it - every reset observed
-   was an ESC that had not accepted our frames at all before rebooting, not one that had armed and
-   was later abandoned. What still holds regardless: a reboot's own silence is >= 680 ms (the
-   startup tune plus latch, below), so a 2.0 s span of unbroken replies comfortably outlasts one
-   reboot cycle either way - an ESC still cycling drops out before `ARMED`, not after.
+   The bench since (28 runs, see BUG-002.md) moved where the chain starts. Every reset came from
+   an ESC that had never replied: it had not accepted one of our frames. It most likely went
+   through this chain anyway, because AM32 arms without validating frames
+   ([`main.c#L1360-L1400`][am32-arming]). Counted from when it started listening, the chain
+   (~1.0 s + ~0.3 s tune + 0.5 s) fits the 1.854-1.859 s measured in 60 of 62 resets. The
+   disarmed timeout would take at least 2.0 s.
+
+   A span of replies cannot see that case, since there are no replies. The span still does its
+   job: a reboot's silence is >= 680 ms (the startup tune plus latch, below), so an ESC still
+   cycling breaks its streak and drops out before `ARMED`, not after.
 
    **Why a 450 ms gap restarts the count.**
    - **It tolerates the arming tune.** The tune's gap is ~300 ms, so an ESC that arms mid-count is
@@ -140,9 +144,8 @@ Betaflight never relies on a timer alone
    mode, or rebooting on every boot. The application sees `is_armed()` stay false and decides how
    long to wait. The library does not pick a timeout.
 4. **Dropped: separate arming-tune confirmation.** The 2 s span already covers the tune, and the
-   step as planned would have passed an ESC that armed and then reset (the chain above) - not
-   what BUG-002's resets actually turned out to look like, but the step would have been wrong
-   either way, since it only checked for the tune once rather than requiring a sustained span.
+   step as planned would have passed an ESC that armed and then reset (the chain above), since
+   it only checked for the tune once rather than requiring a sustained span.
 5. **Make it inspectable.** Add `MotorGroup.arming_status()`, per motor: replying since, last reply,
    gaps seen. The harness's `arm_group()` timeout grows to `arm_duration_ms + 8000` ms, enough for
    two reboots. On a timeout its error prints the status, so a failed arm names the motor that

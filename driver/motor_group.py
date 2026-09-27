@@ -93,9 +93,10 @@ class MotorGroup:
     # full reboot cycle before trusting the streak. A reply says the ESC is
     # listening, not that it armed or that the motor will start - that is
     # still not observable here. Bench-verified across 28 runs
-    # (bug-reports/BUG-002-...md's "Verification"): every reset seen followed
-    # this never-accepted-then-reboot shape, not an ESC that had armed and was
-    # later abandoned.
+    # (bug-reports/BUG-002-...md's "Verification"): every reset seen came from
+    # an ESC that had never replied - one that rejects every frame can still
+    # arm (AM32 arms without validating them) and then time out - never from
+    # one that had been replying.
     READY_SPAN_MS = 2000
     READY_GAP_MS = 450
     READY_FRESH_MS = 50

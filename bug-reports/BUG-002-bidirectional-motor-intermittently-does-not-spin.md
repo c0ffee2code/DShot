@@ -3,9 +3,9 @@
 **Status: MITIGATED.** The failure this bug reports - a motor silently never spinning while its
 ESC keeps replying with valid, CRC-good telemetry - has not recurred once across 28 bench runs.
 That's because arming no longer trusts a timer alone; it waits for evidence that the ESC is
-actually listening (BUG-003). What's still open is *why* the ESC sometimes doesn't listen for the
-first several seconds after `arm()` - that root cause is unconfirmed, and a motor stuck in that
-state for too long still won't fly this run, just loudly instead of silently.
+actually listening (BUG-003). What's still open is *why* the ESC so often rejects our frames when
+our signal starts - that root cause is unconfirmed, and a motor stuck in that state for too long
+still won't fly this run, just loudly instead of silently.
 
 **The headline numbers, across all runs of the fix:** the mid-arming reset itself still happens in
 most two-bidirectional-motor runs - 21 of the 26 two-motor sessions below show at least one motor
@@ -61,22 +61,86 @@ are committed - see "Evidence" below for how to regenerate any of this):
   evidence (BUG-003) rather than trying to guess a longer number.
 - **What actually happens, per the arming-phase logs:** the affected ESC goes quiet for
   ~600-700ms partway through arming - the signature of AM32's own startup tune, played with
-  interrupts disabled, meaning it just rebooted. Before that reboot, the ESC never once accepted
-  our frames - the pre-reboot stretch is 85-90% our own transmission echoed back, the rest
-  garbled, never once the ESC's actual reply - it was not "working, then dropping out," it had not
-  yet started listening at all. After the reboot it usually settles down and starts replying
-  normally within about a second. In one observed session (`2026-09-27_18-55-34`), a motor
-  rebooted once and then never settled into clean replies for the rest of an 18s window instead -
-  re-checked at finer time resolution, it shows short (20-40ms), scattered `low` blips recurring
-  throughout the whole stretch, mixed with echo and occasional garbled captures - a persistently
-  unstable reception, closer to a bootloader answering our frames with its own NACK bytes than to
-  a clean recovery, though that specific mechanism is not confirmed. That's a second, less
-  understood failure shape.
-- **Not yet explained: why the ESC reboots during arming at all**, or why it's specifically the
-  two-bidirectional-pairs configuration that triggers it. The cheapest untested lever is a
-  hardware one: fitting a 2.2-4.7kΩ pull-up to 3.3V on each bidirectional signal line (stiffening
-  the released line against coupling from the other one) and re-running the two-bidirectional
-  scenario. That needs someone at the bench, not code.
+  interrupts disabled, meaning it just rebooted. Before that reboot, the ESC never once replied -
+  the pre-reboot stretch is 85-90% our own transmission echoed back, the rest garbled - so it was
+  not "working, then dropping out": it received our frames and rejected every one.
+- **It most likely armed anyway, and that is what resets it.** AM32 arms after >1 s of captures
+  without validating any of them. Its gate needs only a detected input, a zero throttle (never
+  updated by a rejected frame) and more than 30 captures
+  ([`main.c#L1360-L1400`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1360-L1400),
+  [`signal.c#L166-L178`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/signal.c#L166-L178)).
+  - It then plays its ~0.3 s arming tune, invisible here because it was not replying anyway.
+  - Its armed 0.5 s signal timeout then fires, as no frame passes validation
+    ([`main.c#L1992-L2004`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1992-L2004)).
+  - That chain is about 1.0 + 0.3 + 0.5 s. Measured: 60 of 62 resets came 1.854-1.859 s after the
+    ESC started listening (the other 2 at 1.347 s).
+  - The disarmed timeout would take at least 2.0 s.
+- **After a reboot it often, not always, settles.** It then starts replying within 61-96 ms (its
+  bidirectional latch) and arms about a second later.
+- **Where the rejections concentrate: when our signal starts.** Every listening period in the 29
+  sessions with an arming log (56 motor-runs; `18-48-15`, ESC unpowered, left out):
+
+  | How the ESC's listening period started | Periods | Accepted | Rejected |
+  |---|---|---|---|
+  | At `arm()`, the ESC already listening on an idle line | 42 | 5 | 37 |
+  | After a startup tune already playing at `arm()` | 14 | 13 | 1 |
+  | After a reset inside the arming window | 63 | 37 | 25 (+1, `18-55-34`) |
+
+  - An ESC that meets our first frame rejects it 37 times in 42. One that boots into our running
+    signal rejects it 26 times in 76.
+  - Each reboot is a fresh draw at about those odds, which is why some runs needed 3-4 resets.
+  - Both ESCs behave alike. At `arm()`, motor 0 rejected 19 times and motor 2 18 times; after a
+    reset, 13 and 12.
+  - All 5 accepts at `arm()` came after the ESC power cycle (`18-48-15`): 5 of 14 after, 0 of 28
+    before. No explanation yet.
+- **Leading hypothesis (not observed): an edge left in the ESC's input capture when our first
+  frame arrives.**
+  - AM32 re-arms its capture right after its startup tune
+    ([`main.c#L1893-L1933`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1893-L1933)).
+    An ESC that has waited on an idle line since then has also recorded any edge the line made
+    meanwhile.
+  - One left-over edge shifts every capture after it. The ESC then learns its one-time
+    frame-length window from misaligned captures and rejects correct frames until it resets
+    ([`signal.c#L166-L174`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/signal.c#L166-L174)).
+  - Candidates on our side: each `BidirectionalDShot` constructor enabling its pull-up shortly
+    before `arm()`, and `start()`.
+  - Single-motor runs have never failed, though, and they make the same edges on their own
+    line. So the second line has to be involved: coupling from it around start-up, or during
+    the first frames.
+- **The `18-55-34` failure is a second, less understood shape, possibly the bootloader.**
+  - **What the line did.** Motor 2 rebooted at 1.854 s after `arm()`, then rejected our frames
+    again. At **4.32 s**, exactly when its next reset was due, no startup tune followed. For the
+    remaining 13.7 s the line held a steady mix: ~62% echo, ~20% `low`, ~17% garbled. The `low`
+    words were mostly single captures, a median 10.8 ms apart.
+  - **Why the bootloader.** No firmware state we know of produces that mix, and the bootloader has
+    no timeout. It answers bytes it cannot parse with 0xC1/0xC2 NACKs at 19200 baud
+    ([`bootloader/main.c#L555-L565`](https://github.com/am32-firmware/AM32-bootloader/blob/578ff29cb6774c5ce491075ec9b7f05e9781acd6/bootloader/main.c#L555-L565)).
+    Each NACK holds the line low in 52-260 µs stretches.
+  - **Unconfirmed**, because the bootloader should have started the firmware after 100 NACKs,
+    about a second at that rate
+    ([`bootloader/main.c#L1275-L1286`](https://github.com/am32-firmware/AM32-bootloader/blob/578ff29cb6774c5ce491075ec9b7f05e9781acd6/bootloader/main.c#L1275-L1286)).
+- **Not yet explained: why the ESC rejects our frames**, or why it takes the
+  two-bidirectional-pairs configuration. Next, at the bench:
+  - **A scope on both signal lines comes first.** Capture from before the motors are constructed
+    (before `Arming for ...` prints) through the first 20 ms of frames. Report every transition
+    on either line before its first frame, and any transition on a line between its own frames.
+    Also trigger on a reset, capturing the 100 ms before a startup tune, to see the bootloader's
+    line check. A recurrence of `18-55-34`'s state is worth a capture too: bootloader bytes are
+    52 µs per bit and obvious on a scope.
+  - **Then the pull-up test,** with a caution. A 2.2-4.7kΩ pull-up to 3.3V on each bidirectional
+    line stiffens the released line against coupling, but it also changes what the ESC is doing
+    at `arm()`.
+    - **The bootloader's rule.** After a software reset it checks the line for up to ~50 ms, and
+      stays put if the line reads high and never low. That is the configurator's entry condition
+      ([`bootloader/main.c#L1095-L1157`](https://github.com/am32-firmware/AM32-bootloader/blob/578ff29cb6774c5ce491075ec9b7f05e9781acd6/bootloader/main.c#L1095-L1157)).
+    - **Today.** The line between runs is low: `stop()` drives it low, and after the Pico's reset
+      the RP2350's default pull-down holds it low. So an idle ESC boot-loops through its firmware,
+      mid-tune at `arm()` in 14 of 56 motor-runs.
+    - **With the pull-up.** The line sits high for the seconds between the Pico's reset and
+      `arm()`. An ESC that resets in that time likely parks in its bootloader and meets our first
+      frame there, so the arming logs must be checked for that before reading a pass or fail.
+  - **Waiting longer before `arm()` has the same problem.** A line held idle-high with no frames
+    lets an ESC reset into its bootloader.
 
 ## The fix
 
@@ -160,8 +224,9 @@ Every session referenced above is committed under `captures/<session>/` (`captur
 python scripts/classify_reply_timeline.py --from-arm captures/<session>
 ```
 
-(omit `--from-arm` for a session that never reached `ARMED`; add `--window-ms 20` for finer
-resolution on a mixed/unstable pattern like `18-55-34`'s).
+(`--from-arm` also works on a session that never reached `ARMED`: newer ones record `arm()`'s time
+on failure, and older ones use their first arming capture, within ~1 ms of it; add
+`--window-ms 20` for finer resolution on a mixed/unstable pattern like `18-55-34`'s).
 
 Most sessions also carry `run.log`, the run's console output, to cross-check against the tables
 above - but not all the same way. The first verification batch (`17-57-01` through `18-04-36`) has
