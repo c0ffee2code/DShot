@@ -1,7 +1,7 @@
 # Test: BidirectionalDShot survives repeated arm/disarm cycles in one session
 #
 # Purpose: every scenario in tests/harness/ builds its motors once, arms once,
-# and disarms once - deploy.py resets the Pico before each run, so nothing has
+# and disarms once - run_test.py resets the Pico (via deploy.py) before each run, so nothing has
 # ever exercised BidirectionalDShot.start() reclaiming the pin from PIO after
 # stop() hands it to SIO (see stop()'s own comment). A scenario passing proves
 # the FIRST start() works; it says nothing about the second.

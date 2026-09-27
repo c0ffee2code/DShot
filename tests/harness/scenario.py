@@ -40,7 +40,8 @@ class MotorSpec:
 
 class Scenario:
     def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
-                 status_interval_ms, poll_ms, decode_every, gc_every_ms, expect, motors):
+                 status_interval_ms, poll_ms, decode_every, gc_every_ms, expect, motors,
+                 core1_interval_us=None):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
@@ -50,6 +51,13 @@ class Scenario:
         self.gc_every_ms = gc_every_ms
         self.expect = expect
         self.motors = motors
+        # Overrides MotorGroup.UPDATE_INTERVAL_US for this run only (None = use the
+        # library's own default). Exists to investigate BUG-002: it lets a scenario
+        # reproduce a slower Core 1 tick (e.g. the one two bidirectional motors'
+        # RX drain naturally produces) without actually wiring a second motor, to
+        # separate "the tick period" from "a second bidirectional TX/RX pair" as
+        # BUG-002's trigger. Not a knob for tuning real applications.
+        self.core1_interval_us = core1_interval_us
 
     @property
     def bidir_indices(self):
@@ -203,6 +211,10 @@ def build_scenario(data):
     if not isinstance(gc_every_ms, int) or gc_every_ms < 0:
         raise ValueError("gc_every_ms must be a whole number >= 0, got " + str(gc_every_ms))
 
+    core1_interval_us = data.get("core1_interval_us")
+    if core1_interval_us is not None and (not isinstance(core1_interval_us, int) or core1_interval_us < 0):
+        raise ValueError("core1_interval_us must be a whole number >= 0, got " + str(core1_interval_us))
+
     expect = _require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     for name in ("min_crc_valid_pct", "min_median_erpm"):
@@ -223,4 +235,5 @@ def build_scenario(data):
         gc_every_ms=gc_every_ms,
         expect=expect,
         motors=motors,
+        core1_interval_us=core1_interval_us,
     )

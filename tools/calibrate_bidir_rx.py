@@ -16,7 +16,7 @@
 #
 # Prints each capture as one line: "CAPTURE " followed by 4 hex words,
 # space-separated. Redirect stdout to a file to keep them:
-#   python scripts/deploy.py calibrate_bidir_rx.py > calibration.log
+#   python scripts/run_test.py calibrate_bidir_rx.py > calibration.log
 # Then paste the printed words into scripts/dshot_bidir_decode.py's
 # analyze_capture()/estimate_bit_period() (expected_ratio=None runs its
 # brute-force sweep) to measure this ESC's real bit period, or write a small
