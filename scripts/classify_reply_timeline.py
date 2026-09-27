@@ -53,7 +53,8 @@ first record, which the harness writes right after ARMED. Sessions that logged
 the arming phase (arming.bin, same record format) show it at negative times.
 With --from-arm, time 0 is arm() instead (meta.txt's arm_ticks_us): ARMED's time
 then depends on the arming gate (bug-reports/BUG-003), so this is the view for
-timing what the ESC did after our first frame.
+timing what the ESC did after our first frame. A run that failed while arming
+records arm_ticks_us too; one from before that uses its first arming capture.
 """
 
 import argparse
@@ -87,6 +88,9 @@ ECHO_PHASES = 32
 # ESC clock running a few percent off.
 STARTUP_TUNE_MS = (400, 800)
 ARMING_TUNE_MS = (200, 500)
+
+# AM32 arms ~0.97 s after its first reply, measured on this bench (BUG-003's fix plan)
+ARMS_AFTER_FIRST_REPLY_MS = 1100
 
 # What time 0 is, for the readings: ARMED, or arm() with --from-arm
 T0_NAME = "ARMED"
@@ -245,6 +249,18 @@ def first_reply_after(t_ms, events):
     return next((t for t, label, _ in events if t > t_ms and label in ("stop", "spin")), None)
 
 
+def reply_gap(start, end, events):
+    """
+    How long the ESC went without replying around the echo run start..end:
+    from the last reply before it to the first after it. The echo run alone can
+    come out short, as a garbled word at either edge of a tune ends it early.
+    """
+    before = max((t for t, label, _ in events if t <= start and label in ("stop", "spin")),
+                 default=start)
+    after = first_reply_after(end, events)
+    return (after if after is not None else end) - before
+
+
 def am32_events(segs, events):
     """
     (kind, start_ms, end_ms, extra) for each AM32 event found in the segments:
@@ -257,9 +273,9 @@ def am32_events(segs, events):
         length = end - start
         if seg[2] == "low" and STARTUP_TUNE_MS[0] <= length <= STARTUP_TUNE_MS[1]:
             found.append(("boot", start, end, first_reply_after(end, events)))
-        if (seg[2] == "echo" and ARMING_TUNE_MS[0] <= length <= ARMING_TUNE_MS[1]
-                and 0 < i < len(segs) - 1
-                and segs[i - 1][2] in ("stop", "spin") and segs[i + 1][2] in ("stop", "spin")):
+        if (seg[2] == "echo" and 0 < i < len(segs) - 1
+                and segs[i - 1][2] in ("stop", "spin") and segs[i + 1][2] in ("stop", "spin")
+                and ARMING_TUNE_MS[0] <= reply_gap(start, end, events) <= ARMING_TUNE_MS[1]):
             found.append(("armed", start, end, None))
     return found
 
@@ -304,10 +320,15 @@ def reading(segs, events, found):
                         (boot[2] / 1000, armed_at / 1000))
             return ("rebooted (tune ended %.3f s), then armed at %.3f s, never spun: armed "
                     "but the motor did not start" % (boot[2] / 1000, armed_at / 1000))
-        if boot[3] is not None and boot[3] > 0:
+        if boot[3] is not None and any(thr for t, _, thr in events if t >= boot[3]):
             return ("rebooted: startup tune ended %.3f s after %s, first reply at %.3f s, "
                     "no arming tune afterwards - the ESC came back up under our non-zero "
                     "throttle and never armed (path A, caused by a reset)" %
+                    (boot[2] / 1000, T0_NAME, boot[3] / 1000))
+        if boot[3] is not None and events[-1][0] - boot[3] < ARMS_AFTER_FIRST_REPLY_MS:
+            return ("rebooted: startup tune ended %.3f s after %s, first reply at %.3f s, "
+                    "throttle 0 from then to the end, which came before AM32 could arm "
+                    "(~0.97 s after its first reply) - a run that timed out while arming" %
                     (boot[2] / 1000, T0_NAME, boot[3] / 1000))
     if labels == ["stop"] and not any(thr for _, _, thr in events):
         return ("'not running' from the first capture to the last, at throttle 0 throughout: "
@@ -318,7 +339,8 @@ def reading(segs, events, found):
                 "already at ARMED but never started the motor - it had not armed "
                 "(AM32 needs >1 s of zero throttle after it starts listening), or "
                 "it rejected our throttle frames")
-    if labels[-1] == "stop" and set(labels[:-1]) <= {"echo"}:
+    if (labels[-1] == "stop" and set(labels[:-1]) <= {"echo"}
+            and any(thr for t, _, thr in events if t >= final_stop_start(segs, events))):
         return ("silent until %.3f s after %s, then 'not running' to the end: the ESC was "
                 "not listening when throttle started (before bidirectional detection, or in "
                 "an interrupts-off tune), came up under non-zero throttle, and so never armed"
@@ -355,13 +377,19 @@ def main():
     if not (records or arming) or not bidir:
         return
 
+    global T0_NAME
     if args.from_arm:
-        if "arm_ticks_us" not in meta:
-            sys.exit("--from-arm needs arm_ticks_us in meta.txt (sessions from the arming gate on)")
-        t0_us = int(meta["arm_ticks_us"])
-        global T0_NAME
         T0_NAME = "arm()"
-        print("Time 0 = arm().")
+        if "arm_ticks_us" in meta:
+            t0_us = int(meta["arm_ticks_us"])
+            print("Time 0 = arm().")
+        elif arming and "armed_ticks_us" not in meta:
+            # A run that failed while arming, from before the harness recorded
+            # arm() on failure: the first arming capture is our first frame's
+            t0_us = arming[0][0]
+            print("Time 0 = arm(), approximated by the first capture while arming (within ~1 ms).")
+        else:
+            sys.exit("--from-arm needs arm_ticks_us in meta.txt (sessions from the arming gate on)")
     else:
         if "armed_ticks_us" in meta:
             t0_us = int(meta["armed_ticks_us"])
@@ -369,10 +397,17 @@ def main():
             t0_us = records[0][0]
         else:
             t0_us = arming[-1][0]
-        print("Time 0 = ARMED; negative times are the arming window.")
+        if records or "armed_ticks_us" in meta:
+            print("Time 0 = ARMED; negative times are the arming window.")
+        else:
+            T0_NAME = "the last arming capture"
+            print("Time 0 = the last capture while arming, as ARMED never came; "
+                  "--from-arm counts from arm() instead.")
     if "arm_ticks_us" in meta and "armed_ticks_us" in meta:
         print("ARMED %.3f s after arm()." % (
             ((int(meta["armed_ticks_us"]) - int(meta["arm_ticks_us"])) & 0x3FFFFFFF) / 1e6))
+    elif arming and "armed_ticks_us" not in meta:
+        print("ARMED never reached: the run failed while arming.")
 
     echo_model = EchoModel(dshot_speed)
     for index in bidir:

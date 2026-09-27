@@ -210,7 +210,7 @@ def build_motor(spec, dshot_speed):
     return UnidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed)
 
 
-def arm_group(group, scenario, runner, bidir_indices, sink, last_seq):
+def arm_group(group, scenario, runner, bidir_indices, sink, last_seq, arm_times):
     """
     Arm, and check that no capture is handed out before the group is ARMED.
 
@@ -219,13 +219,14 @@ def arm_group(group, scenario, runner, bidir_indices, sink, last_seq):
     invisible). The group publishes them to each motor's own slot because
     publish_while_arming is set; they are read from the motor directly, since
     raw_telemetry() withholds them. `last_seq` is left at the last sequence seen
-    per motor, so the main loop starts after them. Returns the ticks_us of
-    arm() and of ARMED.
+    per motor, so the main loop starts after them. `arm_times` gets the ticks_us
+    of arm() as soon as it is called and of ARMED once reached, so a run that
+    fails while arming still records when arming began.
     """
     print("Arming for {}ms...".format(scenario.arm_duration_ms))
     group.publish_while_arming = bool(bidir_indices)
     gc.collect()  # start the window with a clean heap: fewer collections pausing Core 1 while arming
-    arm_us = utime.ticks_us()
+    arm_times[0] = utime.ticks_us()
     group.arm(scenario.arm_duration_ms)
     arm_start = utime.ticks_ms()
     arm_timeout_ms = scenario.arm_duration_ms + ARM_TIMEOUT_MARGIN_MS
@@ -243,11 +244,10 @@ def arm_group(group, scenario, runner, bidir_indices, sink, last_seq):
                 raise RuntimeError("raw_telemetry(" + str(index) + ") returned a capture while arming")
         log_new_captures(group, bidir_indices, last_seq, sink.arming_file, sink)
         utime.sleep_ms(1)
-    armed_us = utime.ticks_us()
+    arm_times[1] = utime.ticks_us()
     sink.close_arming()
-    print("Armed after {}ms.".format(utime.ticks_diff(armed_us, arm_us) // 1000))
+    print("Armed after {}ms.".format(utime.ticks_diff(arm_times[1], arm_times[0]) // 1000))
     print()
-    return arm_us, armed_us
 
 
 def log_new_captures(group, bidir_indices, last_seq, file, sink):
@@ -298,8 +298,7 @@ def run_scenario():
     gc_runs = 0
     gc_max_us = 0
     outcome = "failed"
-    arm_us = None
-    armed_us = None
+    arm_times = [None, None]  # ticks_us of arm() and of ARMED, filled in by arm_group()
     arming_seq = {}
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
@@ -314,7 +313,7 @@ def run_scenario():
         runner = Core1Runner(measured(group.update, loop_times), interval_us)
         runner.start()
 
-        arm_us, armed_us = arm_group(group, scenario, runner, bidir_indices, sink, last_seq)
+        arm_group(group, scenario, runner, bidir_indices, sink, last_seq, arm_times)
         arming_seq = {i: last_seq[i] for i in bidir_indices}
 
         print("Running scenario for {}ms...".format(scenario.duration_ms))
@@ -431,11 +430,14 @@ def run_scenario():
         else:
             verdict = "pass"
         extra = {"max_loop_gap_us": loop_times[1], "gc_runs": gc_runs, "gc_max_us": gc_max_us}
-        if armed_us is not None:
+        if arm_times[0] is not None:
+            # Time 0 for classify_reply_timeline.py --from-arm, on a run that
+            # never armed as well: that is the run whose arming log matters most
+            extra["arm_ticks_us"] = arm_times[0]
+        if arm_times[1] is not None:
             # Time 0 for scripts/classify_reply_timeline.py; arming.bin's records are before it.
             # captures_published counts from arm(), the arming ones included
-            extra["arm_ticks_us"] = arm_us
-            extra["armed_ticks_us"] = armed_us
+            extra["armed_ticks_us"] = arm_times[1]
             for index in arming_seq:
                 extra["motor" + str(index) + "_captures_while_arming"] = arming_seq[index]
         sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict, extra)
