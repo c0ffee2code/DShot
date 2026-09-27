@@ -1,6 +1,8 @@
 # BUG-004: Bidirectional frames end on a released, slowly rising edge, and the receiver trusts a fixed delay after it
 
-**Status:** OPEN - fix proposed, not implemented. **Leading Pico-side suspect for BUG-002.**
+**Status:** Both fixes IMPLEMENTED and bench-verified 2026-09-27 (`driver/dshot_pio.py`). **Does
+NOT clear BUG-002** - see "Bench result" below. Kept regardless: it removes a real, Betaflight-
+documented risk and caused no regression across 6 previously-passing scenarios.
 **Severity:** Medium-High
 **Component:** `driver/dshot_pio.py` (`dshot_bidir_tx`, `dshot_bidir_rx_frame`)
 **Found:** 2026-09-27, Betaflight Pico comparison (`specification/AM32_ARMING_AND_BETAFLIGHT.md`, B4)
@@ -74,14 +76,29 @@ Apply and bench-test **one at a time**.
 ## Verification
 
 - Unit: `tests/unit/test_dshot_packet.py` style check that the assembled programs keep 13/19
-  instructions.
-- Bench:
-  1. Both BUG-002 scenarios (`two_channel_divergent_600`, `two_channel_gc_600`), 3 runs each,
-     with change 1 only, then change 2 only.
-  2. The full scenario suite must stay green.
-  3. If a logic analyzer or scope is available: the GPIO6/8 rise time after a "1"-ending frame,
-     before and after change 1.
-- If change 1 alone clears BUG-002, close both reports with that evidence.
+  instructions. Not added - `tests/unit/fakes.py` deliberately does not assemble PIO programs
+  (`asm_pio` returns the decorated function unrun), so instruction count can only be checked by
+  hand or by deploying to real hardware; both instruction counts were confirmed unchanged by hand
+  after editing.
+- Bench, 2026-09-27:
+  1. **Change 1 alone**, 3 runs each on `two_channel_divergent_600` and `two_channel_gc_600`:
+     6/6 still failed, identical signature (both motors stuck at 917; one `two_channel_gc_600` run
+     had only one motor affected).
+  2. **Change 1 + change 2 together**, 3 runs on `two_channel_divergent_600`: 3/3 still failed
+     (one run again had only one motor affected - motor 2 spun cleanly at 33,557 eRPM while
+     motor 0 stayed stuck).
+  3. Regression: all 6 previously-passing scenarios re-run once each with both changes in place -
+     all still pass, no CRC-valid-rate or eRPM regression.
+  4. Not done: a logic analyzer/scope check of the actual GPIO6/8 rise time. The fix is applied on
+     the strength of the PIO-semantics argument in section 4 of
+     `AM32_ARMING_AND_BETAFLIGHT.md`, not a direct electrical measurement - worth doing if this
+     bug is revisited, to confirm the release edge is actually clean now even though it didn't
+     explain BUG-002.
+
+**Conclusion:** both changes are real correctness improvements (they match Betaflight's Pico port
+and remove an actual released/floating-edge risk) and are kept, but neither alone nor together
+clears BUG-002 - see that report's updated findings. BUG-002 remains open; its cause is not fully
+explained by B4.
 
 ## Related
 

@@ -315,3 +315,33 @@ Whatever step 1-6 find, also land:
   `ARMED`.
 - **BUG-008** (harness checks): this failure mode is reported during the run, by name, instead of
   being found in logs afterwards.
+
+### Steps 0-2 run, 2026-09-27: none clear it
+
+**Step 0 (retroactive, no extra bench time - already printed in every run this session):** every
+run today, passing and failing alike, reports "longest gap between `update()` calls" in the 5.5-9ms
+range. No failing run showed anything close to AM32's 500ms armed-signal-loss threshold, or even the
+~360µs DSHOT600 detection-window limit sustained long enough to matter. No Core 1 stall signal.
+Go to step 1 - already had no signal before step 1 was tried, consistent with step 1 not fixing it.
+
+**Steps 1 and 2 (BUG-004's two changes), both implemented in `driver/dshot_pio.py`:**
+
+- **Change 1 alone**, 3 runs each on `two_channel_divergent_600` and `two_channel_gc_600`: **6/6
+  failed**, identical signature (CRC mostly fine, both motors' median eRPM still 917; one
+  `two_channel_gc_600` run had only motor 2 affected, motor 0 spun cleanly).
+- **Change 1 + 2 together**, 3 runs on `two_channel_divergent_600`: **3/3 failed**. One run again
+  had an asymmetric result - motor 2 spun cleanly (33,557 eRPM, 100% CRC-valid) while motor 0
+  stayed stuck at 917 in the same run.
+- Regression check: all 6 previously-passing scenarios re-run once each with both changes in
+  place - all still pass, eRPM values consistent with prior runs. The fix is safe, just not
+  sufficient.
+
+**Conclusion so far:** B4 (the released/floating edge) is not, by itself, what produces BUG-002.
+The two changes are kept anyway (see BUG-004) since they're real, Betaflight-matching correctness
+improvements with no downside. The newly-seen **asymmetric single-motor failures** (2 of the 9 runs
+today) are a fact worth carrying into step 3+: whatever is happening is not always simultaneous
+across both motors, even though the earlier same-microsecond-transition instances (2026-09-26)
+suggested a shared cause. Next per the table: step 3 (keep arming-phase replies in the log) needs a
+small code change to `capture_mailbox.py`/`motor_group.py` before it can be tried; step 4 (two
+unidirectional motors at DSHOT600) needs only a new scenario and no driver change, so it is the
+cheaper next experiment if picking this up again.

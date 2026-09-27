@@ -60,9 +60,14 @@ def dshot():
 # different ones. That costs program memory (13 of 32 words) but no cycles: the
 # per-bit timing is identical on both paths.
 #
-# irq(rel(1)) fires once per frame, right after the release, telling the paired
-# receiver that it may start its post-release delay. It is non-blocking, so it
-# costs nothing when RX is inactive or still busy with the previous capture.
+# irq(rel(1)) fires once per frame, telling the paired receiver that it may
+# start its post-release delay. It is non-blocking, so it costs nothing when RX
+# is inactive or still busy with the previous capture. On the "zero" path it
+# fires right after the release; on the "one" path (BUG-004 fix, 2026-09-27) it
+# fires immediately before, while the line is still driven high, so that path's
+# release also happens at the idle level instead of from a driven-low pin left
+# to float up through the pull-ups alone - the release edge our own receiver
+# and the ESC both measure timing against.
 #
 # The IRQ is relative (rel) rather than a literal flag number because flags 4-7
 # are shared by every state machine on a PIO block: with a literal flag, two
@@ -82,9 +87,9 @@ def dshot_bidir_tx():
     out(x, 1)                  .side(1)   [1] # 2 cycles, HIGH (idle level) while shifting in the next bit
     jmp(not_x, "zero")         .side(0)   [2] # 3 cycles, LOW, always executed regardless of bit value
     jmp(y_dec, "bitloop")      .side(0)   [2] # "one" path: 3 cycles LOW, loop unless this was bit 16 - mostly LOW (25% high)
-    set(pindirs, 0)            .side(0)   [1] # bit 16 only ("one" path): release the pin
-    irq(rel(1))                .side(0)   [0] # tell paired RX (id = this SM's id + 1) the pin was just released
-    jmp("frame_start")         .side(0)   [0]
+    irq(rel(1))                .side(1)   [0] # bit 16 only ("one" path): drive HIGH (BUG-004) and tell paired RX (id = this SM's id + 1) a release is coming
+    set(pindirs, 0)            .side(1)   [1] # then release - the line is already high, not floating up from low
+    jmp("frame_start")         .side(1)   [0]
     label("zero")
     jmp(y_dec, "bitloop")      .side(1)   [2] # "zero" path: 3 cycles HIGH, loop unless this was bit 16 - mostly HIGH (62.5% high)
     set(pindirs, 0)            .side(1)   [1] # bit 16 only ("zero" path): release the pin
@@ -209,7 +214,11 @@ def dshot_bidir_rx_frame():
     wrap_target()
     irq(clear, rel(0))               # step 1: as dshot_bidir_rx
     wait(1, irq, rel(0))
-    nop()                      [26]  # 27 cycles: the same 4.2us / 2.2us lower bound dshot_bidir_rx waits (its step 2)
+    wait(1, pin, 0)            [26]  # BUG-004: wait for the line high (not just a fixed delay) before
+                                      # arming the marker wait below - never starts looking for a falling
+                                      # edge while the release is still low. Same 27-cycle / 4.2us / 2.2us
+                                      # lower bound as before once the line is high; costs nothing if it
+                                      # already is.
     wait(0, pin, 0)                  # the marker edge: the pin is now low
     set(y, 20)                       # 21 reads: y counts 20..0
     label("flip_low")
