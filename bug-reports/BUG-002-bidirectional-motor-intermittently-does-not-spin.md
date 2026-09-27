@@ -420,3 +420,125 @@ Each bidirectional motor gets:
 
 So a silent ESC can pass a CRC-based "ESC is replying" check at those throttles. BUG-008's
 per-motor failsafe should count *non-echo* CRC-valid replies.
+
+## Verification requests for the hardware session (2026-09-27)
+
+The plan above needs bench data that can't be produced off the bench. Requests are listed cheapest
+first; R0 and R1 need no bench time.
+
+**Reporting back:**
+- For each request, add a `### Results: R<n>` subsection at the end of this report with the table
+  shown.
+- Commit the sessions it produced with `git add -f captures/<session>`; `captures/` is
+  git-ignored. Include `capture.bin`, `meta.txt` and `scenario.json`.
+- Paste the classifier's output verbatim under the table.
+
+`python scripts/classify_reply_timeline.py captures/<session>` labels every capture:
+- `spin`: a real eRPM reply;
+- `stop`: AM32's `0xFFF` not-running reply;
+- `echo`: the ESC was silent and the receiver captured our own frame;
+- `garbled`: anything else.
+
+It also names path A, B or C from the table above.
+
+### R0 - Bench facts (no running)
+
+| Item | Why it matters |
+|------|----------------|
+| ESC firmware version and target name (AM32 configurator), channels 1 and 3 | Which MCU family's timings apply (F051 assumed from the reply rate) |
+| `input type` (auto / DShot / **EDT arm**) | EDT-arm makes AM32 ignore throttle until DShot command 13, which we never send ([`dshot.c#L129-L136`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/dshot.c#L129-L136), [`main.c#L743-L765`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L743-L765)) |
+| `low voltage cutoff` (off / cell / absolute) and the PSU voltage | With cell cutoff the arming tune repeats once per detected cell (voltage / 3.7 V) with interrupts off: ~0.4 s per cell of silence at arming |
+| `stuck rotor protection` on/off | Path B exists only if it is on |
+| `sine startup` on/off and its changeover level; `startup power`; `minimum duty` | Sine startup moves the start threshold from 47 to 127, and startup power decides whether throttle 60/100 can start the motor at all |
+| PSU current limit, and whether it hits constant-current when both motors start | Two simultaneous starts vs one is the other difference between the passing and failing scenarios |
+| Signal lead routing for GPIO6/GPIO8: length, bundled with each other or with phase wires, ground return | Both bidirectional lines are released (weak pull-ups only) between frames and can pick up coupled noise |
+
+### R1 - Classify stored sessions (no bench time)
+
+Run the classifier on:
+- **today's BUG-004 runs (after `6cbbc15`)** - the clean evidence;
+- the older failing sessions listed in the section above;
+- one passing `two_channel_gc_300` and one passing `single_channel_bidirectional_600` session, as
+  references.
+
+Caveat for sessions before `6cbbc15`: the old receiver waited a fixed delay after a released edge.
+- A frame ending in a released, slowly rising "1" could make it capture its own tail.
+- Throttle 100's frame `0x0C8B` ends in 1; throttle 60's frame `0x0780` ends in 0.
+- So in those sessions, a silent ESC at throttle 100 can show as `garbled` instead of `echo`.
+
+| Session | Scenario | Motor | Path (A/B/C/spin) | Transition time after ARMED | Longest stretch without capture |
+|---------|----------|-------|-------------------|-----------------------------|----------------------------------|
+
+### R2 - Watch and listen (no code change)
+
+Run `two_channel_gc_600` 3 times. For the first 5 s after `Armed.` is printed, note for each motor
+what you hear:
+
+| Sound | Meaning | AM32 source |
+|-------|---------|-------------|
+| 3 short rising beeps, ~0.3 s total (repeated per cell with cell cutoff) | **Arming tune**: the ESC armed *after* our ARMED, while it was ignoring our throttle | [`sounds.c` `playInputTune`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/sounds.c) |
+| 3 longer rising beeps, ~0.6 s total | **Startup tune**: the ESC rebooted | [`sounds.c` `playStartupTune`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/sounds.c) |
+| Twitching or buzzing that stops after ~2 s | Failed start attempts, then stuck-rotor protection (path B) | as path B above |
+| Nothing | Path A or C: disarmed and silent, or disarmed and replying | as path A above |
+
+Also note the PSU current display during those 5 s.
+
+| Run | Session | Motor 0 heard / seen | Motor 2 heard / seen | PSU current | Classifier path per motor |
+|-----|---------|----------------------|----------------------|-------------|---------------------------|
+
+### R3 - One motor spinning, both bidirectional (table step 5)
+
+- Copy `two_channel_gc_600.json`. Change motor 2's (pin 8) profile to `hold` throttle 0 and delete
+  its `min_median_erpm` entry. Keep both motors bidirectional.
+- 3 runs; report the classifier output for both motors.
+- If motor 0 still fails, a second bidirectional *line* is enough to trigger it, and a second
+  spinning motor is not needed.
+
+### R4 - Two unidirectional motors spinning (table step 4)
+
+- Copy `two_channel_gc_600.json`. Set motors 0 and 2 to `"bidirectional": false`, remove their
+  `rx_sm_id`, and set `"expect": {}`. With no telemetry, the loader rejects decode thresholds, and
+  the record-rate check has nothing to count.
+- 3 runs. Report by eye and ear whether each motor spins, and anything from R2's sound table.
+- If they fail too, the cause is electrical or power, not bidirectional DShot.
+
+### R5 - First step at throttle 200 (table step 6)
+
+- Copy `two_channel_gc_600.json` with both motors on `hold` 200.
+- 3 runs; classifier output for both motors.
+- Above throttle 150, stuck-rotor protection gives up after ~10 failed starts instead of ~100
+  ([`main.c#L2064-L2068`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L2064-L2068)),
+  and the start has more torque.
+
+### R6 - Log the arming phase (table step 3; code change, only if R1/R2 point to path A or C)
+
+Today every reply received while `ARMING` is dropped. Path A and C are about what the ESC did before
+ARMED, so it has to be logged. Minimal change:
+1. **`MotorGroup`**: a flag, default off, that makes `update()`'s ARMING branch call
+   `drain_rx(True)` instead of `drain_rx(False)`. `raw_telemetry()` keeps returning `None` until
+   ARMED, so the application contract is unchanged.
+2. **`run_scenario.arm_group()`**: with the flag on, read each bidirectional motor's
+   `latest_capture()` directly and write every new sequence as a record, throttles 0. Carry
+   `last_seq` into the run loop.
+3. **`meta.txt`**: add `armed_ticks_us`, the `ticks_us` at which `is_armed()` was first seen.
+   `analyze_bidir_capture_log.py` must skip records before it, because its thresholds describe the
+   ARMED phase. `classify_reply_timeline.py` should use it as time 0 (negative times = arming).
+
+Then run `two_channel_gc_600` 3 times with the flag on, plus one passing `two_channel_gc_300` as
+the reference. For each motor, report from `arm()` to ARMED + 5 s:
+- **When the first CRC-valid reply appeared.** That is AM32's bidirectional latch, ~101 frames
+  after it started listening.
+- **Every `echo` stretch and its length.** On a healthy ESC, one stretch of ~0.3 s about 1.02 s
+  after it started listening is the arming tune. ~0.7 s or more means a reboot. ~2 s with no
+  reboot means it was deaf.
+- **What it was sending at ARMED.**
+
+### How the results decide the next step
+
+| Result | Conclusion | Next |
+|--------|-----------|------|
+| R1/R2: path A or C, R6 shows no latch or a reboot before ARMED | The ESC is not armed when throttle starts, only in this configuration | Land **BUG-003**. Then find what delays or reboots the ESC with two bidirectional lines at DSHOT600, using R0's wiring and power facts. |
+| R6: latched and replying, but no arming-tune dropout before ARMED | AM32's 1 s zero-throttle gate did not complete, although we sent zeros | Our zero frames are not reaching it intact (link errors at DSHOT600). Next is a scope on GPIO6/8 during arming. |
+| R1/R2: path B, R4 fails too | Electrical or power | Wiring and PSU per R0; not a driver change |
+| R1/R2: path B, R4 passes, R5 passes | A low-throttle start fails with two bidirectional motors | Start at ≥200 in the scenarios (Betaflight idles at ~158); keep investigating as noise on the released lines |
+| R3 fails | One extra released bidirectional line is enough | Focus on the released-line window between frames (coupling), not on motor power |
