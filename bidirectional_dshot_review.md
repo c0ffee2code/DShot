@@ -1095,6 +1095,7 @@ but not a squash).
 | W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Driver removal DONE and bench-verified (unaffected by W27's tests). The new calibrate_bidir_rx.py standalone tool is BROKEN - see its own header and the note below |
 | W29 | Tooling cleanup: retire rle_bench.py and its duplicates, fix PIO-block conflicts in device tests, move the calibration tool out of tests/ | — | M | DONE (2026-09-26) |
 | W30 | Investigate and fix calibrate_bidir_rx.py's broken capture (reads TX's own echo, not the ESC's reply) | — | M | TODO |
+| W31 | Serialise board commands on the PC side: lock, instructions, timeout reset | — | M | TODO |
 
 ### Work items
 
@@ -2432,3 +2433,64 @@ doesn't reuse) was not isolated - see the tool's own header for the full diagnos
 **Done when:** the tool captures a real, varying-with-eRPM 4-word GCR reply from a spinning motor,
 matching what the sample receiver produced when it was still wired into `BidirectionalDShot` (see
 W24's comparison).
+
+**W31 — Serialise board commands on the PC side: lock, instructions, timeout reset** ·
+`scripts/deploy.py`, `scripts/run_test.py`, `scripts/pull_captures.py`, `.claude/commands/deploy.md`,
+CLAUDE.md
+
+Found 2026-09-27, reviewing how the local Claude session drives the bench while chasing BUG-002.
+Taken one at a time, the harness is sound; what is missing is anything that stops two board commands
+from overlapping, and nothing in the instructions asks for one at a time.
+
+- **Nothing serialises board commands.** `deploy.py` (13-14 separate `mpremote cp` calls, then
+  `mpremote reset`), `run_test.py` (deploy, then `mpremote run`) and `pull_captures.py` (several
+  `mpremote run` calls) each open COM10 many times. Windows holds the port only while one call has it
+  open, so two commands started together (parallel tool calls, or one in the background) interleave:
+  - every run uploads its scenario to the same device name, `scenario.json`, so run A can execute run
+    B's scenario while its console output is read as A's;
+  - one command's `mpremote reset`, or the Ctrl-C every connect sends, kills the other's live run;
+  - `pull_captures.py` connecting during a live run interrupts it (its docstring says not to; no
+    instruction does). An interrupt that lands while `run_scenario.py`'s `finally` is disarming or
+    finalising the SD card can leave the session at `outcome=running` and the card unmounted
+    uncleanly.
+- **The instructions don't constrain it.** `.claude/commands/deploy.md` says only "run `run_test.py`
+  and report". Nothing says one board command at a time, in the foreground, never alongside
+  `pull_captures.py`, or which timeout to use. CLAUDE.md calls `run_test.py` "the only one that
+  touches hardware", but `deploy.py` resets the board and `pull_captures.py` interrupts it. This
+  backlog's own "How to work" step 5 still names `deploy.py --scenario` as the way to run a scenario;
+  since the deploy/run split it is `run_test.py --scenario`.
+- **A run killed on the PC side keeps running on the Pico.** Claude Code's Bash tool times out after
+  2 minutes by default. A scenario takes ~50-80 s (arming can now take up to ~12 s with BUG-003's
+  reply gate); `pull_captures.py` can take minutes by its own comments. If the tool kills
+  `run_test.py`, the scenario carries on with the motors following their profile, and the next board
+  command interrupts it mid-way, with the risks above.
+- **Not a race, recorded for context:** between sessions the ESC resets 0.5 s after the last frame and
+  then reboots every ~2.6 s while the line is held low; consecutive stored sessions are ~20 s apart, so
+  the next `arm()` meets it at a random point of that loop. That fed BUG-002 under a timer-only
+  `ARMED`; BUG-003's reply gate (27722bb) absorbs it, so no change is needed here. The Pico-side race
+  at the end of a session (`Core1Runner.stop()` returning before Core 1 has left `update()`) is
+  BUG-007, not repeated here.
+
+Plan:
+1. **A board lock.** One small helper in `scripts/` used by `deploy.py`, `run_test.py` and
+   `pull_captures.py` around all their `mpremote` calls: an exclusive lock file (atomic create, holding
+   the PID, the command line and the start time). A second command fails at once with "board busy:
+   <command>, pid N, since <time>". A lock whose PID is gone is reported and taken over.
+   `run_test.py` holds one lock across its deploy and its run, so nothing slips in between.
+2. **Instructions.** In `.claude/commands/deploy.md` and CLAUDE.md:
+   - board commands (`deploy.py`, `run_test.py`, `pull_captures.py`, any `mpremote`) run one at a
+     time, in the foreground, never as parallel tool calls or background jobs;
+   - give them a 10-minute Bash timeout;
+   - run `pull_captures.py` only after `run_test.py` has returned;
+   - if a run was killed or timed out, reset the board (`python scripts/deploy.py`) before anything
+     else;
+   - correct "the only one that touches hardware", and this backlog's step 5.
+3. **`run_test.py` resets the board when its own `mpremote run` timeout fires**, so a stuck run does
+   not leave the motors under throttle.
+4. **Optional:** `run_test.py` prints the scenario file name before the run starts, so the console
+   output can be matched to the `scenario.json` copy in the session folder.
+
+**Done when:** starting a second board command while one is running fails with the "board busy"
+message (checked on a PC with a fake `mpremote`, and once on the bench); the instructions above are in
+`.claude/commands/deploy.md` and CLAUDE.md; a `run_test.py` whose run times out leaves the board reset;
+unit tests still pass.
