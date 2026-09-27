@@ -72,27 +72,45 @@ are committed - see "Evidence" below for how to regenerate any of this):
   - It then plays its ~0.3 s arming tune, invisible here because it was not replying anyway.
   - Its armed 0.5 s signal timeout then fires, as no frame passes validation
     ([`main.c#L1992-L2004`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1992-L2004)).
-  - That chain is about 1.0 + 0.3 + 0.5 s. Measured: 60 of 62 resets came 1.854-1.859 s after the
+  - That chain is about 1.0 + 0.3 + 0.5 s. Measured: 75 of 77 resets came 1.854-1.867 s after the
     ESC started listening (the other 2 at 1.347 s).
   - The disarmed timeout would take at least 2.0 s.
 - **After a reboot it often, not always, settles.** It then starts replying within 61-96 ms (its
   bidirectional latch) and arms about a second later.
-- **Where the rejections concentrate: when our signal starts.** Every listening period in the 29
-  sessions with an arming log (56 motor-runs; `18-48-15`, ESC unpowered, left out):
+- **Where the rejections concentrate: when our signal starts.** Every listening period in the 39
+  sessions with an arming log (76 motor-runs; `18-48-15`, ESC unpowered, left out), split at
+  18:48, where the first row changed:
 
-  | How the ESC's listening period started | Periods | Accepted | Rejected |
-  |---|---|---|---|
-  | At `arm()`, the ESC already listening on an idle line | 42 | 5 | 37 |
-  | After a startup tune already playing at `arm()` | 14 | 13 | 1 |
-  | After a reset inside the arming window | 63 | 37 | 25 (+1, `18-55-34`) |
+  | How the ESC's listening period started | Accepted, 17:57-18:34 | Accepted, 18:49-20:19 |
+  |---|---|---|
+  | At `arm()`, the ESC already listening on an idle line | 0 of 28 | 12 of 28 |
+  | After a startup tune already playing at `arm()` | 6 of 7 | 12 of 13 |
+  | After a reset inside the arming window | 29 of 49 | 16 of 27 (+1, `18-55-34`) |
 
-  - An ESC that meets our first frame rejects it 37 times in 42. One that boots into our running
-    signal rejects it 26 times in 76.
-  - Each reboot is a fresh draw at about those odds, which is why some runs needed 3-4 resets.
-  - Both ESCs behave alike. At `arm()`, motor 0 rejected 19 times and motor 2 18 times; after a
-    reset, 13 and 12.
-  - All 5 accepts at `arm()` came after the ESC power cycle (`18-48-15`): 5 of 14 after, 0 of 28
-    before. No explanation yet.
+  - An ESC that meets our first frame rejects it 44 times in 56. One that boots into our running
+    signal rejects it 33 times in 96.
+  - Each reboot is a fresh draw at about 59% acceptance, the same in both periods. That is why
+    some runs needed 3-5 resets.
+  - Both ESCs behave alike: motor 0 rejected 43 of 82 listening periods, motor 2 34 of 71.
+  - **Only first contact changed during the day.** 0 of 28 before 18:48 against 12 of 28 after is
+    not noise (one-sided Fisher p ≈ 5e-5), while the rows below it did not move. Whatever changed
+    acts on an ESC waiting on an idle line, which fits the hypothesis below.
+  - **What changed at 18:48 is still open.**
+    - **The ESC was power-cycled at 18:48 (`18-48-15`).** The controlled A/B in "Follow-up test"
+      below shows that a power cycle right before a run makes no difference: 3 of 6 with it, 4 of
+      8 without. However, every A/B run came within a few minutes of a power-on, as each B run
+      followed an A run by ~30 s. Before 18:48 the ESC had been powered at least since 17:57, so
+      time since power-on (or temperature) is not ruled out.
+    - **The gap-reset fix was deployed from `18-49-51` on.** It does not change what we transmit,
+      but it is the only code change at that point. Time from the Pico's reset to `arm()` moved
+      by 20-30 ms, from 4.93-4.95 s to 4.91-4.94 s.
+    - **Ruled out:** the scenario file (identical before and after), and Core 1's longest loop gap
+      (~8.5 ms in all but two sessions, both before).
+    - **Tests that would separate the candidates:**
+      - 5 runs after the ESC has been powered and idle for ≥ 40 min;
+      - 5 runs with the gap-reset temporarily restored in `motor_group.py`.
+
+      It would also help to know when the ESC was powered on before 17:57.
 - **Leading hypothesis (not observed): an edge left in the ESC's input capture when our first
   frame arrives.**
   - AM32 re-arms its capture right after its startup tune
@@ -298,6 +316,15 @@ smooth and rough starts.
 power cycle" reading above. Worth reconciling before leaning further on that finding - possibly by
 checking whether something else correlates with session order/count-since-boot better than the
 power-cycle timestamp does, in the original 42-instance dataset.
+
+**Reconciled (cloud session):**
+- **The counts reproduce.** Running the same per-listening-period analysis on these 10 sessions
+  gives the same 3 of 6 and 4 of 8.
+- **The power cycle is not the cause; the shift is still real.** Pooled with the rest of the day,
+  first contact went from 0 of 28 accepted (17:57-18:34) to 12 of 28 (18:49-20:19),
+  p ≈ 5e-5. After a reset, acceptance stayed at 59% in both periods.
+- **What is left.** Something acting on an ESC waiting before `arm()` changed around 18:48. The
+  candidates and the tests to separate them are under "Where the rejections concentrate" above.
 
 Session captures for all 10 runs are committed under `captures/<session>/` per the usual
 convention.

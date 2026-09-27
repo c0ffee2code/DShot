@@ -115,7 +115,7 @@ Betaflight never relies on a timer alone
    an ESC that had never replied: it had not accepted one of our frames. It most likely went
    through this chain anyway, because AM32 arms without validating frames
    ([`main.c#L1360-L1400`][am32-arming]). Counted from when it started listening, the chain
-   (~1.0 s + ~0.3 s tune + 0.5 s) fits the 1.854-1.859 s measured in 60 of 62 resets. The
+   (~1.0 s + ~0.3 s tune + 0.5 s) fits the 1.854-1.867 s measured in 75 of 77 resets. The
    disarmed timeout would take at least 2.0 s.
 
    A span of replies cannot see that case, since there are no replies. The span still does its
