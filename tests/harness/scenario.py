@@ -41,7 +41,7 @@ class MotorSpec:
 class Scenario:
     def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
                  status_interval_ms, poll_ms, decode_every, gc_every_ms, expect, motors,
-                 core1_interval_us=None):
+                 core1_interval_us=None, arming_frame_gap_us=0):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
@@ -58,6 +58,11 @@ class Scenario:
         # separate "the tick period" from "a second bidirectional TX/RX pair" as
         # BUG-002's trigger. Not a knob for tuning real applications.
         self.core1_interval_us = core1_interval_us
+        # Sets MotorGroup.arming_frame_gap_us for this run (0 = frames back to
+        # back, the library's own behavior). A BUG-002 diagnostic: it spaces
+        # the bidirectional motors' frames while arming, to test whether their
+        # arriving close together decides whether an ESC accepts them.
+        self.arming_frame_gap_us = arming_frame_gap_us
 
     @property
     def bidir_indices(self):
@@ -215,6 +220,10 @@ def build_scenario(data):
     if core1_interval_us is not None and (not isinstance(core1_interval_us, int) or core1_interval_us < 0):
         raise ValueError("core1_interval_us must be a whole number >= 0, got " + str(core1_interval_us))
 
+    arming_frame_gap_us = data.get("arming_frame_gap_us", 0)
+    if not isinstance(arming_frame_gap_us, int) or arming_frame_gap_us < 0:
+        raise ValueError("arming_frame_gap_us must be a whole number >= 0, got " + str(arming_frame_gap_us))
+
     expect = _require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     for name in ("min_crc_valid_pct", "min_median_erpm"):
@@ -236,4 +245,5 @@ def build_scenario(data):
         expect=expect,
         motors=motors,
         core1_interval_us=core1_interval_us,
+        arming_frame_gap_us=arming_frame_gap_us,
     )

@@ -274,8 +274,10 @@ def run_scenario():
     print("=== Scenario Capture ===")
 
     scenario = load_scenario(SCENARIO_PATH)
-    print("Loaded scenario: duration={}ms dshot_speed={} bidir_motors={} core1_interval_us={}".format(
-        scenario.duration_ms, scenario.dshot_speed, scenario.bidir_indices, scenario.core1_interval_us))
+    print("Loaded scenario: duration={}ms dshot_speed={} bidir_motors={} core1_interval_us={} "
+          "arming_frame_gap_us={}".format(
+              scenario.duration_ms, scenario.dshot_speed, scenario.bidir_indices,
+              scenario.core1_interval_us, scenario.arming_frame_gap_us))
 
     sink = BidirCaptureSink()
     sink.init_session(scenario, SCENARIO_PATH)
@@ -307,6 +309,7 @@ def run_scenario():
 
     try:
         group = MotorGroup([build_motor(spec, scenario.dshot_speed) for spec in scenario.motors])
+        group.arming_frame_gap_us = scenario.arming_frame_gap_us
         interval_us = scenario.core1_interval_us
         if interval_us is None:
             interval_us = group.UPDATE_INTERVAL_US

@@ -186,6 +186,15 @@ class MotorGroup:
         # motors arm on the window alone; an application leaves it on.
         self.wait_for_replies = True
 
+        # Diagnostic, BUG-002: while ARMING, wait this many microseconds after
+        # each bidirectional motor's frame before sending the next motor's
+        # (not after the last one). 0, the default, sends every frame back to
+        # back. The bench harness sets it to test whether two bidirectional
+        # lines' frames arriving close together decides whether an ESC accepts
+        # them; an application leaves it at 0.
+        self.arming_frame_gap_us = 0
+        self.gap_after_indices = self.bidir_indices[:-1]
+
         self.arm_duration_ms = self.DEFAULT_ARM_DURATION_MS
         self.arm_started_ms = 0
         self.last_update_ms = utime.ticks_ms()
@@ -341,8 +350,11 @@ class MotorGroup:
             # Send literal zeros rather than the throttle array, so the arming
             # window stays genuinely at zero even if the application sets a
             # throttle early
-            for motor in self.motors:
-                motor.send_throttle_command(0)
+            gap_us = self.arming_frame_gap_us
+            for i in range(self.motor_count):
+                motors[i].send_throttle_command(0)
+                if gap_us and i in self.gap_after_indices:
+                    utime.sleep_us(gap_us)
 
             if (utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms
                     and self.bidir_ready(now)):

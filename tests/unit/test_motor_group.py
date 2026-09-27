@@ -312,6 +312,45 @@ class UpdateOrderTest(GroupTestCase):
         self.assert_drains_come_first(log, True)
 
 
+class ArmingFrameGapTest(GroupTestCase):
+    """arming_frame_gap_us spaces the bidirectional motors' frames, while ARMING only."""
+
+    def timed_group(self, gap_us):
+        log = []
+        motors = [bidir(0, 6), uni(2, 7), bidir(4, 8), uni(6, 9)]
+        for i, motor in enumerate(motors):
+            def send(throttle, i=i, real=motor.send_throttle_command):
+                log.append((i, Clock.microseconds))
+                real(throttle)
+            motor.send_throttle_command = send
+        group = self.make(motors)
+        group.arming_frame_gap_us = gap_us
+        return group, log
+
+    def test_the_gap_follows_every_bidirectional_frame_but_the_last(self):
+        group, log = self.timed_group(300)
+        group.arm(ARM_MS)
+        start = Clock.microseconds
+        group.update()
+        self.assertEqual(log, [(0, start), (1, start + 300), (2, start + 300), (3, start + 300)])
+        self.assertEqual(Clock.microseconds, start + 300)
+
+    def test_frames_go_back_to_back_by_default(self):
+        group, log = self.timed_group(0)
+        group.arm(ARM_MS)
+        start = Clock.microseconds
+        group.update()
+        self.assertEqual([t for _, t in log], [start] * 4)
+
+    def test_no_gap_once_armed(self):
+        group, log = self.timed_group(300)
+        self.arm_fully(group)
+        del log[:]
+        start = Clock.microseconds
+        group.update()
+        self.assertEqual([t for _, t in log], [start] * 4)
+
+
 class DisarmTest(GroupTestCase):
     def test_disarm_transmits_zeros_then_deactivates(self):
         group = self.make([uni(0, 6), uni(1, 7)])

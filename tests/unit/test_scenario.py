@@ -118,6 +118,17 @@ class ScenarioValidationTest(unittest.TestCase):
     def test_receiver_id_on_a_unidirectional_motor(self):
         self.rejected(lambda d: d["motors"][1].update(rx_sm_id=3), "bidirectional is false")
 
+    def test_arming_frame_gap_defaults_to_back_to_back(self):
+        self.assertEqual(build_scenario(valid_scenario()).arming_frame_gap_us, 0)
+
+    def test_arming_frame_gap_is_read(self):
+        data = valid_scenario()
+        data["arming_frame_gap_us"] = 300
+        self.assertEqual(build_scenario(data).arming_frame_gap_us, 300)
+
+    def test_negative_arming_frame_gap(self):
+        self.rejected(lambda d: d.update(arming_frame_gap_us=-1), "arming_frame_gap_us")
+
     def test_a_unidirectional_motor_cannot_share_a_bidirectional_motors_pio_block(self):
         self.rejected(lambda d: d["motors"][1].update(sm_id=2), "shares PIO block")
 
