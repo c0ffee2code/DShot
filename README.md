@@ -178,7 +178,7 @@ need no further headroom.
 | Protocol | DShot300 |
 | Minimum throttle | 100 confirmed working |
 | Command interval | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
-| Arming duration | 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below |
+| Arming duration | 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below. With bidirectional motors it is a floor: `ARMED` also waits until every ESC has replied "not running" for 2s without a reboot-length gap (`READY_SPAN_MS`, bug-reports/BUG-003) - usually ~2.1s, several seconds if an ESC reboots while arming |
 
 Earlier revisions of this table claimed 500ms (down to 300ms) armed cleanly, "confirmed via
 genuine telemetry replies". That reasoning was wrong: per AM32's source

@@ -47,7 +47,9 @@ def run_one_cycle(group, runner, cycle):
     print("=== Cycle %d/%d: arming ===" % (cycle, CYCLES))
     runner.start()
     group.arm(ARM_MS)
-    deadline = utime.ticks_add(utime.ticks_ms(), ARM_MS + 2000)
+    # MotorGroup also waits for 2s of ESC replies, several seconds more if
+    # the ESC reboots meanwhile (bug-reports/BUG-003)
+    deadline = utime.ticks_add(utime.ticks_ms(), ARM_MS + 8000)
     while not group.is_armed():
         if utime.ticks_diff(deadline, utime.ticks_ms()) < 0:
             raise Exception("cycle %d: arming timed out" % cycle)

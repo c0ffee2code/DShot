@@ -63,8 +63,11 @@ SCENARIO_PATH = "scenario.json"
 REPLY_FAILSAFE_GRACE_MS = 2000
 
 # How long past the scenario's own arming window arming may take before it is
-# an error: arming completes inside update() on Core 1, so a dead loop shows here
-ARM_TIMEOUT_MARGIN_MS = 1000
+# an error: arming completes inside update() on Core 1, so a dead loop shows
+# here, and MotorGroup also waits for 2s of replies from every bidirectional
+# ESC - ~4.5s after arm() when an ESC reboots once while arming, ~7s twice
+# (bug-reports/BUG-003). The error then says which motor never replied.
+ARM_TIMEOUT_MARGIN_MS = 8000
 
 RECORD_ZERO_WORDS = (0,)
 
@@ -176,11 +179,13 @@ def arm_group(group, scenario, runner, bidir_indices, sink, last_seq):
     invisible). The group publishes them to each motor's own slot because
     publish_while_arming is set; they are read from the motor directly, since
     raw_telemetry() withholds them. `last_seq` is left at the last sequence seen
-    per motor, so the main loop starts after them. Returns ARMED's ticks_us.
+    per motor, so the main loop starts after them. Returns the ticks_us of
+    arm() and of ARMED.
     """
     print("Arming for {}ms...".format(scenario.arm_duration_ms))
     group.publish_while_arming = bool(bidir_indices)
     gc.collect()  # start the window with a clean heap: fewer collections pausing Core 1 while arming
+    arm_us = utime.ticks_us()
     group.arm(scenario.arm_duration_ms)
     arm_start = utime.ticks_ms()
     arm_timeout_ms = scenario.arm_duration_ms + ARM_TIMEOUT_MARGIN_MS
@@ -188,7 +193,9 @@ def arm_group(group, scenario, runner, bidir_indices, sink, last_seq):
         if runner.error is not None:
             raise runner.error
         if utime.ticks_diff(utime.ticks_ms(), arm_start) > arm_timeout_ms:
-            raise RuntimeError("arming did not complete within " + str(arm_timeout_ms) + "ms")
+            raise RuntimeError("arming did not complete within " + str(arm_timeout_ms) +
+                               "ms; per motor (replying_for_ms, last_reply_ms_ago), None = no reply: " +
+                               str(group.arming_status()))
         for index in bidir_indices:
             # Re-check the state: the group may have become ARMED since the
             # loop test, and then the slot legitimately holds a capture
@@ -198,9 +205,9 @@ def arm_group(group, scenario, runner, bidir_indices, sink, last_seq):
         utime.sleep_ms(1)
     armed_us = utime.ticks_us()
     sink.close_arming()
-    print("Armed.")
+    print("Armed after {}ms.".format(utime.ticks_diff(armed_us, arm_us) // 1000))
     print()
-    return armed_us
+    return arm_us, armed_us
 
 
 def log_new_captures(group, bidir_indices, last_seq, file, sink):
@@ -251,6 +258,7 @@ def run_scenario():
     gc_runs = 0
     gc_max_us = 0
     outcome = "failed"
+    arm_us = None
     armed_us = None
     arming_seq = {}
     tallies = {i: DecodeTally() for i in bidir_indices}
@@ -265,7 +273,7 @@ def run_scenario():
         runner = Core1Runner(measured(group.update, loop_times), interval_us)
         runner.start()
 
-        armed_us = arm_group(group, scenario, runner, bidir_indices, sink, last_seq)
+        arm_us, armed_us = arm_group(group, scenario, runner, bidir_indices, sink, last_seq)
         arming_seq = {i: last_seq[i] for i in bidir_indices}
 
         print("Running scenario for {}ms...".format(scenario.duration_ms))
@@ -380,6 +388,7 @@ def run_scenario():
         if armed_us is not None:
             # Time 0 for scripts/classify_reply_timeline.py; arming.bin's records are before it.
             # captures_published counts from arm(), the arming ones included
+            extra["arm_ticks_us"] = arm_us
             extra["armed_ticks_us"] = armed_us
             for index in arming_seq:
                 extra["motor" + str(index) + "_captures_while_arming"] = arming_seq[index]

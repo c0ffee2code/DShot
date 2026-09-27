@@ -51,6 +51,9 @@ def run_for(group, milliseconds):
 
 
 def arm_fully(group):
+    # No ESC is attached, so nothing will ever pass MotorGroup's reply gate;
+    # arm on the window alone
+    group.wait_for_replies = False
     group.arm(ARM_MS)
     end = utime.ticks_add(utime.ticks_ms(), ARM_MS + 500)
     while not group.is_armed():

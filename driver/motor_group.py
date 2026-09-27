@@ -71,20 +71,29 @@ class MotorGroup:
     # hardware-verified at (see the "Verified Parameters" table in README.md).
     UPDATE_INTERVAL_US = 0
 
-    # Default arming window in milliseconds. A telemetry reply proves nothing
-    # about arm state at all: AM32 replies whether armed or disarmed once
-    # bidirectional mode is latched, and its at-rest eRPM sentinel (917, from
-    # the 0xFFF payload) is identical either way (see
-    # specification/AM32_SOURCE_VERIFICATION.md, findings 1-2). The library
-    # cannot observe whether the motor started (or whether the ESC is beeping,
-    # or the Pico has hung), so an application should not treat "armed" or
-    # "replying" as "spinning" - see bug-reports/BUG-002 for a case this
-    # distinction matters for. 2000ms covers AM32's own gate from a cold boot
-    # (>1s zero-throttle requirement, plus its 600ms startup tune, plus
-    # margin) - below that, AM32 itself may still be arming when the
-    # application's throttle profile starts. A longer window only costs
-    # startup time.
+    # Default arming window in milliseconds: the least time ARMING lasts. For a
+    # unidirectional motor it is all there is - nothing comes back to observe -
+    # and 2000ms covers AM32's own gate from a cold boot (>1s zero-throttle
+    # requirement, plus its 600ms startup tune, plus margin). A group with
+    # bidirectional motors also waits for the reply gate below, so for it this
+    # is only a floor.
     DEFAULT_ARM_DURATION_MS = 2000
+
+    # Arming gate for bidirectional motors (bug-reports/BUG-003): ARMED also
+    # needs every bidirectional ESC to have replied AM32's not-running frame
+    # for READY_SPAN_MS, with no gap between replies longer than READY_GAP_MS,
+    # the latest at most READY_FRESH_MS ago. The span outlasts what AM32 does
+    # from its first reply: it arms ~0.97s later (its >1s zero-throttle gate,
+    # counted from detection), plays a ~0.3s arming tune, and, armed but not
+    # taking our frames, resets 0.5s after that - which is what BUG-002 caught
+    # an ESC doing, coming back up after a timer-only ARMED under non-zero
+    # throttle and so never arming. The gap tolerates the arming tune's ~300ms
+    # silence and restarts the count on a reboot's >=680ms (startup tune plus
+    # bidirectional latch). A reply says the ESC is listening, not that it
+    # armed or that the motor will start - that is still not observable here.
+    READY_SPAN_MS = 2000
+    READY_GAP_MS = 450
+    READY_FRESH_MS = 50
 
     # A gap longer than this between update() calls restarts the arming
     # window. AM32 does not reset its own arming counter on a gap - only
@@ -146,6 +155,14 @@ class MotorGroup:
         # The subset whose reply must be drained on every update(), resolved
         # once so the command loop does no per-tick type checks
         self.bidir_motors = [m for m in self.motors if m.bidirectional]
+        self.bidir_indices = [i for i in range(self.motor_count) if self.motors[i].bidirectional]
+
+        # The arming gate's evidence, per motor (bidirectional ones only): when
+        # its current unbroken run of not-running replies began and when the
+        # latest arrived (ticks_ms), and whether one has arrived since arm()
+        self.ready_first_ms = [0] * self.motor_count
+        self.ready_last_ms = [0] * self.motor_count
+        self.ready_seen = [False] * self.motor_count
 
         # Shared throttle array - lock-free access (atomic on ARM).
         # Using unsigned 16-bit integers ('H') for DShot throttle values.
@@ -164,6 +181,11 @@ class MotorGroup:
         # (bug-reports/BUG-002). Set it before arm().
         self.publish_while_arming = False
 
+        # The reply gate (READY_SPAN_MS) applies while this is True. Only a
+        # bench test with no ESC attached turns it off, so its bidirectional
+        # motors arm on the window alone; an application leaves it on.
+        self.wait_for_replies = True
+
         self.arm_duration_ms = self.DEFAULT_ARM_DURATION_MS
         self.arm_started_ms = 0
         self.last_update_ms = utime.ticks_ms()
@@ -175,6 +197,13 @@ class MotorGroup:
         Activates the PIO state machines and starts the arming window. This
         does NOT block: arming completes inside update(), so the application
         must be calling update() for arming to progress. Poll is_armed().
+
+        A group with bidirectional motors arms when the window has elapsed AND
+        every bidirectional ESC has been replying for READY_SPAN_MS (see the
+        constant) - usually ~2.1s after arm(), several seconds if an ESC was
+        mid-reboot. An ESC that never replies keeps the group ARMING, sending
+        zeros, for good: how long to wait is the application's decision
+        (arming_status() says which motor is missing).
 
         Any throttle set before arm() is discarded - arming always starts
         from zero.
@@ -200,6 +229,8 @@ class MotorGroup:
         self.arm_duration_ms = duration_ms
         self.arm_started_ms = now
         self.last_update_ms = now
+        for i in range(self.motor_count):
+            self.ready_seen[i] = False
 
         # Set last: update() must not run before the state machines are active
         self.state = ARMING
@@ -301,9 +332,16 @@ class MotorGroup:
             if utime.ticks_diff(now, self.last_update_ms) > self.ARM_GAP_TOLERANCE_MS:
                 self.arm_started_ms = now
 
+            # A not-running reply extends the motor's run of replies, or starts
+            # a new one after a gap long enough to be a reboot
             publish = self.publish_while_arming
-            for motor in self.bidir_motors:
-                motor.drain_rx(publish)
+            motors = self.motors
+            for i in self.bidir_indices:
+                if motors[i].drain_rx(publish):
+                    if not self.ready_seen[i] or utime.ticks_diff(now, self.ready_last_ms[i]) > self.READY_GAP_MS:
+                        self.ready_first_ms[i] = now
+                    self.ready_last_ms[i] = now
+                    self.ready_seen[i] = True
 
             # Send literal zeros rather than the throttle array, so the arming
             # window stays genuinely at zero even if the application sets a
@@ -311,7 +349,8 @@ class MotorGroup:
             for motor in self.motors:
                 motor.send_throttle_command(0)
 
-            if utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms:
+            if (utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms
+                    and self.bidir_ready(now)):
                 # Re-read rather than promoting from the snapshot above: a
                 # disarm() on another core may have landed since, and writing
                 # ARMED over it would leave the group "armed" with inactive
@@ -329,11 +368,48 @@ class MotorGroup:
 
         self.last_update_ms = now
 
+    def bidir_ready(self, now):
+        """
+        True when every bidirectional motor passes the arming gate at `now`
+        (ticks_ms): replying for READY_SPAN_MS without a longer gap than
+        READY_GAP_MS, the latest reply at most READY_FRESH_MS old. True for a
+        group without bidirectional motors, or with wait_for_replies off.
+        """
+        if not self.wait_for_replies:
+            return True
+        for i in self.bidir_indices:
+            if not self.ready_seen[i]:
+                return False
+            if utime.ticks_diff(now, self.ready_first_ms[i]) < self.READY_SPAN_MS:
+                return False
+            if utime.ticks_diff(now, self.ready_last_ms[i]) > self.READY_FRESH_MS:
+                return False
+        return True
+
+    def arming_status(self):
+        """
+        What the arming gate has seen, per motor, for an application's
+        arming-timeout message: None for a unidirectional motor and for a
+        bidirectional one with no reply since arm(), else
+        (replying_for_ms, last_reply_ms_ago). Safe to call from another core;
+        the two numbers may come from different ticks.
+        """
+        now = utime.ticks_ms()
+        status = []
+        for i in range(self.motor_count):
+            if self.ready_seen[i]:
+                status.append((utime.ticks_diff(now, self.ready_first_ms[i]),
+                               utime.ticks_diff(now, self.ready_last_ms[i])))
+            else:
+                status.append(None)
+        return status
+
     def is_armed(self):
         """
         Returns:
-            True once the arming window has completed and throttle commands
-            are being sent
+            True once arming has completed - the window has elapsed and every
+            bidirectional ESC has passed the reply gate (see arm()) - and
+            throttle commands are being sent
         """
         return self.state == ARMED
 
@@ -355,9 +431,9 @@ class MotorGroup:
         not yet trusted since the ESC may still be completing bidirectional
         detection.
 
-        ARMED means that window has elapsed, not that the ESC has armed: with
-        a window shorter than the ESC needs, or an ESC without power, the
-        captures handed out can still be echoes or noise. The CRC check in
+        ARMED means every bidirectional ESC was replying when the group
+        armed, not that it still is: an ESC that resets later goes silent, and
+        the captures handed out can then be echoes or noise. The CRC check in
         decode_telemetry() is what tells a real reply from those, and a
         CRC-failed capture should be discarded and asked for again later -
         retry timing is the application's decision.

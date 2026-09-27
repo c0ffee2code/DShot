@@ -1,7 +1,8 @@
 # BUG-002: A bidirectional motor sometimes doesn't spin despite valid telemetry
 
-**Status:** OPEN — narrowed 2026-09-27: the failing ESC resets during our arming window and
-comes back after ARMED, under non-zero throttle (see "Analysis of R3"); why it resets is open
+**Status:** OPEN — fix implemented 2026-09-27, bench verification pending (R7). The failing ESC
+resets during our arming window and comes back after ARMED under non-zero throttle (see "Analysis
+of R3"). Evidence-gated arming (BUG-003) now waits it out. Why it resets is still open.
 **Severity:** Medium — intermittent, the ESC and telemetry link both stay healthy and the ESC
 recovers normally afterward, but the motor silently fails to do the one thing it's told to do.
 **Component:** unclear — could be driver timing, ESC-side arming state, or something environmental;
@@ -18,7 +19,7 @@ immediately after with no other change, has spun cleanly every time this has bee
 reproduced on demand; only ever seen as a sporadic result within an otherwise-passing regression
 run.
 
-## Proposed fix (2026-09-27)
+## Proposed fix (2026-09-27) - implemented, awaiting the bench
 
 **What happens.** R3's captures show the failing ESC resetting inside our arming window, 1.85-2.3 s
 after `arm()` (see "Analysis of R3" below). It comes back ~0.7 s later, after `ARMED`, and by then
@@ -937,6 +938,17 @@ Same reporting rules as round 1: add a `### Results: R<n>` subsection, commit th
 `git add -f captures/<session>`, and paste the classifier output verbatim. This round's sessions
 also contain `arming.bin`; commit it.
 
+**BUG-003's gate is now in the driver as well** (the commit after R6). So R7 runs double as the
+fix's verification:
+- With the gate, **every motor should spin**.
+- A reset during arming should still show in `arming.bin`, followed by `ARMED` coming later: at
+  least 2 s after that ESC's first post-reboot reply.
+- R7's table has two columns for this: time from `arm()` to `ARMED`, and whether the motor spun.
+  The harness now prints `Armed after <n>ms.` and stores `arm_ticks_us` next to `armed_ticks_us`
+  in `meta.txt`, and the classifier prints the difference.
+- A run that times out while arming prints `arming_status()`. Paste that too.
+- R8 (the 4500 ms floor) matters less now. Run it only if R7 leaves the timing chain in doubt.
+
 **R6 is now implemented** (this commit), so it no longer needs a code change on the bench side:
 - `MotorGroup.publish_while_arming`: a diagnostic flag, default off. `raw_telemetry()` still
   returns `None` until ARMED.
@@ -957,21 +969,25 @@ Run `two_channel_bidir_one_idle_600` 3 times and `two_channel_gc_600` 2 times, p
 `single_channel_bidirectional_600` once as the healthy reference. For each bidirectional motor,
 from the classifier's segments and events:
 
-| Session | Motor | First class after `arm()` | First `stop` | Arming tune(s) | Line held low (reset) | Outcome |
-|---------|-------|---------------------------|--------------|----------------|-----------------------|---------|
+| Session | Motor | First class after `arm()` | First `stop` | Arming tune(s) | Line held low (reset) | `ARMED` after `arm()` | Spun? |
+|---------|-------|---------------------------|--------------|----------------|-----------------------|-----------------------|-------|
 
-Times are relative to ARMED; `arm()` is at -2.000 s. What each hypothesis predicts for a failing
-ESC:
-- **(a) never accepted:** `echo` (or `garbled`) from -2.0 s with no `stop` at all, then `low` from
-  about -0.15 s.
-- **(b) accepted until armed:** `stop` from about -1.92 s, `echo` ~0.3 s at about -0.95 s (its
-  arming tune), then `echo`, `garbled` or `stop`, then `low` from about -0.15 s.
+Run the classifier with `--from-arm`, so times count from `arm()`. With the gate, `ARMED` is no
+longer at a fixed 2.000 s; the classifier prints when it came. What each hypothesis predicts for
+an ESC that resets while arming:
+- **(a) never accepted:** `echo` (or `garbled`) from 0 with no `stop` at all, then `low` from
+  about 1.85 s.
+- **(b) accepted until armed:** `stop` from about 0.08 s, `echo` ~0.3 s at about 1.05 s (its
+  arming tune), then `echo`, `garbled` or `stop`, then `low` from about 1.85 s.
+- **Either way, with the gate:** after the `low` stretch comes ~80 ms of `echo`, then `stop`, then
+  an arming tune ~0.97 s after that first `stop`. `ARMED` comes ≥ 2 s after that first `stop`, and
+  then the motor spins.
 - **Neither:** a `low` stretch at a different time, or one that does not follow an arming tune,
   means the chain above is wrong. That points to the IWDG (1.6 s nominal,
   [`peripherals.c#L139-L145`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Mcu/f051/Src/peripherals.c#L139-L145))
   or to power. Report `low` stretches that are not ~600 ms too.
-- **Healthy ESC**, for comparison: `echo` ~80 ms, then `stop`, with its arming tune about 1.05 s
-  after `arm()`, and no `low` at all.
+- **Healthy ESC**, for comparison: `echo` ~80 ms, then `stop`, its arming tune about 1.05 s
+  after `arm()`, no `low` at all, and `ARMED` at about 2.1 s.
 - **Also note the first class right at `arm()`:** `low` means the ESC was already in its startup
   tune, and `echo` means it was listening or in its bootloader. A mix of `echo` and short `low` or
   `garbled` would be the bootloader answering our frames with its 0xC1/0xC2 NACK bytes.

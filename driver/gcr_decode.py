@@ -71,6 +71,13 @@ FRAME_LENGTH_BITS = 21  # marker (1) + 20 differentially-encoded data bits - see
 # specification/AM32_SOURCE_VERIFICATION.md, finding 2).
 AM32_NOT_RUNNING_DATA12 = 0xFFF
 
+# That payload as dshot_bidir_rx_frame pushes it: the whole 21-bit frame (marker,
+# then 0xFFF and its inverted CRC in GCR). The only word a stopped AM32 ever
+# replies with, so MotorGroup's arming gate recognises it with one integer compare
+# instead of a decode (bug-reports/BUG-003). Our own throttle-0 frame, captured
+# when the ESC is silent, never produces it.
+AM32_NOT_RUNNING_FRAME = 0x52951
+
 # Exact per-sample cycle position for dshot_bidir_rx's nested 4-outer x
 # 32-inner sample loop: pass p in 0..3, inner index i in 0..31, global
 # sample index = p*32+i. Within a pass, samples are 2 cycles apart; each

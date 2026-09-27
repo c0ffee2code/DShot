@@ -51,6 +51,9 @@ it (a boot, an arming tune) and one line saying which state the run ended in.
 Time 0 is ARMED: meta.txt's armed_ticks_us when the session has it, else the
 first record, which the harness writes right after ARMED. Sessions that logged
 the arming phase (arming.bin, same record format) show it at negative times.
+With --from-arm, time 0 is arm() instead (meta.txt's arm_ticks_us): ARMED's time
+then depends on the arming gate (bug-reports/BUG-003), so this is the view for
+timing what the ESC did after our first frame.
 """
 
 import argparse
@@ -84,6 +87,9 @@ ECHO_PHASES = 32
 # ESC clock running a few percent off.
 STARTUP_TUNE_MS = (400, 800)
 ARMING_TUNE_MS = (200, 500)
+
+# What time 0 is, for the readings: ARMED, or arm() with --from-arm
+T0_NAME = "ARMED"
 
 
 def load_meta(session_dir):
@@ -299,10 +305,10 @@ def reading(segs, events, found):
             return ("rebooted (tune ended %.3f s), then armed at %.3f s, never spun: armed "
                     "but the motor did not start" % (boot[2] / 1000, armed_at / 1000))
         if boot[3] is not None and boot[3] > 0:
-            return ("rebooted: startup tune ended %.3f s after ARMED, first reply at %.3f s, "
+            return ("rebooted: startup tune ended %.3f s after %s, first reply at %.3f s, "
                     "no arming tune afterwards - the ESC came back up under our non-zero "
                     "throttle and never armed (path A, caused by a reset)" %
-                    (boot[2] / 1000, boot[3] / 1000))
+                    (boot[2] / 1000, T0_NAME, boot[3] / 1000))
     if labels == ["stop"] and not any(thr for _, _, thr in events):
         return ("'not running' from the first capture to the last, at throttle 0 throughout: "
                 "the ESC was replying already at ARMED; whether it had armed is not visible "
@@ -313,14 +319,15 @@ def reading(segs, events, found):
                 "(AM32 needs >1 s of zero throttle after it starts listening), or "
                 "it rejected our throttle frames")
     if labels[-1] == "stop" and set(labels[:-1]) <= {"echo"}:
-        return ("silent until %.3f s after ARMED, then 'not running' to the end: the ESC was "
+        return ("silent until %.3f s after %s, then 'not running' to the end: the ESC was "
                 "not listening when throttle started (before bidirectional detection, or in "
                 "an interrupts-off tune), came up under non-zero throttle, and so never armed"
-                % (final_stop_start(segs, events) / 1000))
+                % (final_stop_start(segs, events) / 1000, T0_NAME))
     if labels[-1] == "stop" and "garbled" in labels[:-1] and "low" not in labels:
-        return ("replies corrupted until %.3f s after ARMED, then clean 'not running' to the "
+        return ("replies corrupted until %.3f s after %s, then clean 'not running' to the "
                 "end: the ESC was active and its line noisy, then quiet - matches failed "
-                "start attempts ending in AM32's stuck-rotor protection" % (final_stop_start(segs, events) / 1000))
+                "start attempts ending in AM32's stuck-rotor protection" %
+                (final_stop_start(segs, events) / 1000, T0_NAME))
     return "no single AM32 state matches; read the segments and events above"
 
 
@@ -329,6 +336,8 @@ def main():
     parser.add_argument("session", nargs="?", help="captures/<session> (default: most recent)")
     parser.add_argument("--window-ms", type=float, default=100.0,
                         help="window each label is judged over (default 100)")
+    parser.add_argument("--from-arm", action="store_true",
+                        help="time 0 = arm() (needs arm_ticks_us in meta.txt) instead of ARMED")
     args = parser.parse_args()
 
     session_dir = Path(args.session) if args.session else most_recent_session(ROOT / "captures")
@@ -346,13 +355,24 @@ def main():
     if not (records or arming) or not bidir:
         return
 
-    if "armed_ticks_us" in meta:
-        t0_us = int(meta["armed_ticks_us"])
-    elif records:
-        t0_us = records[0][0]
+    if args.from_arm:
+        if "arm_ticks_us" not in meta:
+            sys.exit("--from-arm needs arm_ticks_us in meta.txt (sessions from the arming gate on)")
+        t0_us = int(meta["arm_ticks_us"])
+        global T0_NAME
+        T0_NAME = "arm()"
+        print("Time 0 = arm().")
     else:
-        t0_us = arming[-1][0]
-    print("Time 0 = ARMED; negative times are the arming window.")
+        if "armed_ticks_us" in meta:
+            t0_us = int(meta["armed_ticks_us"])
+        elif records:
+            t0_us = records[0][0]
+        else:
+            t0_us = arming[-1][0]
+        print("Time 0 = ARMED; negative times are the arming window.")
+    if "arm_ticks_us" in meta and "armed_ticks_us" in meta:
+        print("ARMED %.3f s after arm()." % (
+            ((int(meta["armed_ticks_us"]) - int(meta["arm_ticks_us"])) & 0x3FFFFFFF) / 1e6))
 
     echo_model = EchoModel(dshot_speed)
     for index in bidir:

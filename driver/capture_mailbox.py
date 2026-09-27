@@ -7,6 +7,8 @@
 
 from array import array
 
+from gcr_decode import AM32_NOT_RUNNING_FRAME
+
 # Words in one capture: dshot_bidir_rx_frame pushes one already-reconstructed
 # 21-bit frame per reply.
 WORDS = 1
@@ -82,9 +84,16 @@ class CaptureMailbox:
 
         Must be called from one place only: while running it is the only writer
         of the published slot.
+
+        Returns how many of the captures taken were AM32's not-running reply
+        (gcr_decode.AM32_NOT_RUNNING_FRAME), published or not: MotorGroup's
+        arming gate counts those as the ESC answering (bug-reports/BUG-003).
+        One integer compare per capture.
         """
         source = self.source
         remaining = self.limit
+        not_running = AM32_NOT_RUNNING_FRAME
+        replies = 0
         while remaining and source.rx_fifo() >= WORDS:
             remaining -= 1
             if publish:
@@ -93,8 +102,13 @@ class CaptureMailbox:
                 source.get(self.slot_words)
                 self.slot_ticks_us = self.clock()
                 self.slot_seq = seq + 2  # even: stable
+                if self.slot_words[0] == not_running:
+                    replies += 1
             else:
                 source.get(self.scratch)
+                if self.scratch[0] == not_running:
+                    replies += 1
+        return replies
 
     def latest(self):
         """

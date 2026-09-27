@@ -99,7 +99,8 @@ def main():
         while not motors.is_armed():
             if runner.error is not None:
                 raise runner.error
-            if utime.ticks_diff(utime.ticks_ms(), arm_start) > ARM_MS + 1000:
+            # + the reply gate's 2s, several seconds more after an ESC reboot (BUG-003)
+            if utime.ticks_diff(utime.ticks_ms(), arm_start) > ARM_MS + 8000:
                 raise Exception("Arming timed out")
             utime.sleep_ms(1)
         print("  armed")

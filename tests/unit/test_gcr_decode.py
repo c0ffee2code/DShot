@@ -11,7 +11,9 @@
 # scripts/verify_gcr_decode_port.py cross-checks the same two decoders on whole
 # stored capture sessions; this file is what runs without them.
 
+import sys
 import unittest
+from pathlib import Path
 
 import fakes  # noqa: F401  puts driver/ on sys.path
 import gcr_decode
@@ -320,3 +322,19 @@ class UnusableCaptureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotRunningFrameTest(unittest.TestCase):
+    def test_it_is_what_am32_sends_for_a_stopped_motor(self):
+        # AM32's make_dshot_package() substitutes com_time 65535 when not running;
+        # scripts/verify_am32_reply.py ports it
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        from verify_am32_reply import am32_make_dshot_package, expected_frame
+        payload, levels = am32_make_dshot_package(65535)
+        self.assertEqual(payload, gcr_decode.AM32_NOT_RUNNING_DATA12)
+        self.assertEqual(expected_frame(levels), gcr_decode.AM32_NOT_RUNNING_FRAME)
+
+    def test_it_decodes_as_not_running(self):
+        result = gcr_decode.analyze_frame(gcr_decode.AM32_NOT_RUNNING_FRAME)
+        self.assertTrue(result["crc_ok"])
+        self.assertTrue(result["not_running"])

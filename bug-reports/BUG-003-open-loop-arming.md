@@ -1,7 +1,22 @@
 # BUG-003: Arming is open-loop; nothing checks that the ESC actually armed
 
-**Status:** OPEN - fix proposed, not implemented. Revised 2026-09-27 after BUG-002's R3 captures:
-this is now the proposed fix for BUG-002 as well (see "Fix plan").
+**Status:** FIX IMPLEMENTED 2026-09-27, bench verification pending (BUG-002 request R7). Fix plan
+steps 1, 2, 3, 5 and 7 are in; step 6 (a 3000 ms default for unidirectional-only groups) is not.
+It is the fix for BUG-002 as well.
+
+**As implemented** (small departures from the plan below):
+- `CaptureMailbox.drain()` returns how many captures were `AM32_NOT_RUNNING_FRAME`.
+  `MotorGroup.update()` keeps the evidence per motor in ticks_ms (`ready_first_ms`,
+  `ready_last_ms`, `ready_seen`) from the tick's own `now`, so the mailbox needs no second clock
+  call.
+- `MotorGroup.READY_SPAN_MS = 2000`, `READY_GAP_MS = 450`, `READY_FRESH_MS = 50`;
+  `bidir_ready(now)` checks them once the floor has passed.
+- `MotorGroup.arming_status()`: per motor, `None`, or `(replying_for_ms, last_reply_ms_ago)`.
+  The harness prints it when arming times out, now after `arm_duration_ms + 8000` ms.
+- `MotorGroup.wait_for_replies` (default `True`) turns the gate off. Only
+  `tests/device/test_pio_lifecycle.py` does that, because it has no ESC attached.
+- Unit tests: `ArmingGateTest` in `tests/unit/test_motor_group.py`, the not-running count in
+  `test_capture_mailbox.py`, and the constant's derivation in `test_gcr_decode.py`.
 **Severity:** High - design gap. Any delay on the ESC side means the motor never arms, and nothing
 reports it.
 **Component:** `driver/motor_group.py` (`arm()`, `update()`), `driver/capture_mailbox.py`
