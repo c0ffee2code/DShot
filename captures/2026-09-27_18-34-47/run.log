@@ -1,0 +1,39 @@
+=== Scenario Capture ===
+Loaded scenario: duration=3000ms dshot_speed=4800000 bidir_motors=[0, 2] core1_interval_us=None
+Session: /sd/dshot_captures/2026-09-27_18-34-47
+
+Arming for 12000ms...
+Stopping...
+Motors stopped and disarmed.
+SD card flushed and unmounted.
+
+=== Summary ===
+Session: /sd/dshot_captures/2026-09-27_18-34-47
+Outcome: failed
+Records (captures seen for the first time): 0
+Records with a real (non-all-zero) reply: 0
+Captures published (last sequence per motor): {0: 25636, 2: 25636}
+Captures published but never seen: 0
+Largest gap between records: 0.0ms
+Oldest capture at the moment it was read: 0.0ms
+Longest gap between update() calls (measured on Core 1): 14.8ms
+Motor 0 decoded on the device (every 20th capture): decoded=0 crc_ok=0 crc_fail=0 invalid=0 median_erpm=0
+Motor 2 decoded on the device (every 20th capture): decoded=0 crc_ok=0 crc_fail=0 invalid=0 median_erpm=0
+=== Test FAILED ===
+Traceback (most recent call last):
+  File "<stdin>", line 467, in <module>
+  File "<stdin>", line 312, in run_scenario
+  File "<stdin>", line 233, in arm_group
+RuntimeError: arming did not complete within 20000ms; per motor (replying_for_ms, last_reply_ms_ago), None = no reply: [(10096, 0), None, (17470, 0), None]
+
+NOTE (added by Claude, not printed by the device): this run used the since-deleted
+tests/harness/scenarios/two_channel_arming_check_600_long_arm.json (arm_duration_ms=12000,
+pushing the total arm timeout to 20000ms via ARM_TIMEOUT_MARGIN_MS=8000, which was the
+value in tests/harness/run_scenario.py at the time). Investigated in
+bug-reports/BUG-002-bidirectional-motor-intermittently-does-not-spin.md: despite both
+motors' own replying_for_ms/last_reply_ms_ago showing them long since evidence-ready, the
+arming FLOOR itself never completed - traced to motor_group.py's since-removed
+ARM_GAP_TOLERANCE_MS gap-reset of arm_started_ms, which this run's own "longest gap
+between update() calls: 14.8ms" (> the old 10ms tolerance) was enough to trigger at least
+once. That finding led directly to deleting the gap-reset and raising
+ARM_TIMEOUT_MARGIN_MS instead of the floor - see the doc's "your proposal?" section.

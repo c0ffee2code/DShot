@@ -1,8 +1,20 @@
 # BUG-003: Arming is open-loop; nothing checks that the ESC actually armed
 
-**Status:** FIX IMPLEMENTED 2026-09-27, bench verification pending (BUG-002 request R7). Fix plan
-steps 1, 2, 3, 5 and 7 are in; step 6 (a 3000 ms default for unidirectional-only groups) is not.
-It is the fix for BUG-002 as well.
+**Status:** FIX IMPLEMENTED AND BENCH-VERIFIED 2026-09-27 (BUG-002's R7 and its 10-run and 10-run
+post-fix samples: 28 runs total, 0 silent failures - see BUG-002.md). Fix plan steps 1, 2, 3, 5 and
+7 are in; step 6 (a 3000 ms default for unidirectional-only groups) is not. It is the fix for
+BUG-002 as well.
+
+**Follow-up fix, same day:** the arming *floor* (separate from the reply gate this bug added) used
+to restart its own clock on any gap over 10 ms between `update()` calls
+(`MotorGroup.ARM_GAP_TOLERANCE_MS`), on the assumption that AM32 resets its arming counter the same
+way. It does not (source-verified, `specification/AM32_SOURCE_VERIFICATION.md`) - only non-zero
+throttle or a real reboot resets it, and the reboot case is what the reply gate below already
+handles. A bench test widening the floor to 12 s exposed the consequence directly: both ESCs had
+long since satisfied the reply gate, but the floor itself never completed, because at least one
+ordinary Core 1 scheduling gap landed somewhere in the window and restarted it. Removed the
+gap-reset entirely; the floor is now plain elapsed time since `arm()`. See BUG-002.md's "Fix: the
+arming floor's own gap-reset was ungrounded" for the full bench writeup.
 
 **As implemented** (small departures from the plan below):
 - `CaptureMailbox.drain()` returns how many captures were `AM32_NOT_RUNNING_FRAME`.

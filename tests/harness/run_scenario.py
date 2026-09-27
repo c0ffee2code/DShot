@@ -65,9 +65,14 @@ REPLY_FAILSAFE_GRACE_MS = 2000
 # How long past the scenario's own arming window arming may take before it is
 # an error: arming completes inside update() on Core 1, so a dead loop shows
 # here, and MotorGroup also waits for 2s of replies from every bidirectional
-# ESC - ~4.5s after arm() when an ESC reboots once while arming, ~7s twice
-# (bug-reports/BUG-003). The error then says which motor never replied.
-ARM_TIMEOUT_MARGIN_MS = 8000
+# ESC - ~4.5s after arm() when an ESC reboots once while arming, ~7s twice,
+# ~9.5s three times (bug-reports/BUG-003; BUG-002's "10-run arming-reliability
+# sample" measured a ~2.46s reboot-cycle period and saw up to 4 reboots on one
+# motor before it settled). Sized for 6 reboot cycles with margin, not the
+# floor itself - MotorGroup.arm()'s duration_ms is left alone, since raising it
+# only delays every healthy arm and was tried and found not to help (see the
+# bug report's "bigger waiting time?" note).
+ARM_TIMEOUT_MARGIN_MS = 16000
 
 # Grace window, after ARMED, before a bidirectional motor commanded to nonzero
 # throttle that has never once decoded a real (non-"not running") eRPM is

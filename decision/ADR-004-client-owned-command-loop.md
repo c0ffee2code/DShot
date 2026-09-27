@@ -76,7 +76,7 @@ This is what makes the library work under *any* scheduling arrangement, includin
 
 While arming, `update()` transmits literal zeros rather than the throttle array, so the arming window is genuinely at zero even if the application sets a throttle early.
 
-Because the ESC resets its own arming counter when commands stop arriving, `update()` restarts the arming window if more than `ARM_GAP_TOLERANCE_MS` has passed since the previous call. The library's notion of "armed" then tracks what the ESC actually observed.
+The arming window is plain elapsed time since `arm()`, unaffected by how unevenly `update()` gets called: AM32 does not reset its own arming counter on a gap in our transmissions, only on non-zero throttle or a gap long enough to be a reboot (source-verified). A group with bidirectional motors also gates on a separate reply-based check - every bidirectional ESC must have echoed its own "not running" frame steadily for a couple of seconds - which is what actually needs to notice a reboot, since a reboot is exactly the kind of gap that resets the ESC's own state.
 
 ### Sub-Decision: `update()` is inert while disarmed
 

@@ -1,0 +1,74 @@
+{
+  "_comment": "Same as two_channel_arming_check_600.json, except arm_duration_ms is raised to push run_scenario.py's total arm timeout (arm_duration_ms + ARM_TIMEOUT_MARGIN_MS, currently 8000) out to 20s instead of 10s - same technique two_channel_bidir_one_idle_600_long_arm.json already uses for BUG-002's R8. Exists to answer: when the gate times out at 10s with a motor mid-reboot-cycle (see 'Results: 10-run arming-reliability sample'), does it eventually arm given more room, or does that ESC keep rebooting indefinitely? Each AM32 reboot cycle costs ~2.4-2.6s, so 20s total covers roughly 6-7 cycles before the final 2s settle span - well past the worst case (4 reboots) seen so far.",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 3000,
+  "arm_duration_ms": 12000,
+  "status_interval_ms": 2000,
+  "poll_ms": 1,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 150,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "2": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "2": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 3000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 8,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 3000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "bidirectional": true,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 3000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 9,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 3000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0
+}

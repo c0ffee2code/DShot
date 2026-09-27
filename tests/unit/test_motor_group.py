@@ -137,19 +137,21 @@ class ArmingTest(GroupTestCase):
         group.update()
         self.assertTrue(group.is_armed())
 
-    def test_a_gap_in_updates_restarts_the_arming_window(self):
+    def test_a_gap_in_updates_does_not_restart_the_arming_window(self):
+        """AM32 does not reset its own arming counter on a gap in our
+        transmissions - only non-zero throttle, or a gap long enough to be a
+        reboot, does that (specification/AM32_SOURCE_VERIFICATION.md). The
+        floor is plain elapsed time since arm(), unaffected by how unevenly
+        update() gets called."""
         group = self.make([uni(0, 6)])
         group.arm(ARM_MS)
         for _ in range(ARM_MS - 20):
             group.update()
             Clock.advance_ms(1)
-        Clock.advance_ms(group.ARM_GAP_TOLERANCE_MS + 5)
-        group.update()  # the gap: the window starts over from here
-        for _ in range(ARM_MS - 20):
-            group.update()
-            Clock.advance_ms(1)
         self.assertFalse(group.is_armed())
-        self.run_until_armed(group)
+        Clock.advance_ms(1000)  # a gap far larger than update() ever leaves in practice
+        group.update()
+        self.assertTrue(group.is_armed())  # armed on the very next call - the floor kept counting through the gap
 
     def test_set_throttles_are_transmitted_once_armed(self):
         group = self.make([uni(0, 6), uni(1, 7)])

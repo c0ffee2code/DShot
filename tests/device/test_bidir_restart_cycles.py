@@ -48,8 +48,9 @@ def run_one_cycle(group, runner, cycle):
     runner.start()
     group.arm(ARM_MS)
     # MotorGroup also waits for 2s of ESC replies, several seconds more if
-    # the ESC reboots meanwhile (bug-reports/BUG-003)
-    deadline = utime.ticks_add(utime.ticks_ms(), ARM_MS + 8000)
+    # the ESC reboots meanwhile (bug-reports/BUG-003; margin matches
+    # tests/harness/run_scenario.py's ARM_TIMEOUT_MARGIN_MS)
+    deadline = utime.ticks_add(utime.ticks_ms(), ARM_MS + 16000)
     while not group.is_armed():
         if utime.ticks_diff(deadline, utime.ticks_ms()) < 0:
             raise Exception("cycle %d: arming timed out" % cycle)

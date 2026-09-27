@@ -95,12 +95,6 @@ class MotorGroup:
     READY_GAP_MS = 450
     READY_FRESH_MS = 50
 
-    # A gap longer than this between update() calls restarts the arming
-    # window. AM32 does not reset its own arming counter on a gap - only
-    # non-zero throttle does that, per source - so this is conservative
-    # margin, not a modeled ESC mechanism.
-    ARM_GAP_TOLERANCE_MS = 10
-
     # Highest throttle a motor will transmit; set_throttle() clamps to it
     MAX_THROTTLE = DShotPIO.MAX_THROTTLE
 
@@ -327,11 +321,6 @@ class MotorGroup:
         now = utime.ticks_ms()
 
         if state == ARMING:
-            # A transmission gap resets the ESC's arming counter, so restart
-            # our window to match what the ESC actually saw
-            if utime.ticks_diff(now, self.last_update_ms) > self.ARM_GAP_TOLERANCE_MS:
-                self.arm_started_ms = now
-
             # A not-running reply extends the motor's run of replies, or starts
             # a new one after a gap long enough to be a reboot
             publish = self.publish_while_arming

@@ -1,0 +1,74 @@
+{
+  "_comment": "REGRESSION SCENARIO: both bidirectional motors (channels 1 and 3) at a settled throttle while Core 0 forces a garbage collection every 100ms. A collection pauses both cores, as heap churn does in a real application, so the command loop is late and a reply may arrive while nobody reads it. The run must still decode every sampled capture as a real reply: a stall may cost a capture, but it must not leave corrupted ones behind.",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 20000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 5000,
+  "poll_ms": 1,
+  "gc_every_ms": 100,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 100,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "2": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "2": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 8,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "bidirectional": true,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 9,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20
+}

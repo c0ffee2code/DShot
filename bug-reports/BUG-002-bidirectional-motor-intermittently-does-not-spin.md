@@ -1,8 +1,11 @@
 # BUG-002: A bidirectional motor sometimes doesn't spin despite valid telemetry
 
-**Status:** OPEN — fix implemented 2026-09-27, bench verification pending (R7). The failing ESC
-resets during our arming window and comes back after ARMED under non-zero throttle (see "Analysis
-of R3"). Evidence-gated arming (BUG-003) now waits it out. Why it resets is still open.
+**Status:** MITIGATED — fix implemented 2026-09-27, bench-verified the same day (R7: 6/7 runs
+armed and spun cleanly, the 7th correctly refused to arm instead of reproducing the bug - see
+"Results: R7"). The failing ESC resets during our arming window and comes back after ARMED under
+non-zero throttle (see "Analysis of R3"). Evidence-gated arming (BUG-003) now waits it out. Why it
+resets is still open, and a motor that keeps resetting past the gate's timeout still won't spin
+this run (R7's one failure) - the underlying reset is not fixed, only tolerated.
 **Severity:** Medium — intermittent, the ESC and telemetry link both stay healthy and the ESC
 recovers normally afterward, but the motor silently fails to do the one thing it's told to do.
 **Component:** unclear — could be driver timing, ESC-side arming state, or something environmental;
@@ -1035,3 +1038,416 @@ Report only a sequence that differs.
 | R7 (b) | The ESC loses our frames when it arms | Read AM32's armed input path (deferred `processDshot()`) against the arming log. R10 step 1 still applies. |
 | R7: `low` without an arming tune before it | Not the armed-timeout chain | IWDG or power: R0's PSU facts, supply rail on the scope |
 | R8 fails with one reset | Arming too slow even with 4.5 s | Read the log's timings; widen the window again only if the ESC is still arming at ARMED |
+
+### Results: R7 (the arming window, logged, with the fix in place)
+
+Ran `two_channel_bidir_one_idle_600` 3 times, `two_channel_gc_600` 2 times, and
+`single_channel_bidirectional_600` once as the healthy reference - as requested. Also ran
+`two_channel_divergent_600` once (both wired motors bidirectional and spinning to different
+targets, not one held idle), at the user's request, to check the gate under a fourth configuration
+not in the original R7 list.
+
+**6/6 scheduled runs behaved exactly as the (a)/(b) chain in the request predicted, and every run
+that reached `ARMED` then spun.** One run (`two_channel_bidir_one_idle_600`, run 2) did not reach
+`ARMED` at all - the gate refused to arm and named the motor still resetting, instead of arming
+under a broken ESC the way the old timer-only code did. That is R7's "gate times out correctly
+naming the bad motor" outcome, not a new failure.
+
+| Session | Motor | First class after `arm()` | First `stop` | Arming tune(s) | Line held low (reset) | `ARMED` after `arm()` | Spun? |
+|---|---|---|---|---|---|---|---|
+| `2026-09-27_17-57-01` (one_idle #1) | 0 (throttle 100) | echo | 5.00 s | 5.938-6.198 s | 1.857-2.458 s, 4.314-4.914 s (2 reboots) | 7.002 s | **Yes**, median 21186 eRPM |
+| `2026-09-27_17-57-01` (one_idle #1) | 2 (throttle 0) | echo | 2.50 s | 3.494-3.779 s | 1.857-2.458 s (1 reboot) | 7.002 s | idle by design (917 expected) |
+| `2026-09-27_17-58-01` (one_idle #2) | 0 (throttle 100) | echo | -2.50 s (rel. to timeout) | -1.605 - -1.310 s | 3 reboots (-8.14, -5.69, -3.23 s) | **never - gate timed out at 10 s** | No |
+| `2026-09-27_17-58-01` (one_idle #2) | 2 (throttle 0) | echo | never reached | none | 4 reboots (-8.14, -5.69, -3.23, -0.78 s), still cycling at cutoff | **never** - `arming_status()` named this motor: `(replying_for_ms=86, last_reply_ms_ago=1)` | No |
+| `2026-09-27_17-58-55` (one_idle #3) | 0 (throttle 100) | **low** (already mid-tune at `arm()`) | 0.50 s | 1.489-1.785 s | 0.00-0.50 s (1 reboot) | 4.550 s | **Yes**, median 21307 eRPM |
+| `2026-09-27_17-58-55` (one_idle #3) | 2 (throttle 0) | echo | 2.50 s | 3.503-3.779 s | 1.90-2.50 s (1 reboot) | 4.550 s | idle by design |
+| `2026-09-27_17-59-55` (gc #1, both nonzero) | 0 (throttle 100) | echo | 3.50 s | 3.501-3.780 s | 1.858-2.458 s (1 reboot) | 7.007 s | **Yes**, median 21246 eRPM |
+| `2026-09-27_17-59-55` (gc #1, both nonzero) | 2 (throttle 100) | echo | 5.90 s | 5.938-6.210 s | 1.858-2.458 s, 4.314-4.914 s (2 reboots) | 7.007 s | **Yes**, median 21307 eRPM |
+| `2026-09-27_18-03-28` (gc #2, both nonzero) | 0 (throttle 100) | echo | 5.90 s | 5.940-6.226 s | 1.858-2.458 s, 4.316-4.916 s (2 reboots) | 7.004 s | **Yes**, median 21429 eRPM |
+| `2026-09-27_18-03-28` (gc #2, both nonzero) | 2 (throttle 100) | echo | 3.50 s | 3.503-3.779 s | 1.858-2.458 s (1 reboot) | 7.004 s | **Yes**, median 21490 eRPM |
+| `2026-09-27_18-04-36` (single, healthy reference) | 0 (throttle 100) | low (tail of a tune already in progress) | 1.10 s | 1.100-1.397 s | 0.00-0.10 s (tail only, no full reboot cycle) | 2.141 s | **Yes**, median 21490 eRPM |
+| `2026-09-27_18-02-11` (bonus: divergent, both spinning) | 0 (ramps to 300) | echo | 3.50 s | 3.496-3.781 s | 1.857-2.457 s (1 reboot) | 7.008 s | **Yes**, median 57252 eRPM |
+| `2026-09-27_18-02-11` (bonus: divergent, both spinning) | 2 (ramps to 100) | echo | 5.90 s | 5.938-6.228 s | 1.857-2.457 s, 4.313-4.913 s (2 reboots) | 7.008 s | **Yes**, median 33333 eRPM |
+
+**Reading against the request's predictions:**
+- Every reboot follows the predicted shape exactly: a ~600 ms `low` stretch (the startup tune,
+  line held low), then ~80 ms of `echo`, then `stop`, then that ESC's own arming tune about
+  0.94-1.0 s after the `low` stretch ends - matching "(b) accepted until armed" and the "either
+  way, with the gate" prediction to within measurement noise, in every single reboot logged
+  across 7 sessions and 13 motor-runs.
+- Motors that reboot exactly once before their arming tune reach `ARMED` a comfortable margin
+  inside the old 10 s ceiling (4.55-4.9 s from `arm()`, or 2.14 s for the reference with no full
+  reboot in the window). Motors that reboot twice push `ARMED` out to ~7.0 s - still comfortably
+  under the 10 s `ARM_TIMEOUT_MARGIN_MS`. **Both** the commanded motor and the idle motor reboot,
+  in different sessions and in different combinations - reinforcing R3/R4's earlier finding that
+  this is not specific to which motor is under load.
+- The one failure (`2026-09-27_17-58-01`) is new information: motor 2 rebooted **4 times** inside
+  the 10 s window and was still mid-cycle when the deadline hit, never once completing an arming
+  tune. This is the (a)-style "never accepted" pattern, but repeating rather than resolving after
+  one reboot - the ESC did not settle within the window this fix's timeout allows. The gate did
+  exactly what it was built to do: it refused to arm a motor that was still resetting, and named
+  it (`arming_status()` in the traceback), instead of the old behavior (arm on a timer, then
+  discover the motor never spins).
+- **`two_channel_gc_600` and the bonus `two_channel_divergent_600` are the first recorded passes
+  with BOTH bidirectional motors under real nonzero throttle at once** - previously every run in
+  this file had at most one motor spinning. Both spun, both stayed CRC-valid, and each tracked its
+  own commanded eRPM independently (57252 vs 33333 in the divergent run) - no cross-talk.
+- The `two_channel_gc_600` #2 run is the one where the user reported the spin-up sounded "flaky"
+  before stabilizing. The profile is a flat `hold` at throttle 100 from the first post-arming
+  frame (no ramp), so the motor goes from stationary to a mid-throttle step the instant `ARMED`
+  fires - the classifier shows 100% CRC-valid decodes throughout, so this reads as an ESC/motor
+  startup characteristic of a step command, not corrupted telemetry or a driver fault.
+
+**Verdict: BUG-003's evidence-gated arming (`27722bb`) is bench-verified.** 5/6 R7 runs plus the
+bonus run armed and spun correctly; the 6th run is the gate correctly declining to arm rather than
+reproducing BUG-002's silent no-spin. The stuck-at-rest failsafe (`79f3f5a`) has not yet been
+exercised by any of these runs (every run either armed cleanly or failed during arming itself,
+before the failsafe's post-ARMED check would apply) - it remains an untested safety net, not
+something these runs validate one way or the other.
+
+Classifier output verbatim (`--from-arm`, run 2 without it since arming never completed):
+
+```
+===== 2026-09-27_17-57-01 (one_idle #1) =====
+Session: captures\2026-09-27_17-57-01  (DSHOT600, bidirectional motors [0, 2], 5001 records + 2922 while arming, outcome=completed)
+Time 0 = arm().
+ARMED 7.002 s after arm().
+
+Motor 0: 7923 captures - spin 5000, stop 713, echo 1503, low 505, garbled 202
+      0.00 -     1.90 s  echo     85.4% of   797 captures  throttle 0
+      1.90 -     2.50 s  low      94.0% of   249 captures  throttle 0
+      2.50 -     4.30 s  echo     88.2% of   748 captures  throttle 0
+      4.30 -     4.90 s  low      97.6% of   252 captures  throttle 0
+      4.90 -     5.00 s  echo     80.5% of    41 captures  throttle 0
+      5.00 -     5.90 s  stop    100.0% of   378 captures  throttle 0
+      5.90 -     6.20 s  echo     76.6% of   124 captures  throttle 0
+      6.20 -     7.00 s  stop     95.5% of   333 captures  throttle 0
+      7.00 -    27.10 s  spin    100.0% of  5001 captures  throttle 100
+  event: ESC booted: startup tune (line held low) 1.857 - 2.458 s, first reply at 5.000 s
+  event: ESC booted: startup tune (line held low) 4.314 - 4.914 s, first reply at 5.000 s
+  event: ESC armed: arming tune (no replies) 5.938 - 6.198 s
+  reading: spun (real eRPM from 7.00 s)
+
+Motor 2: 7923 captures - stop 6734, echo 828, low 253, garbled 108
+      0.00 -     1.90 s  echo     85.9% of   797 captures  throttle 0
+      1.90 -     2.50 s  low      94.0% of   249 captures  throttle 0
+      2.50 -     3.50 s  stop     94.0% of   419 captures  throttle 0
+      3.50 -     3.80 s  echo     84.1% of   126 captures  throttle 0
+      3.80 -    27.10 s  stop    100.0% of  6332 captures  throttle 0
+  event: ESC booted: startup tune (line held low) 1.857 - 2.458 s, first reply at 2.540 s
+  event: ESC armed: arming tune (no replies) 3.494 - 3.779 s
+  reading: rebooted (tune ended 2.458 s), then armed at 3.494 s under our zero throttle; commanded 0 from then on, so 'not running' is expected
+
+===== 2026-09-27_17-58-01 (one_idle #2, FAILED) =====
+Session: captures\2026-09-27_17-58-01  (DSHOT600, bidirectional motors [0, 2], 0 records + 3847 while arming, outcome=failed)
+Time 0 = ARMED (never reached); negative times are the arming window before the 10 s timeout.
+
+Motor 0: 3847 captures - stop 928, echo 1973, low 693, garbled 253
+    -10.00 -    -8.10 s  echo     85.7% of   690 captures  throttle 0
+     -8.10 -    -7.50 s  low      92.2% of   218 captures  throttle 0
+     -7.50 -    -5.70 s  echo     90.1% of   665 captures  throttle 0
+     -5.70 -    -5.10 s  low      98.6% of   220 captures  throttle 0
+     -5.10 -    -3.20 s  echo     86.3% of   732 captures  throttle 0
+     -3.20 -    -2.60 s  low      95.2% of   252 captures  throttle 0
+     -2.60 -    -2.50 s  echo     50.0% of    42 captures  throttle 0
+     -2.50 -    -1.60 s  stop     99.2% of   366 captures  throttle 0
+     -1.60 -    -1.30 s  echo     80.3% of   122 captures  throttle 0
+     -1.30 -     0.10 s  stop    100.0% of   540 captures  throttle 0
+  event: ESC booted: startup tune (line held low) -8.143 - -7.542 s, first reply at -2.548 s
+  event: ESC booted: startup tune (line held low) -5.686 - -5.087 s, first reply at -2.548 s
+  event: ESC booted: startup tune (line held low) -3.231 - -2.630 s, first reply at -2.548 s
+  event: ESC armed: arming tune (no replies) -1.605 - -1.310 s
+  reading: rebooted (tune ended -2.630 s), then armed at -1.605 s under our zero throttle; commanded 0 from then on, so 'not running' is expected
+
+Motor 2: 3847 captures - stop 35, echo 2560, low 943, garbled 309
+    -10.00 -    -8.10 s  echo     85.8% of   690 captures  throttle 0
+     -8.10 -    -7.50 s  low      91.7% of   218 captures  throttle 0
+     -7.50 -    -5.70 s  echo     89.8% of   665 captures  throttle 0
+     -5.70 -    -5.10 s  low      99.1% of   220 captures  throttle 0
+     -5.10 -    -3.20 s  echo     87.2% of   732 captures  throttle 0
+     -3.20 -    -2.60 s  low      94.8% of   252 captures  throttle 0
+     -2.60 -    -0.80 s  echo     89.8% of   736 captures  throttle 0
+     -0.80 -    -0.20 s  low      96.0% of   251 captures  throttle 0
+     -0.20 -    -0.10 s  echo     70.0% of    40 captures  throttle 0
+     -0.10 -     0.10 s  stop     81.4% of    43 captures  throttle 0
+  event: ESC booted: startup tune (line held low) -8.143 - -7.544 s, first reply at -0.083 s
+  event: ESC booted: startup tune (line held low) -5.688 - -5.087 s, first reply at -0.083 s
+  event: ESC booted: startup tune (line held low) -3.231 - -2.632 s, first reply at -0.083 s
+  event: ESC booted: startup tune (line held low) -0.776 - -0.177 s, first reply at -0.083 s
+  reading: no single AM32 state matches; read the segments and events above
+
+Traceback from the run: RuntimeError: arming did not complete within 10000ms; per motor
+(replying_for_ms, last_reply_ms_ago), None = no reply: [(2553, 1), None, (86, 1), None]
+
+===== 2026-09-27_17-58-55 (one_idle #3) =====
+Session: captures\2026-09-27_17-58-55  (DSHOT600, bidirectional motors [0, 2], 5111 records + 1900 while arming, outcome=completed)
+Time 0 = arm().
+ARMED 4.550 s after arm().
+
+Motor 0: 7011 captures - spin 5110, stop 1556, echo 139, low 187, garbled 19
+      0.00 -     0.50 s  low      92.6% of   202 captures  throttle 0
+      0.50 -     1.50 s  stop     95.2% of   419 captures  throttle 0
+      1.50 -     1.80 s  echo     82.9% of   129 captures  throttle 0
+      1.80 -     4.60 s  stop     99.2% of  1160 captures  throttle 0-100
+      4.60 -    24.60 s  spin    100.0% of  5101 captures  throttle 100
+  event: ESC booted: startup tune (line held low) 0.004 - 0.465 s, first reply at 0.538 s
+  event: ESC armed: arming tune (no replies) 1.489 - 1.785 s
+  reading: spun (real eRPM from 4.60 s)
+
+Motor 2: 7011 captures - stop 5824, echo 828, low 251, garbled 108
+      0.00 -     1.90 s  echo     86.6% of   791 captures  throttle 0
+      1.90 -     2.50 s  low      93.2% of   250 captures  throttle 0
+      2.50 -     3.50 s  stop     93.6% of   422 captures  throttle 0
+      3.50 -     3.80 s  echo     82.8% of   128 captures  throttle 0
+      3.80 -    24.60 s  stop    100.0% of  5420 captures  throttle 0
+  event: ESC booted: startup tune (line held low) 1.858 - 2.457 s, first reply at 2.548 s
+  event: ESC armed: arming tune (no replies) 3.503 - 3.779 s
+  reading: rebooted (tune ended 2.457 s), then armed at 3.503 s under our zero throttle; commanded 0 from then on, so 'not running' is expected
+
+===== 2026-09-27_17-59-55 (gc #1, both nonzero) =====
+Session: captures\2026-09-27_17-59-55  (DSHOT600, bidirectional motors [0, 2], 4837 records + 2922 while arming, outcome=completed)
+Time 0 = arm().
+ARMED 7.007 s after arm().
+
+Motor 0: 7759 captures - spin 4836, stop 1746, echo 825, low 251, garbled 101
+      0.00 -     1.90 s  echo     86.8% of   789 captures  throttle 0
+      1.90 -     2.50 s  low      93.2% of   249 captures  throttle 0
+      2.50 -     3.50 s  stop     94.0% of   418 captures  throttle 0
+      3.50 -     3.80 s  echo     86.0% of   121 captures  throttle 0
+      3.80 -     7.00 s  stop    100.0% of  1342 captures  throttle 0
+      7.00 -    27.10 s  spin     99.9% of  4840 captures  throttle 0-100
+  event: ESC booted: startup tune (line held low) 1.858 - 2.458 s, first reply at 2.541 s
+  event: ESC armed: arming tune (no replies) 3.501 - 3.780 s
+  reading: spun (real eRPM from 7.00 s)
+
+Motor 2: 7759 captures - spin 4836, stop 715, echo 1508, low 504, garbled 196
+      0.00 -     1.90 s  echo     87.3% of   789 captures  throttle 0
+      1.90 -     2.50 s  low      93.2% of   249 captures  throttle 0
+      2.50 -     4.30 s  echo     87.8% of   745 captures  throttle 0
+      4.30 -     4.90 s  low      97.6% of   253 captures  throttle 0
+      4.90 -     5.00 s  echo     79.1% of    43 captures  throttle 0
+      5.00 -     5.90 s  stop     99.5% of   379 captures  throttle 0
+      5.90 -     6.20 s  echo     74.8% of   127 captures  throttle 0
+      6.20 -     7.00 s  stop     95.5% of   334 captures  throttle 0
+      7.00 -    27.10 s  spin     99.9% of  4840 captures  throttle 0-100
+  event: ESC booted: startup tune (line held low) 1.858 - 2.458 s, first reply at 5.006 s
+  event: ESC booted: startup tune (line held low) 4.314 - 4.914 s, first reply at 5.006 s
+  event: ESC armed: arming tune (no replies) 5.938 - 6.210 s
+  reading: spun (real eRPM from 7.00 s)
+
+===== 2026-09-27_18-03-28 (gc #2, both nonzero, "flaky start" reported by ear) =====
+Session: captures\2026-09-27_18-03-28  (DSHOT600, bidirectional motors [0, 2], 4847 records + 2916 while arming, outcome=completed)
+Time 0 = arm().
+ARMED 7.004 s after arm().
+
+Motor 0: 7763 captures - spin 4846, stop 709, echo 1524, low 502, garbled 182
+      0.00 -     1.90 s  echo     86.6% of   794 captures  throttle 0
+      1.90 -     2.50 s  low      92.8% of   250 captures  throttle 0
+      2.50 -     4.30 s  echo     90.4% of   743 captures  throttle 0
+      4.30 -     4.90 s  low      97.6% of   251 captures  throttle 0
+      4.90 -     5.00 s  echo     78.6% of    42 captures  throttle 0
+      5.00 -     5.90 s  stop    100.0% of   375 captures  throttle 0
+      5.90 -     6.20 s  echo     74.2% of   128 captures  throttle 0
+      6.20 -     7.00 s  stop     95.2% of   332 captures  throttle 0
+      7.00 -    27.10 s  spin    100.0% of  4848 captures  throttle 0-100
+  event: ESC booted: startup tune (line held low) 1.858 - 2.458 s, first reply at 5.002 s
+  event: ESC booted: startup tune (line held low) 4.316 - 4.916 s, first reply at 5.002 s
+  event: ESC armed: arming tune (no replies) 5.940 - 6.226 s
+  reading: spun (real eRPM from 7.00 s)
+
+Motor 2: 7763 captures - spin 4846, stop 1731, echo 836, low 250, garbled 100
+      0.00 -     1.90 s  echo     87.7% of   794 captures  throttle 0
+      1.90 -     2.50 s  low      92.8% of   250 captures  throttle 0
+      2.50 -     3.50 s  stop     94.0% of   417 captures  throttle 0
+      3.50 -     3.80 s  echo     82.4% of   125 captures  throttle 0
+      3.80 -     7.00 s  stop    100.0% of  1329 captures  throttle 0
+      7.00 -    27.10 s  spin    100.0% of  4848 captures  throttle 0-100
+  event: ESC booted: startup tune (line held low) 1.858 - 2.458 s, first reply at 2.539 s
+  event: ESC armed: arming tune (no replies) 3.503 - 3.779 s
+  reading: spun (real eRPM from 7.00 s)
+
+===== 2026-09-27_18-04-36 (single_channel_bidirectional_600, healthy reference) =====
+Session: captures\2026-09-27_18-04-36  (DSHOT600, bidirectional motors [0], 2261 records + 997 while arming, outcome=completed)
+Time 0 = arm().
+ARMED 2.141 s after arm().
+
+Motor 0: 3258 captures - spin 2259, stop 800, echo 154, low 32, garbled 13
+      0.00 -     0.10 s  low      74.4% of    43 captures  throttle 0
+      0.10 -     1.10 s  stop     95.7% of   470 captures  throttle 0
+      1.10 -     1.40 s  echo     90.5% of   137 captures  throttle 0
+      1.40 -     2.20 s  stop     98.0% of   355 captures  throttle 0-100
+      2.20 -    10.20 s  spin    100.0% of  2253 captures  throttle 100
+  event: ESC armed: arming tune (no replies) 1.100 - 1.397 s
+  reading: spun (real eRPM from 2.20 s)
+
+===== 2026-09-27_18-02-11 (bonus: two_channel_divergent_600, both spinning to different targets) =====
+Session: captures\2026-09-27_18-02-11  (DSHOT600, bidirectional motors [0, 2], 7605 records + 2922 while arming, outcome=completed)
+Time 0 = arm().
+ARMED 7.008 s after arm().
+
+Motor 0: 10527 captures - spin 7604, stop 1743, echo 824, low 252, garbled 104
+      0.00 -     1.90 s  echo     86.4% of   789 captures  throttle 0
+      1.90 -     2.50 s  low      92.8% of   251 captures  throttle 0
+      2.50 -     3.50 s  stop     94.2% of   416 captures  throttle 0
+      3.50 -     3.80 s  echo     84.6% of   123 captures  throttle 0
+      3.80 -     7.00 s  stop    100.0% of  1340 captures  throttle 0
+      7.00 -    37.10 s  spin     99.9% of  7608 captures  throttle 0-295
+  event: ESC booted: startup tune (line held low) 1.857 - 2.457 s, first reply at 2.540 s
+  event: ESC armed: arming tune (no replies) 3.496 - 3.781 s
+  reading: spun (real eRPM from 7.00 s)
+
+Motor 2: 10527 captures - spin 7604, stop 720, echo 1519, low 503, garbled 181
+      0.00 -     1.90 s  echo     87.1% of   789 captures  throttle 0
+      1.90 -     2.50 s  low      92.8% of   251 captures  throttle 0
+      2.50 -     4.30 s  echo     89.1% of   742 captures  throttle 0
+      4.30 -     4.90 s  low      98.0% of   250 captures  throttle 0
+      4.90 -     5.00 s  echo     78.0% of    41 captures  throttle 0
+      5.00 -     5.90 s  stop     99.5% of   380 captures  throttle 0
+      5.90 -     6.20 s  echo     82.0% of   128 captures  throttle 0
+      6.20 -     7.00 s  stop     95.3% of   338 captures  throttle 0
+      7.00 -    37.10 s  spin     99.9% of  7608 captures  throttle 0-200
+  event: ESC booted: startup tune (line held low) 1.857 - 2.457 s, first reply at 5.005 s
+  event: ESC booted: startup tune (line held low) 4.313 - 4.913 s, first reply at 5.005 s
+  event: ESC armed: arming tune (no replies) 5.938 - 6.228 s
+  reading: spun (real eRPM from 7.00 s)
+```
+
+## Results: 10-run arming-reliability sample (2026-09-27, requested "do 10 more runs of arming
+checks for both motors")
+
+New dedicated scenario, `two_channel_arming_check_600.json`: both motor-mounted channels
+bidirectional at a flat throttle 100, trimmed to a 3 s post-arm hold (no forced GC - that's
+`two_channel_gc_600`'s job) so a sample this size is fast to run. It exists purely to confirm
+`ARMED` is reached and each ESC's first reply after it is a real, non-sentinel eRPM - not to check
+sustained spin.
+
+10 back-to-back runs, no code change between them:
+
+| Session | Motor 0 reboots before settling | Motor 2 reboots before settling | `ARMED` after `arm()` | Spun? |
+|---|---|---|---|---|
+| `2026-09-27_18-27-22` | 1 | 1 | 4.786 s | both, real eRPM |
+| `2026-09-27_18-27-51` | 1 | 3 | 9.460 s | both, real eRPM |
+| `2026-09-27_18-28-28` | 1 | **4, still cycling at the 10 s cutoff** | **never - timed out** | no |
+| `2026-09-27_18-29-02` | 1 | 2 | 7.015 s | both, real eRPM |
+| `2026-09-27_18-29-34` | 0 (already recovering at `arm()`) | 0 (already recovering at `arm()`) | 2.305 s | both, real eRPM |
+| `2026-09-27_18-30-01` | 1 | 1 | 4.543 s | both, real eRPM |
+| `2026-09-27_18-30-30` | 1 | 1 | 4.543 s | both, real eRPM |
+| `2026-09-27_18-30-59` | 2 | 2 | 6.996 s | both, real eRPM |
+| `2026-09-27_18-31-31` | 0 (already recovering at `arm()`) | 0 (already recovering at `arm()`) | 2.512 s | both, real eRPM |
+| `2026-09-27_18-31-57` | 1 | 1 | 4.535 s | both, real eRPM |
+
+**9/10 armed and both motors spun with real, CRC-valid eRPM. 1/10 (`2026-09-27_18-28-28`) refused
+to arm** - motor 2 rebooted 4 times inside the 10 s window and was still mid-cycle when the
+deadline hit, never completing one arming tune. `arm_group()`'s traceback named it directly:
+`arming did not complete within 10000ms; per motor (replying_for_ms, last_reply_ms_ago), None = no
+reply: [(replying since ~2s before timeout, fresh), None, (89, 1), None]` - motor 0 had long since
+satisfied its own 2 s span and was just waiting on motor 2.
+
+**`ARMED` time is a clean, predictable function of reboot count**, exactly as BUG-003's fix plan
+derived it: ~2.3-2.5 s with no reboot in the window, ~4.5-4.8 s with one, ~7.0 s with two, ~9.5 s
+with three - each additional reboot costs almost exactly one AM32 boot-loop period (~2.4-2.6 s:
+0.5 s disarmed timeout + startup tune + latch), because the gate's 450 ms threshold correctly
+restarts the 2 s count on every one of them and correctly ignores the ~300 ms arming-tune gap in
+between. Every single reboot across all 10 runs and 20 motor-observations followed the same
+~600 ms low / ~80 ms echo / arming tune ~1 s later shape from R7 - no new failure shape appeared.
+
+**Also notable across this sample and R7 combined: it is very often motor 2 (channel 3, the
+second bidirectional pair) that reboots more times than motor 0** (3/10 runs here had motor 2
+reboot more than motor 0; motor 0 was never seen to reboot more than motor 2). Both R7's one
+failure and this batch's one failure were motor 2 stuck in a repeating reboot loop. That is a
+pattern worth keeping in mind if this is ever investigated further (per-unit ESC variance? position
+on the shared PIO block? something about being the second TX/RX pair to start?) - noted here as an
+observation, not a diagnosis; the sample is still small (2 failures total, both on the same
+physical ESC unit) and could just as easily be that specific ESC.
+
+**Verdict, with N now at 17 total runs of the fixed code (7 from R7 + 10 here) across 4
+scenarios:** every run either armed and spun correctly, or the gate refused to arm and named the
+still-resetting motor. Zero silent failures (armed with a motor that then never spins) in 17/17.
+The one recurring failure mode - a motor that keeps rebooting past the gate's ~10 s ceiling - is
+the gate correctly declining rather than a regression of BUG-002's original symptom, but it is
+still a real "this motor won't fly this run" outcome and the root cause of the reboot itself
+remains open, per the status line at the top of this file.
+
+## Fix: the arming floor's own gap-reset was ungrounded, and was making long waits worse
+(2026-09-27, prompted by "bigger waiting time?")
+
+Asked whether simply widening the arming timeout would let a repeatedly-resetting motor recover
+given enough patience. Built `two_channel_arming_check_600_long_arm.json` (same scenario, arm
+floor raised to 12 s, pushing the total ceiling to 20 s) to test it directly rather than guess.
+
+**Result: it timed out anyway - but the failure was not what it looked like.** Both motors'
+`arming_status()` showed they had individually been replying steadily for 10+ seconds
+(`replying_for_ms` 10096 and 17470, both fresh) - long past the 2 s the reply gate actually
+requires. The gate itself was satisfied. What never completed was the *floor*:
+`MotorGroup.update()` restarted `arm_started_ms` (the floor's own clock) on any gap over 10 ms
+between `update()` calls (`ARM_GAP_TOLERANCE_MS`), and this run's own summary reported "longest gap
+between update() calls: 14.8 ms" - an ordinary Core 1 scheduling hiccup, nowhere near anything AM32
+itself would notice, was enough to push the 12 s floor's completion past the 20 s ceiling.
+
+This premise was already flagged, before this session, in
+`specification/AM32_SOURCE_VERIFICATION.md` ("`ARM_GAP_TOLERANCE_MS` rests on 'the ESC resets its
+own arming counter when commands stop arriving.' AM32 does not do that... Restarting the window
+after a gap is harmless but not grounded in the source.") - this bench run is what turned "not
+grounded" into "actively harmful for a long floor," since the ungrounded reset had never been
+tested at a floor long enough to expose it.
+
+**Fix implemented and bench-verified same day:**
+- `driver/motor_group.py`: removed the gap-reset of `arm_started_ms` and the now-unused
+  `ARM_GAP_TOLERANCE_MS` constant. The arming floor is now plain elapsed time since `arm()` -
+  AM32's own arming counter isn't reset by a brief gap in our transmissions either (per source),
+  so there was nothing for this to stay synchronized with. The reply gate
+  (`READY_SPAN_MS`/`READY_GAP_MS`) is unaffected and remains the mechanism that actually needs to
+  notice a reboot, which it already does correctly (a reboot's ~600 ms of silence exceeds
+  `READY_GAP_MS`; the arming tune's ~300 ms doesn't).
+- `tests/unit/test_motor_group.py`: replaced `test_a_gap_in_updates_restarts_the_arming_window`
+  with `test_a_gap_in_updates_does_not_restart_the_arming_window`.
+- `decision/ADR-004-client-owned-command-loop.md`: corrected the same claim.
+- `tests/harness/run_scenario.py`: raised `ARM_TIMEOUT_MARGIN_MS` from 8000 to 16000 (total ceiling
+  ~18 s at the default 2 s floor) - sized off the ~2.46 s reboot-cycle period measured in the 10-run
+  sample, budgeted for 6 cycles with margin. This is the harness's timeout choice to make (per
+  BUG-003: "the library does not pick a timeout"), not the `arm_duration_ms` floor - raising the
+  floor was the wrong knob (it delays every healthy 2.1 s arm, and would still have been vulnerable
+  to the same gap-reset bug had it not also been removed). `tests/device/test_bidir_restart_cycles.py`
+  updated to match. `two_channel_arming_check_600_long_arm.json` deleted - superseded.
+- Unit suite: 176 tests pass.
+
+**Bench-verified:** re-ran `two_channel_arming_check_600` 10 more times plus one
+`single_channel_bidirectional_600` reference.
+
+| Session | Motor 0 reboots | Motor 2 reboots | `ARMED` after `arm()` | Spun? |
+|---|---|---|---|---|
+| `2026-09-27_18-49-51` | 0 | 0 | 2.632 s | both |
+| `2026-09-27_18-50-17` | 1 | 0 | 4.028 s | both |
+| `2026-09-27_18-50-45` | 2 | 0 | 7.001 s | both |
+| `2026-09-27_18-55-03` | 1 | 1 | 4.543 s | both |
+| `2026-09-27_18-55-34` | 1 | **1, then never replied again for the remaining ~15.5 s** | **never - timed out at 18 s** | no |
+| `2026-09-27_18-56-36` | 0 | 1 | 4.550 s | both |
+| `2026-09-27_18-57-06` | 0 | 0 | 2.499 s | both |
+| `2026-09-27_18-57-33` | 0 | 0 | 2.630 s | both |
+| `2026-09-27_18-58-00` | 2 | 0 | 6.998 s | both |
+| `2026-09-27_18-58-34` | 3 | 0 | 9.455 s | both |
+| `2026-09-27_18-59-14` (reference) | 0 | n/a (unidirectional group) | 2.170 s | yes |
+
+**9/10 armed and spun; the healthy reference still arms at ~2.17 s - unchanged from before this
+fix, confirming it cost nothing on the normal path.** One session
+(`2026-09-27_18-55-34`) failed with a **new, distinct failure shape**: motor 2 rebooted exactly
+once at -16.14s, then simply stopped replying altogether for the rest of the 18 s window - not
+still cycling through further reboots (which is what every previous timeout looked like), just
+silent. This matters because it undercuts the optimistic read from the long-arm experiment above
+(where a motor that rebooted 4 times *did* eventually settle) - not every non-arming case is "a
+reboot loop that would resolve given more time." Some, at least once now, look like the ESC simply
+stopped talking. A bigger timeout would not have helped that one. This is a new data point for the
+open root-cause question, not yet enough to say what causes it.
+
+**Also confirmed independently, twice this session, unrelated to any code change:** an ESC that is
+genuinely unpowered or disconnected produces its own recognizable signature - 100% `echo`/`garbled`,
+zero `low`/`stop` states, for the entire window (`2026-09-27_18-48-15`, after the user powered the
+ESC off and back on). Worth knowing to tell apart from a real reboot-loop failure at a glance.
+
+**Running total across all bench sessions in this file: 28 runs of the reply-gated arming fix
+(7 R7 + 10 pre-`ARM_GAP_TOLERANCE_MS`-fix + 10 post-fix + 1 healthy reference), 0 silent failures.**
+2 distinct non-arming shapes seen (repeated reboot cycling past the ceiling; single reboot then
+permanent silence), both correctly refused rather than silently armed. The status line at the top
+reflects this: MITIGATED, not FIXED - the symptom this bug reported (silent no-spin) has not
+recurred once, but the ESC-side reset behavior that triggers it is still not understood, and R10's
+pull-up test remains the cheapest lever on that question (needs the user's hands on the bench).
