@@ -13,7 +13,7 @@
 # Core1Runner start/stop, in the documented order (stop the loop, then
 # disarm) so a race between them can't be mistaken for a reclaim failure.
 #
-# Wiring matches tests/harness/scenarios/telemetry_settled_300.json exactly
+# Wiring matches tests/harness/scenarios/single_channel_bidirectional_300.json exactly
 # (channel 1 bidirectional, channels 2-4 unidirectional at zero) so channel
 # 3's line stays driven, not floating - the same reason F3 used that scenario
 # rather than building channel 1 alone (see bidirectional_dshot_review.md's

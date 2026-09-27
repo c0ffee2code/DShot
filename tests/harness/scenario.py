@@ -56,9 +56,19 @@ class Scenario:
         return [i for i, m in enumerate(self.motors) if m.bidirectional]
 
 
-# Decoding a capture costs about 1.3ms, so only a sample of them is decoded on the
-# device; this is often enough for a percentage and rare enough to stay cheap
-DEFAULT_DECODE_EVERY = 20
+def _require(data, key, context="scenario"):
+    """
+    Fail-fast field lookup: this is a test suite, not an application with
+    reasonable runtime defaults, so a scenario JSON that omits a setting is a
+    scenario mistake, not a signal to silently substitute a guessed value -
+    every one of these controls something that changes test behavior (timing,
+    sampling, thresholds), and a silently-defaulted one has already produced a
+    scenario that looked passing for the wrong reason (see git history around
+    2026-09-19's arm-duration investigation).
+    """
+    if key not in data:
+        raise ValueError(context + " is missing required field: " + key)
+    return data[key]
 
 
 def pio_block(sm_id):
@@ -93,7 +103,7 @@ def build_scenario(data):
     for index, entry in enumerate(motors_raw):
         pin = entry["pin"]
         sm_id = entry["sm_id"]
-        bidirectional = entry.get("bidirectional", False)
+        bidirectional = _require(entry, "bidirectional", "motor " + str(index))
         rx_sm_id = entry.get("rx_sm_id")
 
         if pin in seen_pins:
@@ -179,19 +189,21 @@ def build_scenario(data):
     # reply check is a coarser, cheap proxy: check_reply_failsafe in
     # run_scenario.py, which only asserts "at least one non-all-zero reply
     # appeared".
-    # Every Nth new capture per bidirectional motor is decoded on the device (0 = never)
-    decode_every = data.get("decode_every", DEFAULT_DECODE_EVERY)
+    # Every Nth new capture per bidirectional motor is decoded on the device (0 = never).
+    # Decoding a capture costs about 1.3ms, so only a sample of them is decoded on the
+    # device; this is often enough for a percentage and rare enough to stay cheap.
+    decode_every = _require(data, "decode_every")
     if not isinstance(decode_every, int) or decode_every < 0:
         raise ValueError("decode_every must be a whole number >= 0, got " + str(decode_every))
 
     # Core 0 forces a garbage collection this often (0 = never). A collection
     # pauses both cores, which is what heap churn does to a real application: it
     # shows whether a stall leaves lost or corrupted replies behind it.
-    gc_every_ms = data.get("gc_every_ms", 0)
+    gc_every_ms = _require(data, "gc_every_ms")
     if not isinstance(gc_every_ms, int) or gc_every_ms < 0:
         raise ValueError("gc_every_ms must be a whole number >= 0, got " + str(gc_every_ms))
 
-    expect = data.get("expect", {})
+    expect = _require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     for name in ("min_crc_valid_pct", "min_median_erpm"):
         for key in expect.get(name, {}):
@@ -204,9 +216,9 @@ def build_scenario(data):
     return Scenario(
         dshot_speed=dshot_speed,
         duration_ms=duration_ms,
-        arm_duration_ms=data.get("arm_duration_ms", 500),
-        status_interval_ms=data.get("status_interval_ms", 15000),
-        poll_ms=data.get("poll_ms", 10),
+        arm_duration_ms=_require(data, "arm_duration_ms"),
+        status_interval_ms=_require(data, "status_interval_ms"),
+        poll_ms=_require(data, "poll_ms"),
         decode_every=decode_every,
         gc_every_ms=gc_every_ms,
         expect=expect,

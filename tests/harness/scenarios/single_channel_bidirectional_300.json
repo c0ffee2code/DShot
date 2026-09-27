@@ -1,8 +1,8 @@
 {
-  "_comment": "REGRESSION SCENARIO: one bidirectional motor (channel 1) held at a settled throttle, as a client that reads telemetry would run it. A CRC-valid reply only proves the telemetry link - an armed ESC answers with a constant at-rest eRPM (917) even when the motor never starts - so the median eRPM is checked too: at throttle 100 this bench turns at about 21k eRPM. Thresholds sit well below what this bench delivers: about 255 records/s with one bidirectional motor and 225/s with two (Core 0 samples the latest capture, so this is a sampling rate, not the reply rate), a largest gap of 15ms typically and up to 62ms when the SD card flushes, and every sampled decode CRC-valid.",
+  "_comment": "REGRESSION SCENARIO: basic single-motor bidirectional DSHOT300 regression - half of the 2x2 basic matrix (1 motor x DSHOT300/600 x uni/bidirectional; see single_channel_unidirectional_300/600.json for the unidirectional half). One bidirectional motor (channel 1) held at a settled throttle, as a client that reads telemetry would run it. A CRC-valid reply only proves the telemetry link - an armed ESC answers with a constant at-rest eRPM (917) even when the motor never starts - so the median eRPM is checked too: at throttle 100 this bench turns at about 21k eRPM. Thresholds sit well below what this bench delivers: about 255 records/s with one bidirectional motor and 225/s with two (Core 0 samples the latest capture, so this is a sampling rate, not the reply rate), a largest gap of 15ms typically and up to 62ms when the SD card flushes, and every sampled decode CRC-valid.",
   "dshot_speed": "DSHOT300",
   "duration_ms": 8000,
-  "arm_duration_ms": 3000,
+  "arm_duration_ms": 2000,
   "status_interval_ms": 4000,
   "poll_ms": 1,
   "expect": {
@@ -38,7 +38,8 @@
           "throttle": 0,
           "duration_ms": 8000
         }
-      ]
+      ],
+      "bidirectional": false
     },
     {
       "pin": 8,
@@ -49,7 +50,8 @@
           "throttle": 0,
           "duration_ms": 8000
         }
-      ]
+      ],
+      "bidirectional": false
     },
     {
       "pin": 9,
@@ -60,7 +62,10 @@
           "throttle": 0,
           "duration_ms": 8000
         }
-      ]
+      ],
+      "bidirectional": false
     }
-  ]
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0
 }
