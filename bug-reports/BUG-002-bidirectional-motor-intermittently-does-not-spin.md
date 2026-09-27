@@ -1371,6 +1371,11 @@ remains open, per the status line at the top of this file.
 ## Fix: the arming floor's own gap-reset was ungrounded, and was making long waits worse
 (2026-09-27, prompted by "bigger waiting time?")
 
+**This is not what fixed BUG-002.** The evidence-gated arming above (BUG-003) is what stopped the
+motor from silently failing to spin - that was already bench-verified before this section (R7, and
+the 10-run sample). What follows is a second, separate reliability finding, discovered while
+checking whether a bigger timeout would help a motor that keeps rebooting past the gate's ceiling.
+
 Asked whether simply widening the arming timeout would let a repeatedly-resetting motor recover
 given enough patience. Built `two_channel_arming_check_600_long_arm.json` (same scenario, arm
 floor raised to 12 s, pushing the total ceiling to 20 s) to test it directly rather than guess.
