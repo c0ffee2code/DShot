@@ -291,3 +291,27 @@ anecdote.
    scenario/profile, not existing captures. Given step 2's sharpened lead, build this specifically
    on `two_channel_gc_600` or `two_channel_divergent_600` rather than a new single-motor scenario -
    the failure has never been seen outside the two-bidirectional-motor DSHOT600 combination.
+
+## Fix and investigation plan (2026-09-27)
+
+Proposed after the AM32/Betaflight comparison
+(`specification/AM32_ARMING_AND_BETAFLIGHT.md`, sections 4-5). Each step changes **one thing** and
+is run on both failing scenarios (`two_channel_divergent_600`, `two_channel_gc_600`), 3 runs each.
+Stop at the first step that clears the failure; it names the cause.
+
+| Step | Change | If it clears BUG-002 | If not |
+|------|--------|----------------------|--------|
+| 0 | No change. Read `max_loop_gap_us` from the stored summaries of the failing sessions (already logged, never checked, BUG-008). | A gap ≥ 500 ms means Core 1 stalled long enough for an armed AM32 to reset itself. Chase the stall. | Go to step 1 |
+| 1 | **BUG-004 change 1**: `dshot_bidir_tx` drives the last edge high before releasing | Cause = the released last edge. Close with BUG-004. | Keep it anyway (it matches Betaflight); go to step 2 |
+| 2 | **BUG-004 change 2**: receiver `wait(1, pin, 0) [26]` instead of `nop() [26]` | Cause = our receiver triggering on its own frame tail. The ESC-side half still needs step 3 to explain the no-spin. | Go to step 3 |
+| 3 | **Keep arming-phase replies in the log** (BUG-003 step 2 / BUG-008 step 4) | - | The log then shows whether the ESC was replying `0xFFF` before `ARMED` and whether its arming-tune dropout happened. That separates "never armed" from "armed, then lost our frames". |
+| 4 | New scenario: **two unidirectional motors spinning at DSHOT600** | - | If it fails too, the cause is electrical or ESC-side, not bidirectional logic |
+| 5 | **Two bidirectional motors at DSHOT600, only one spinning** (the other held at 0) | - | If it fails, a second released line alone is enough |
+| 6 | **First profile step at throttle 200** instead of 60/100 | Cause = a low-throttle start (AM32 stuck-rotor protection, finding 3b). Adopt ≥200 starts (Betaflight idles at ~158). | - |
+
+Whatever step 1-6 find, also land:
+
+- **BUG-003** (evidence-gated arming): a disarmed ESC under non-zero throttle can no longer pass as
+  `ARMED`.
+- **BUG-008** (harness checks): this failure mode is reported during the run, by name, instead of
+  being found in logs afterwards.
