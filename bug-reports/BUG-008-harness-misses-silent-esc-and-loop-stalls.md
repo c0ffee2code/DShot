@@ -31,6 +31,11 @@ found only by reading logs afterwards.
 1. **Per-motor, CRC-based failsafe.** Replace the non-zero-words test with "each bidirectional
    motor has at least one CRC-valid reply by `REPLY_FAILSAFE_GRACE_MS`". Use the sampled decodes
    the tallies already make. With BUG-003 in place, use its `ready_first_ms` instead.
+   CRC alone is not enough. At some throttles (227 of 2,048 at DSHOT600, e.g. 67, 72, 93, 98),
+   the receiver's capture of our *own* frame passes CRC when the ESC is silent. Count a reply only
+   if it is also not one of those echo words (see `scripts/classify_reply_timeline.py` and
+   BUG-002's classification section). On the device, a per-throttle lookup of the few echo words
+   is cheap.
 2. **`max_loop_gap_ms` in every scenario** (e.g. 50 ms). Make `scenario.py` require it, like the
    other fail-fast fields. Also check the stored `max_loop_gap_us` of the existing BUG-002
    sessions; that data is already on disk.

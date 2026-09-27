@@ -345,3 +345,78 @@ suggested a shared cause. Next per the table: step 3 (keep arming-phase replies 
 small code change to `capture_mailbox.py`/`motor_group.py` before it can be tried; step 4 (two
 unidirectional motors at DSHOT600) needs only a new scenario and no driver change, so it is the
 cheaper next experiment if picking this up again.
+
+### Before the next bench run: classify the stored sessions (2026-09-27)
+
+With B4 ruled out, the question is which AM32 state the ESC is in after `ARMED`. Three paths in
+AM32's source end in the same permanent `0xFFF`, so the CRC counts cannot separate them. What the
+ESC does **between ARMED and the first `0xFFF`** can:
+
+| Path | ESC after ARMED | What our receiver records | AM32 source |
+|------|-----------------|---------------------------|-------------|
+| **A. Not listening at ARMED, never arms** | Silent while it reboots, is still before bidirectional detection, or is in an interrupts-off tune. When it comes up, throttle is already non-zero, so its arming counter keeps resetting. | **echo** (our own frame, see below), then `stop` | arming gate [`main.c#L1360-L1400`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1360-L1400); replies start at the latch [`dshot.c#L86-L95`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/dshot.c#L86-L95) |
+| **B. Armed, start fails, stuck-rotor protection latches** | Replying and driving the motor. After ~100 start timeouts (throttle < 150) it cuts drive and holds until throttle returns to 0. | **garbled** (replies there but corrupted), then clean `stop` | [`main.c#L1144-L1149`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L1144-L1149), [`#L2050-L2068`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L2050-L2068), [`#L2281-L2294`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/main.c#L2281-L2294) |
+| **C. Listening but never armed in the window** | Latched and replying before ARMED, but its >1 s zero-throttle gate had not completed. | `stop` from the first capture on | as A |
+
+`not running` is `com_time = 65535` whenever `!running`
+([`dshot.c#L284-L286`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/dshot.c#L284-L286)).
+That is true disarmed and armed alike, which is why the payload alone cannot say which path the
+ESC took.
+
+**Why "echo" is recognisable.**
+- When the ESC does not reply, `dshot_bidir_rx_frame` waits past the release for the next low. That
+  low is the first bit of our own next frame, and the receiver reconstructs that frame.
+- Those words depend only on the throttle we sent. `scripts/simulate_frame_receiver.run()` gives the
+  whole set for a throttle: 2-15 words at DSHOT600, with receiver phase the only variable, since
+  TX and RX share the Pico's clock.
+- AM32's `not running` reply (`0x52951`) is in none of the 2,048 throttles' sets.
+- 22 of AM32's 2,304 possible replies do appear in some throttle's set. The classifier therefore
+  checks CRC first.
+
+**A hint already in the logs.** The prefixes were mostly CRC failures with a few GCR-invalid
+decodes. At throttle 60 the echo set is 9 CRC-fail + 3 invalid words; at 100 it is 4 + 2. At 144,
+172 and 200 every echo word would be GCR-invalid. This mix fits path A. It is not proof, because a
+corrupted reply (path B) can land anywhere.
+
+**To run on the existing BUG-002 sessions** (frame receiver only, so 2026-09-26 on):
+
+```
+python scripts/classify_reply_timeline.py captures/<session>
+```
+
+Sessions:
+- `2026-09-26_14-28-18`, `2026-09-26_14-29-42`, `2026-09-26_17-01-04`;
+- `2026-09-27_10-56-43`, `2026-09-27_11-01-37`, `2026-09-27_11-23-10`, `2026-09-27_11-33-24`,
+  `2026-09-27_11-34-47`;
+- today's nine BUG-004 runs;
+- one passing `two_channel_*_300` run, as the healthy reference.
+
+Each bidirectional motor gets:
+- a timeline of `spin` / `stop` / `echo` / `garbled` segments;
+- the longest stretch with no capture;
+- one line naming the matching path.
+
+**What each result means for the next step:**
+
+- **Path A (echo, then stop).** The ESC was not listening at ARMED. **BUG-003** (arming gated on
+  each motor's own replies) fixes the symptom. The cause is why the ESC is late or rebooting only
+  with two bidirectional motors at DSHOT600. Step 3 (log the arming-phase captures, classified the
+  same way) shows whether it latched, went silent at ~1.02 s for its arming tune, or went silent for
+  ~2 s and rebooted.
+- **Path B (garbled, then stop).** The ESC armed and failed to start. Run the table's steps 4-6:
+  - two unidirectional motors at DSHOT600 (electrical/noise);
+  - one bidirectional motor spinning, the other held at 0;
+  - a first step at throttle 200 (stuck-rotor protection's timeout drops from 100 to 10 above
+    throttle 150).
+
+  Also listen for the motor twitching during the prefix.
+- **Path C (stop only).** Same fix as A. Step 3 shows how far the ESC's arming got.
+
+**Side finding (feeds BUG-008).** At some throttles our own echo passes CRC by chance:
+- At DSHOT600, 227 of the 2,048 throttles. Up to 122 these are 1, 15, 20, 22, 25, 28, 30, 38, 45,
+  67, 69, 72, 73, 75, 77, 84, 93, 94, 98, 107, 111 and 122.
+- There the echo decodes as a "valid" reply: ~2,200-3,000 eRPM at those low throttles, anywhere
+  from ~2,000 to ~170,000 eRPM higher up.
+
+So a silent ESC can pass a CRC-based "ESC is replying" check at those throttles. BUG-008's
+per-motor failsafe should count *non-echo* CRC-valid replies.
