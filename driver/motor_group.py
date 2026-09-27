@@ -82,15 +82,20 @@ class MotorGroup:
     # Arming gate for bidirectional motors (bug-reports/BUG-003): ARMED also
     # needs every bidirectional ESC to have replied AM32's not-running frame
     # for READY_SPAN_MS, with no gap between replies longer than READY_GAP_MS,
-    # the latest at most READY_FRESH_MS ago. The span outlasts what AM32 does
-    # from its first reply: it arms ~0.97s later (its >1s zero-throttle gate,
-    # counted from detection), plays a ~0.3s arming tune, and, armed but not
-    # taking our frames, resets 0.5s after that - which is what BUG-002 caught
-    # an ESC doing, coming back up after a timer-only ARMED under non-zero
-    # throttle and so never arming. The gap tolerates the arming tune's ~300ms
-    # silence and restarts the count on a reboot's >=680ms (startup tune plus
-    # bidirectional latch). A reply says the ESC is listening, not that it
-    # armed or that the motor will start - that is still not observable here.
+    # the latest at most READY_FRESH_MS ago. What BUG-002 caught was an ESC
+    # that had not yet accepted our frames at all when a timer-only ARMED
+    # fired regardless, then rebooted (a silent stretch of >=680ms - its
+    # ~600ms startup tune plus bidirectional latch - visible as a held-low
+    # line) after ARMED had already sent it non-zero throttle, so it could
+    # never satisfy its own zero-throttle arming gate afterward. The gap
+    # tolerates the arming tune's ~300ms silence but restarts the count on a
+    # reboot's longer one, and the span is sized to comfortably outlast one
+    # full reboot cycle before trusting the streak. A reply says the ESC is
+    # listening, not that it armed or that the motor will start - that is
+    # still not observable here. Bench-verified across 28 runs
+    # (bug-reports/BUG-002-...md's "Verification"): every reset seen followed
+    # this never-accepted-then-reboot shape, not an ESC that had armed and was
+    # later abandoned.
     READY_SPAN_MS = 2000
     READY_GAP_MS = 450
     READY_FRESH_MS = 50
