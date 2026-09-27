@@ -18,6 +18,51 @@ immediately after with no other change, has spun cleanly every time this has bee
 reproduced on demand; only ever seen as a sporadic result within an otherwise-passing regression
 run.
 
+## Proposed fix (2026-09-27)
+
+**What happens.** R3's captures show the failing ESC resetting inside our arming window, 1.85-2.3 s
+after `arm()` (see "Analysis of R3" below). It comes back ~0.7 s later, after `ARMED`, and by then
+we are already sending throttle 100. AM32 arms only after >1 s of zero throttle, so it never arms,
+and it replies "not running" for the rest of the run.
+
+**The fix: evidence-gated arming** (BUG-003, fix plan steps 1-3 and 5).
+- `MotorGroup` stays in `ARMING`, sending zeros, until every bidirectional ESC has replied AM32's
+  "not running" frame (`0x52951`) for 2 s without a gap of 450 ms or more. `arm_duration_ms` stays
+  as a floor.
+- A reboot is silent for ≥ 680 ms, so it restarts the count. The arming tune's ~300 ms gap does
+  not.
+- The cost is one integer compare per capture in `CaptureMailbox.drain()`. `ARMED` comes ~0.1 s
+  later than today in the normal case, and a few seconds later after a reboot.
+
+**Why this should work.**
+1. **A reboot can't slip past it.** Measured from an ESC's first reply, AM32 arms after ~0.97 s
+   (0.969 s and 0.971 s on this bench) and plays a ~0.3 s tune. An armed ESC that isn't taking our
+   frames resets 0.5 s later, ~1.8 s after the first reply. The resets seen here fit that chain. A
+   2 s span therefore outlasts it, and an ESC that is going to reset does so before `ARMED`, not
+   after.
+2. **After a reboot the ESC was healthy in every case recorded.**
+   - The ESC held at zero in the same runs armed 0.97 s after its first post-reboot reply. It then
+     replied without a break for 18 s.
+   - The ESC that got throttle 100 rebooted at the same moment. It kept replying (and so accepting
+     frames) for the rest of the run, all three times.
+   - Held at zero by the gate, it would have armed about a second before throttle arrived.
+   Replaying the gate over the three R3 sessions puts `ARMED` 2.5-3.0 s after the old `ARMED`. In
+   each case that is ~1 s after the ESC, held at zero, would have armed (its first post-reboot
+   reply + 0.97 s).
+3. **It is what Betaflight does.** With bidirectional DShot, Betaflight will not arm until every
+   motor has returned valid telemetry (BUG-003). It also removes the harness-timing dependency: a
+   session that starts while an ESC is mid-reboot now just arms later.
+
+**What it does not do.** It does not explain why the ESC resets on its first boot with two
+bidirectional lines at DSHOT600. That stays open, with requests R7 and R10 below. If the reset turns
+out to repeat on every boot (R8 would show it), the gate keeps the group in `ARMING` instead of
+spinning. That is safe and visible through `arming_status()`, but it is not a fix, and the root
+cause would then have to be found first.
+
+**Interim, no code change:** a 4500 ms arming window, the `..._long_arm` scenario (R8). It covers
+one reboot at the observed timing, but it is open-loop: a second reboot, or an ESC that was mid-tune
+at `arm()` and resets late, can still beat it.
+
 ## Symptom
 
 1. Run a scenario with a bidirectional motor commanded to a real throttle (observed specifically

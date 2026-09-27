@@ -30,7 +30,7 @@ found only by reading logs afterwards.
 
 1. **Per-motor, CRC-based failsafe.** Replace the non-zero-words test with "each bidirectional
    motor has at least one CRC-valid reply by `REPLY_FAILSAFE_GRACE_MS`". Use the sampled decodes
-   the tallies already make. With BUG-003 in place, use its `ready_first_ms` instead.
+   the tallies already make. With BUG-003 in place, use its `ready_last_us` instead.
    CRC alone is not enough. At some throttles (227 of 2,048 at DSHOT600, e.g. 67, 72, 93, 98),
    the receiver's capture of our *own* frame passes CRC when the ESC is silent. Count a reply only
    if it is also not one of those echo words (see `scripts/classify_reply_timeline.py` and
@@ -42,8 +42,12 @@ found only by reading logs afterwards.
 3. **Not-running check.** For each bidirectional motor, fail when its sampled decodes have been
    `not_running` continuously for more than N seconds while its profile throttle is ≥48. Suggested
    N = 3 s, because a start can take a moment. The message should name BUG-002.
-4. **Keep arming-phase captures in the log**, flagged and not handed to the application
-   (BUG-003 step 2). They let the offline analyser show what the ESC did before `ARMED`.
+4. **Keep arming-phase captures in the log.** Done 2026-09-27: `MotorGroup.publish_while_arming`
+   plus the harness's `arming.bin`, shown at negative times by `classify_reply_timeline.py`
+   (BUG-002, R6).
+5. **Flag a reboot after `ARMED`.** Fail when a bidirectional motor's words are all-zero (the
+   line held low, AM32's startup tune) for more than ~300 ms. That is a reset, and one
+   BUG-003's gate cannot catch once `ARMED` has passed.
 
 ## Verification
 
