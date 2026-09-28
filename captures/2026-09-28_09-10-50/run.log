@@ -1,0 +1,32 @@
+=== Scenario Capture ===
+Loaded scenario: duration=3000ms dshot_speed=4800000 bidir_motors=[0, 2] core1_interval_us=None arming_frame_gap_us=0
+Session: /sd/dshot_captures/2026-09-28_09-10-50
+
+Arming for 2000ms...
+Armed after 6500ms.
+
+Running scenario for 3000ms...
+  [    1.0s] records=254 nonzero=254 missed=1866 rate=254.0/s largest_gap=10.2ms
+  [    2.0s] records=510 nonzero=510 missed=3702 rate=254.9/s largest_gap=10.2ms
+  [    3.0s] records=758 nonzero=758 missed=5520 rate=252.6/s largest_gap=16.7ms
+
+Scenario duration complete.
+
+Stopping...
+Motors stopped and disarmed.
+SD card flushed and unmounted.
+
+=== Summary ===
+Session: /sd/dshot_captures/2026-09-28_09-10-50
+Outcome: completed
+Records (captures seen for the first time): 758
+Records with a real (non-all-zero) reply: 758
+Captures published (last sequence per motor): {0: 10689, 2: 10689}
+Captures published but never seen: 5520
+Largest gap between records: 16.7ms
+Oldest capture at the moment it was read: 2.0ms
+Longest gap between update() calls (measured on Core 1): 14.0ms
+Packets sent while arming: 7173 (min 236us, max 13974us, avg 906us)
+Motor 0 decoded on the device (every 20th capture): decoded=37 crc_ok=37 crc_fail=0 invalid=0 median_erpm=21490
+Motor 2 decoded on the device (every 20th capture): decoded=37 crc_ok=37 crc_fail=0 invalid=0 median_erpm=21866
+=== Test Complete ===

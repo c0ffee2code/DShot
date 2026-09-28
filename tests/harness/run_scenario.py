@@ -179,16 +179,26 @@ def check_decode_expect(expect, tallies):
     return failures
 
 
-def measured(update, times):
+def measured(update, times, group, arming_stats):
     """
-    Wrap `update` so Core 1 records the longest gap between two calls into
-    times[1] (times[0] is the last call's time). It costs one extra Python call
-    and a few integer operations per tick, and allocates nothing. Measuring on
-    Core 1 is the point: a garbage collection pauses both cores, so Core 0 only
-    ever sees the loop after it has caught up.
+    Wrap `update` so Core 1 records:
+    - times[1]: the longest gap between any two calls, for the whole run
+      (times[0] is the last call's time).
+    - arming_stats = [count, min_us, max_us, sum_us]: how densely update()
+      actually ran while ARMING - one call sends one frame to every motor, so
+      this is directly how often we sent frames during the window BUG-002's
+      bisection runs care about, not an average inferred from replies (see
+      the doc's "what are the delays between DShot packets" answer - the
+      capture log samples too coarsely for this).
+
+    Both share one ticks_us() call and one gap computation; the arming branch
+    only adds a state check and a few integer operations when it is arming.
+    Allocates nothing. Measuring on Core 1 is the point: a garbage collection
+    pauses both cores, so Core 0 only ever sees the loop after it has caught up.
     """
     ticks_us = utime.ticks_us
     ticks_diff = utime.ticks_diff
+    is_arming = group.is_arming
 
     def wrapper():
         now = ticks_us()
@@ -197,6 +207,13 @@ def measured(update, times):
             gap = ticks_diff(now, last)
             if gap > times[1]:
                 times[1] = gap
+            if is_arming():
+                arming_stats[0] += 1
+                if arming_stats[1] == 0 or gap < arming_stats[1]:
+                    arming_stats[1] = gap
+                if gap > arming_stats[2]:
+                    arming_stats[2] = gap
+                arming_stats[3] += gap
         times[0] = now
         update()
 
@@ -296,6 +313,7 @@ def run_scenario():
     largest_gap_us = 0
     max_age_us = 0
     loop_times = array('I', [0, 0])  # Core 1's last update() time, and the longest gap between calls
+    arming_call_stats = array('I', [0, 0, 0, 0])  # while ARMING: count, min_us, max_us, sum_us
     last_gc_ms = 0
     gc_runs = 0
     gc_max_us = 0
@@ -313,7 +331,7 @@ def run_scenario():
         interval_us = scenario.core1_interval_us
         if interval_us is None:
             interval_us = group.UPDATE_INTERVAL_US
-        runner = Core1Runner(measured(group.update, loop_times), interval_us)
+        runner = Core1Runner(measured(group.update, loop_times, group, arming_call_stats), interval_us)
         runner.start()
 
         arm_group(group, scenario, runner, bidir_indices, sink, last_seq, arm_times)
@@ -433,6 +451,11 @@ def run_scenario():
         else:
             verdict = "pass"
         extra = {"max_loop_gap_us": loop_times[1], "gc_runs": gc_runs, "gc_max_us": gc_max_us}
+        if arming_call_stats[0]:
+            extra["arming_call_count"] = arming_call_stats[0]
+            extra["arming_call_min_us"] = arming_call_stats[1]
+            extra["arming_call_max_us"] = arming_call_stats[2]
+            extra["arming_call_avg_us"] = arming_call_stats[3] // arming_call_stats[0]
         if arm_times[0] is not None:
             # Time 0 for classify_reply_timeline.py --from-arm, on a run that
             # never armed as well: that is the run whose arming log matters most
@@ -461,6 +484,10 @@ def run_scenario():
         print("Largest gap between records: {:.1f}ms".format(largest_gap_us / 1000))
         print("Oldest capture at the moment it was read: {:.1f}ms".format(max_age_us / 1000))
         print("Longest gap between update() calls (measured on Core 1): {:.1f}ms".format(loop_times[1] / 1000))
+        if arming_call_stats[0]:
+            print("Packets sent while arming: {} (min {}us, max {}us, avg {}us)".format(
+                arming_call_stats[0], arming_call_stats[1], arming_call_stats[2],
+                arming_call_stats[3] // arming_call_stats[0]))
         if gc_runs:
             print("Forced garbage collections: {} (longest {:.1f}ms)".format(gc_runs, gc_max_us / 1000))
         for index in tallies:
