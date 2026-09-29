@@ -101,12 +101,27 @@ class MotorGroup:
     READY_GAP_MS = 450
     READY_FRESH_MS = 50
 
+    # Diagnostic (BUG-002): most reboot-length gaps (see READY_GAP_MS) logged
+    # per bidirectional motor in one arming attempt - see reboot_log(). Not a
+    # ring: an entry past this is silently dropped, since no run so far has
+    # needed more than 4.
+    REBOOT_LOG_CAPACITY = 16
+
     # Highest throttle a motor will transmit; set_throttle() clamps to it
     MAX_THROTTLE = DShotPIO.MAX_THROTTLE
 
     # Zero-throttle frames disarm() transmits before cutting the signal. One
     # commands the stop; the rest are margin against a frame lost to noise.
     DISARM_FRAMES = 4
+
+    # Pause between disarm()'s zero-frame rounds, so a bidirectional motor's
+    # own next frame does not start while its ESC is still driving the
+    # previous one's reply - a real bus contention, not just a corrupted
+    # capture (specification/AM32_ARMING_AND_BETAFLIGHT.md, B3: the ESC's
+    # reply drives the line for ~48us at DSHOT600, ~78us at DSHOT300, on top
+    # of the frame itself). disarm() is not hot-path, so one constant that
+    # comfortably covers both speeds costs nothing.
+    DISARM_ROUND_GAP_US = 200
 
     # Motors a group can drive: one ESC's worth
     MIN_MOTORS = 1
@@ -164,6 +179,14 @@ class MotorGroup:
         self.ready_last_ms = [0] * self.motor_count
         self.ready_seen = [False] * self.motor_count
 
+        # Diagnostic (BUG-002): ground-truth log of reboot-length gaps seen by
+        # the arming gate above, per motor - see reboot_log(). Arrays sized
+        # for every motor for simplicity; only bidirectional ones ever get an
+        # entry.
+        self.reboot_log_ms = [array('I', [0] * self.REBOOT_LOG_CAPACITY) for _ in range(self.motor_count)]
+        self.reboot_log_gap_ms = [array('I', [0] * self.REBOOT_LOG_CAPACITY) for _ in range(self.motor_count)]
+        self.reboot_log_count = [0] * self.motor_count
+
         # Shared throttle array - lock-free access (atomic on ARM).
         # Using unsigned 16-bit integers ('H') for DShot throttle values.
         # See ADR-001: the application may write these from a different core
@@ -194,6 +217,17 @@ class MotorGroup:
         # them; an application leaves it at 0.
         self.arming_frame_gap_us = 0
         self.gap_after_indices = self.bidir_indices[:-1]
+
+        # Diagnostic (BUG-002): when set (a bin width in microseconds; 0, the
+        # default, disables it), arm() has every bidirectional motor's
+        # CaptureMailbox classify every capture it drains - not just the one
+        # another core happens to poll - into not_running/zero("low")/other,
+        # bucketed over time (CaptureMailbox.enable_class_bins()). Ground
+        # truth immune to sampling loss; read back via each motor's own
+        # mailbox.class_bins. The bench harness sets it; an application
+        # leaves it at 0.
+        self.arming_class_bin_width_us = 0
+        self.arming_class_bin_count = 300
 
         self.arm_duration_ms = self.DEFAULT_ARM_DURATION_MS
         self.arm_started_ms = 0
@@ -231,8 +265,32 @@ class MotorGroup:
         for i in range(self.motor_count):
             self.throttles[i] = 0
 
+        # Before start(): start() calls each mailbox's reset(), which is what
+        # timestamps class_bin_t0_us - it must already have an array to time,
+        # or the first arm() in a session times nothing (class_bins stays
+        # None through that reset()) and bins its captures from ticks_us's
+        # zero point (boot) instead of from this arm().
+        if self.arming_class_bin_width_us:
+            for motor in self.bidir_motors:
+                motor.mailbox.enable_class_bins(self.arming_class_bin_width_us, self.arming_class_bin_count)
+
         for motor in self.motors:
             motor.start()
+
+        if self.arming_class_bin_width_us:
+            # Overrides the per-motor t0 each mailbox's own reset() (inside
+            # start(), above) just set from its own clock() reading. Left
+            # alone, two bidirectional motors' bins would not even share a
+            # zero point: start() runs one motor at a time, and reset()'s
+            # own zeroing loop (900 array elements) measurably delays the
+            # next motor's start() - see bug-reports/BUG-002-...md's
+            # "instrumentation moved the arming sequence" section. One shared
+            # reading, taken once every motor is up, makes every bidirectional
+            # motor's bin N the same wall-clock window, and matches
+            # arm_started_ms below closely enough for a 100ms-scale bin.
+            sync_us = utime.ticks_us()
+            for motor in self.bidir_motors:
+                motor.mailbox.class_bin_t0_us = sync_us
 
         now = utime.ticks_ms()
         self.arm_duration_ms = duration_ms
@@ -240,6 +298,7 @@ class MotorGroup:
         self.last_update_ms = now
         for i in range(self.motor_count):
             self.ready_seen[i] = False
+            self.reboot_log_count[i] = 0
 
         # Set last: update() must not run before the state machines are active
         self.state = ARMING
@@ -258,7 +317,9 @@ class MotorGroup:
         instead of waiting out the ESC's signal-loss timeout, which is over a
         hundred times longer.
 
-        Blocks for a few hundred microseconds while the zeros shift out.
+        Blocks for a bit over a millisecond: the zero frames themselves, plus
+        DISARM_ROUND_GAP_US between each round so a bidirectional motor's own
+        frames do not run into its ESC's reply (see that constant).
 
         Its own state check keeps a concurrent update() from corrupting the
         group's state, but nothing serialises this method's FIFO/state-machine
@@ -279,12 +340,17 @@ class MotorGroup:
             self.throttles[i] = 0
 
         if was_live:
-            # DISARM_FRAMES fits the TX FIFO, so on an idle queue these do not
-            # block at all, and on a full one they wait a few frame times for
-            # an active state machine to drain - never indefinitely
-            for _ in range(self.DISARM_FRAMES):
+            # One round at a time, paced: sending all DISARM_FRAMES rounds
+            # back to back (as a full TX_FIFO_DEPTH burst) let only the first
+            # round's frame land cleanly on a bidirectional motor - the rest
+            # arrived while its own ESC was still driving that frame's reply
+            # (B3). The gap is skipped after the last round; drain() below
+            # already waits out whatever is still in flight.
+            for round_index in range(self.DISARM_FRAMES):
                 for motor in self.motors:
                     motor.send_throttle_command(0)
+                if round_index < self.DISARM_FRAMES - 1:
+                    utime.sleep_us(self.DISARM_ROUND_GAP_US)
 
             # Cutting the signal before the zeros are on the wire would leave
             # the motors spinning at their last commanded throttle
@@ -342,8 +408,20 @@ class MotorGroup:
             motors = self.motors
             for i in self.bidir_indices:
                 if motors[i].drain_rx(publish):
-                    if not self.ready_seen[i] or utime.ticks_diff(now, self.ready_last_ms[i]) > self.READY_GAP_MS:
+                    if not self.ready_seen[i]:
                         self.ready_first_ms[i] = now
+                    else:
+                        gap = utime.ticks_diff(now, self.ready_last_ms[i])
+                        if gap > self.READY_GAP_MS:
+                            self.ready_first_ms[i] = now
+                            # Diagnostic (BUG-002): ground truth for when a
+                            # reboot-length gap happened and how long it was -
+                            # see reboot_log().
+                            count = self.reboot_log_count[i]
+                            if count < self.REBOOT_LOG_CAPACITY:
+                                self.reboot_log_ms[i][count] = utime.ticks_diff(now, self.arm_started_ms)
+                                self.reboot_log_gap_ms[i][count] = gap
+                                self.reboot_log_count[i] = count + 1
                     self.ready_last_ms[i] = now
                     self.ready_seen[i] = True
 
@@ -410,6 +488,58 @@ class MotorGroup:
             else:
                 status.append(None)
         return status
+
+    def reboot_log(self, motor_index):
+        """
+        Diagnostic (BUG-002): every reset this motor's arming gate or its
+        low-line signature has recorded since arm(), oldest first, as
+        (ms_since_arm, duration_ms, source). Two independent sources, merged:
+
+        - "gap": a reboot-length gap between not_running replies (see
+          READY_GAP_MS) - this is the arming gate's own bookkeeping,
+          recorded live as it happened, and it is what actually restarts
+          the gate's reply-span requirement (see arming_frame_gap_us's
+          neighbour, bidir_ready()). It can only fire once this motor has
+          replied at least once - there is no streak yet to interrupt
+          before that.
+        - "low": a run of zero("low")-classified captures ending - AM32's
+          startup-tune signature (the line held low) observed directly from
+          CaptureMailbox.enable_class_bins(), whether or not this motor has
+          ever replied. This is the only source that can catch a reset
+          before first contact; empty unless arming_class_bin_width_us was
+          set for this arm().
+
+        The two can both appear for one physical reboot, at different times -
+        "low" is timestamped at the held-low run's start (the tune
+        beginning), "gap" at when the reply streak noticed it was missing a
+        reply (the tune's end plus AM32's own bidirectional-latch delay, per
+        bug-reports/BUG-002-...md) - so "gap"'s ms_since_arm is always later
+        than "low"'s for the same event, and "gap"'s duration includes both
+        the tune and that latch. Always empty for a unidirectional motor.
+
+        A third label, "low-open", can appear last: a low streak still
+        running right now, not yet closed by a non-low capture. This is
+        exactly BUG-002's "reboot once, then never resolve" refusal shape -
+        without it, a refusal's reboot_log() would stay empty even though
+        the line has in fact been held low the whole time. Its duration is
+        how long the streak has run as of this call, not a fixed count.
+        """
+        count = self.reboot_log_count[motor_index]
+        ms = self.reboot_log_ms[motor_index]
+        gap = self.reboot_log_gap_ms[motor_index]
+        entries = [(ms[i], gap[i], "gap") for i in range(count)]
+        motor = self.motors[motor_index]
+        if motor.bidirectional:
+            mailbox = motor.mailbox
+            reset_count = mailbox.reset_log_count
+            entries += [(mailbox.reset_log_ms[i], mailbox.reset_log_gap_ms[i], "low")
+                        for i in range(reset_count)]
+            if mailbox.in_low_streak:
+                start_ms = (mailbox.low_streak_start_us - mailbox.class_bin_t0_us) // 1000
+                duration_ms = (mailbox.clock() - mailbox.low_streak_start_us) // 1000
+                entries.append((start_ms, duration_ms, "low-open"))
+        entries.sort()
+        return entries
 
     def is_armed(self):
         """
