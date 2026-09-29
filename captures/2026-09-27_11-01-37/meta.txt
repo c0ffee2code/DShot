@@ -1,0 +1,22 @@
+motor0_decode_crc_fail=19
+motor0_decode_sampled=234
+outcome=completed
+motor2_decode_crc_ok=242
+motor2_captures_published=26042
+motor2_decode_invalid=0
+gc_max_us=6567
+motor2_decode_crc_fail=0
+motor0_decode_crc_ok=213
+largest_gap_us=61082
+max_loop_gap_us=7390
+motor0_decode_invalid=2
+bidir_motor_indices=0,2
+total_records=4840
+verdict=fail: motor 0: crc_valid=91.0% < min_crc_valid_pct=99.0% (19 CRC failures, 2 invalid); motor 0: median eRPM=917 < min_median_erpm=10000; motor 2: median eRPM=917 < min_median_erpm=10000
+rx_clock_hz=12395413
+motor0_captures_published=26043
+motor2_decode_sampled=242
+dshot_speed=4800000
+record_fmt=<I4H4I
+captures_missed=42405
+gc_runs=188

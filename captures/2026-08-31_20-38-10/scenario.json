@@ -1,0 +1,35 @@
+{
+  "_comment": "Staged bring-up: channel 4 is the only bidirectional channel here, isolating whether its AM32 instance actually supports bidir DShot before it's ever combined with the others. Short (1 minute) - this is a smoke test, not a soak. min_record_rate_hz=500: see single_channel_baseline.json's comment - confirmed with clean single-channel runs at 566-588/s, real margin without being toothless. UNRESOLVED as of 2026-08-30: two identical runs of this scenario with the idle motor at pin8 on sm_id=4 (same PIO1 block as the sm6/rx7 bidir pair) both got a reproducible ~322/s record rate (well under min_record_rate_hz) and failed - not a one-off glitch. Moved pin8 to sm_id=1 (PIO0, off the bidir pair's block) as an UNTESTED hypothesis - idle-motor-sharing-the-bidir-block was previously assumed harmless under literal irq(4) (a non-bidir motor never touches the IRQ), but that assumption has not been re-examined for the current rel()-based mechanism, and three PIO programs (dshot, dshot_bidir_tx, dshot_bidir_rx) sharing one block's instruction memory is also an unexplored variable. This edit has NOT been run - do that first, next session, before trusting this file again.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 60000,
+  "arm_duration_ms": 3000,
+  "stop_duration_ms": 300,
+  "status_interval_ms": 15000,
+  "poll_ms": 10,
+  "expect": {
+    "max_dropped": 0,
+    "max_gap_ms": 20,
+    "min_record_rate_hz": 500,
+    "min_crc_valid_pct": {"3": 99.0}
+  },
+  "motors": [
+    {"pin": 6, "sm_id": 0, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 60000}
+    ]},
+    {"pin": 7, "sm_id": 2, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 60000}
+    ]},
+    {"pin": 8, "sm_id": 1, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 60000}
+    ]},
+    {
+      "pin": 9, "sm_id": 6, "bidirectional": true, "rx_sm_id": 7,
+      "profile": [
+        {"type": "ramp", "to": 100, "step": 10, "duration_ms": 2000},
+        {"type": "hold", "throttle": 100, "duration_ms": 3000},
+        {"type": "ramp", "to": 300, "step": 50, "duration_ms": 2000},
+        {"type": "hold", "throttle": 300, "duration_ms": 53000}
+      ]
+    }
+  ]
+}

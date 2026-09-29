@@ -1,0 +1,14 @@
+ch1_frames_to_recovery_max=4
+ch1_restart_required_count=0
+ch1_captures_lost_total=135
+ch1_fifo_occupancy_hist=9928,0,0,0,9922
+ch1_partial_captures=0
+ch1_starvation_cycles=3
+ch1_misaligned_captures=0
+ch1_frames_to_recovery_mean=4.0
+ch1_frames_to_recovery_min=4
+ch1_arm_window_groups=6153
+ch1_frames_queued=20000
+outcome=completed
+ch1_invalid_after_resume_total=0
+ch1_complete_captures=19861

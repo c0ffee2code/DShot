@@ -1,0 +1,98 @@
+{
+  "_comment": "REGRESSION SCENARIO for the two motor-mounted channels (1 and 3), on separate PIO blocks (channel 1 sm0/rx1 on PIO0, channel 3 sm4/rx5 on PIO1): both start at throttle 60, hold 2s, ramp together to 200 over 3s, then diverge for 25s - motor 1 accelerates to 300, motor 3 decelerates to 100. Two bidirectional replies at once show concurrent telemetry does not cross-talk: each motor's eRPM must follow its own command. Channels 2 and 4 idle (no motor mounted). Trimmed to 30s (2026-09-27) to keep the fast-iteration set fast; the earlier 60s version's phases are scaled down proportionally, not truncated. Thresholds sit well below what this bench delivers: about 255 records/s with one bidirectional motor and 225/s with two (Core 0 samples the latest capture, so this is a sampling rate, not the reply rate), a largest gap of 15ms typically and up to 62ms when the SD card flushes, and every sampled decode CRC-valid.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 30000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 15000,
+  "poll_ms": 1,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 150,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "2": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "2": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 60,
+          "duration_ms": 2000
+        },
+        {
+          "type": "ramp",
+          "to": 200,
+          "step": 28,
+          "duration_ms": 3000
+        },
+        {
+          "type": "ramp",
+          "to": 300,
+          "step": 5,
+          "duration_ms": 25000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 8,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 30000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "bidirectional": true,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 60,
+          "duration_ms": 2000
+        },
+        {
+          "type": "ramp",
+          "to": 200,
+          "step": 28,
+          "duration_ms": 3000
+        },
+        {
+          "type": "ramp",
+          "to": 100,
+          "step": 5,
+          "duration_ms": 25000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 9,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 30000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0
+}

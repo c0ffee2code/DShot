@@ -1,0 +1,31 @@
+{
+  "_comment": "Fast (30s) cross-talk check for the W18 IRQ fix: channel 1 and channel 3 - the two channels with motors actually mounted - are wired to SHARE PIO0 here (ch1 sm0/rx1, ch3 sm2/rx3; ch2 and ch4 pushed to sm4/sm6, idle) - exactly the 2-bidir-pairs-per-block configuration that was broken under the old literal irq(4) (both RX state machines waiting on the same block-wide flag). Held at deliberately DIFFERENT throttles so their eRPM streams should read clearly different if uncorrupted; if there's still cross-talk, expect CRC failures or one channel echoing the other's values. Not a stability test - no expect block.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 30000,
+  "arm_duration_ms": 3000,
+  "stop_duration_ms": 300,
+  "status_interval_ms": 10000,
+  "poll_ms": 10,
+  "motors": [
+    {
+      "pin": 6, "sm_id": 0, "bidirectional": true, "rx_sm_id": 1,
+      "profile": [
+        {"type": "ramp", "to": 150, "step": 10, "duration_ms": 3000},
+        {"type": "hold", "throttle": 150, "duration_ms": 27000}
+      ]
+    },
+    {"pin": 7, "sm_id": 4, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 30000}
+    ]},
+    {
+      "pin": 8, "sm_id": 2, "bidirectional": true, "rx_sm_id": 3,
+      "profile": [
+        {"type": "ramp", "to": 300, "step": 10, "duration_ms": 3000},
+        {"type": "hold", "throttle": 300, "duration_ms": 27000}
+      ]
+    },
+    {"pin": 9, "sm_id": 6, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 30000}
+    ]}
+  ]
+}

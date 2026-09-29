@@ -1,0 +1,12 @@
+gc_max_us=0
+outcome=completed
+max_loop_gap_us=7764
+total_records=0
+captures_missed=0
+rx_clock_hz=0
+bidir_motor_indices=
+verdict=pass
+record_fmt=<I4H4I
+gc_runs=0
+dshot_speed=2400000
+largest_gap_us=0

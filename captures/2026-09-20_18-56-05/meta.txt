@@ -1,0 +1,9 @@
+record_fmt=<I4H16I
+outcome=completed
+verdict=pass
+largest_gap_us=0
+rx_clock_hz=0
+captures_missed=0
+bidir_motor_indices=
+total_records=0
+dshot_speed=2400000

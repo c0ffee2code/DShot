@@ -1,0 +1,54 @@
+{
+  "_comment": "REGRESSION SCENARIO: the unidirectional path through MotorGroup. All four channels are plain (non-bidirectional) DShot; channel 1's motor turns at throttle 100 while channels 2-4 idle - the 4-in-1 AM32 ESC only completes its arm handshake with a valid signal on all four. Nothing is read back, so this shows arming, a sustained command stream and disarm work; that the motor really turns is for the person watching (or a bidirectional scenario's eRPM check).",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 20000,
+  "arm_duration_ms": 3000,
+  "status_interval_ms": 5000,
+  "poll_ms": 10,
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 2,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 6,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ]
+    }
+  ]
+}

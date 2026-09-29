@@ -1,0 +1,17 @@
+captures_missed=10255
+verdict=pass
+gc_runs=0
+total_records=2015
+motor0_decode_crc_ok=100
+motor0_decode_sampled=100
+largest_gap_us=14350
+max_loop_gap_us=8266
+motor0_decode_invalid=0
+rx_clock_hz=3375000
+motor0_decode_crc_fail=0
+bidir_motor_indices=0
+dshot_speed=2400000
+outcome=completed
+record_fmt=<I4H16I
+gc_max_us=0
+motor0_captures_published=12270

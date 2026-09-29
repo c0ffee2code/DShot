@@ -1,0 +1,9 @@
+record_fmt=<I4H16I
+dshot_speed=2400000
+rx_clock_hz=4000000
+dropped=0
+largest_gap_us=9781
+bidir_motor_indices=0
+total_records=4969
+outcome=failed
+retro_failed_reason=zero_groups_no_esc_reply_pure_head_ab_test

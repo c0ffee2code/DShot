@@ -1,0 +1,27 @@
+{
+  "_comment": "Fast iteration scenario for debugging the harness itself - NOT the regression reference (that's single_channel_baseline.json, full 186s), and NOT a stability test (no expect block on purpose - we're still verifying basic correctness like word capture/CRC decode, not tuning rate/gap thresholds yet). 30s total: quick to deploy/run/pull while still exercising arm -> ramp -> hold -> stop.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 30000,
+  "arm_duration_ms": 3000,
+  "stop_duration_ms": 300,
+  "status_interval_ms": 10000,
+  "poll_ms": 10,
+  "motors": [
+    {
+      "pin": 6, "sm_id": 0, "bidirectional": true, "rx_sm_id": 1,
+      "profile": [
+        {"type": "ramp", "to": 300, "step": 10, "duration_ms": 3000},
+        {"type": "hold", "throttle": 300, "duration_ms": 27000}
+      ]
+    },
+    {"pin": 7, "sm_id": 2, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 30000}
+    ]},
+    {"pin": 8, "sm_id": 4, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 30000}
+    ]},
+    {"pin": 9, "sm_id": 6, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 30000}
+    ]}
+  ]
+}

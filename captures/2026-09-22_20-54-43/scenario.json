@@ -1,0 +1,39 @@
+{
+  "_comment": "REGRESSION SCENARIO for channels 1+3 - rerun this after any driver/scenario-runner change touching bidirectional DShot. PASSED 2026-08-31 (captures/2026-08-31_20-56-27). Concurrency/stability stress test for the only 2 motor-mounted channels on this ESC instance (channels 1 and 3), using the natural production layout - channel 1 on PIO0 (sm0/rx1), channel 3 on PIO1 (sm4/rx5), separate blocks (not the artificially-shared-PIO0 config from two_channel_bidir_smoke.json's decisive cross-talk test). Both start at throttle 60, hold 5s, ramp together to 200 over 5s, then diverge for the remaining 50s: motor 1 accelerates 200->300, motor 3 decelerates 200->100. Result: 100% CRC-valid on both (motor 0: 30221/30221, motor 2: 30220/30221 - one isolated frame, not a streak), 0 dropped, largest gap 10.6ms, ~504/s sustained. 5s-windowed eRPM trend confirms the divergence is clean and matches commanded direction with no crossover/aliasing between channels: both track together through the shared ramp (~8.3k->~27.2k eRPM), then split monotonically from t=10s (motor 0 climbs 49k->74k, motor 2 falls 48k->24k). Channels 2 and 4 held idle (TX-only, no motor mounted) - channel 4 is separately known-bad and parked, not exercised here. min_record_rate_hz=450 confirmed with real margin (measured ~504/s).",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 60000,
+  "arm_duration_ms": 3000,
+  "stop_duration_ms": 300,
+  "status_interval_ms": 15000,
+  "poll_ms": 10,
+  "expect": {
+    "max_dropped": 0,
+    "max_gap_ms": 20,
+    "min_record_rate_hz": 450,
+    "min_crc_valid_pct": {"0": 99.0, "2": 99.0}
+  },
+  "motors": [
+    {
+      "pin": 6, "sm_id": 0, "bidirectional": true, "rx_sm_id": 1,
+      "profile": [
+        {"type": "hold", "throttle": 60, "duration_ms": 5000},
+        {"type": "ramp", "to": 200, "step": 14, "duration_ms": 5000},
+        {"type": "ramp", "to": 300, "step": 5, "duration_ms": 50000}
+      ]
+    },
+    {"pin": 7, "sm_id": 2, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 60000}
+    ]},
+    {
+      "pin": 8, "sm_id": 4, "bidirectional": true, "rx_sm_id": 5,
+      "profile": [
+        {"type": "hold", "throttle": 60, "duration_ms": 5000},
+        {"type": "ramp", "to": 200, "step": 14, "duration_ms": 5000},
+        {"type": "ramp", "to": 100, "step": 5, "duration_ms": 50000}
+      ]
+    },
+    {"pin": 9, "sm_id": 6, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 60000}
+    ]}
+  ]
+}

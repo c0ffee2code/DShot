@@ -1,0 +1,1 @@
+{"starvation_window_ms": 5, "dshot_speed": 2400000, "starvation_enabled": true, "run_throttle": 60, "starvation_interval_ms": 3000, "channels": [1], "rx_clock_hz": 3375000, "target_frames": 20000}

@@ -1,0 +1,14 @@
+captures_missed=11157
+verdict=pass
+largest_gap_us=13916
+motor0_decode_crc_ok=102
+motor0_decode_sampled=102
+motor0_captures_published=13215
+motor0_decode_invalid=0
+rx_clock_hz=3375000
+motor0_decode_crc_fail=0
+bidir_motor_indices=0
+dshot_speed=2400000
+outcome=completed
+record_fmt=<I4H16I
+total_records=2058

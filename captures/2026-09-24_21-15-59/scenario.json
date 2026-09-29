@@ -1,0 +1,54 @@
+{
+  "_comment": "One-off isolation test: BOTH motor-mounted channels (1 and 3) unidirectional, throttle on both, no bidirectional/telemetry PIO program involved anywhere in the group - checking whether the 'ESC does not return to idle after two motors' finding is specific to bidirectional DShot's dshot_bidir_tx/dshot_bidir_rx programs, or happens even with the plain dshot() program.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 20000,
+  "arm_duration_ms": 3000,
+  "status_interval_ms": 5000,
+  "poll_ms": 10,
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 200,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 2,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 6,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ]
+    }
+  ]
+}

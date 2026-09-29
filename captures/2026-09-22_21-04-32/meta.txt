@@ -1,0 +1,17 @@
+captures_missed=4379
+motor2_decode_sampled=97
+largest_gap_us=23727
+verdict=fail: motor 2: crc_valid=0.0% < min_crc_valid_pct=99.0% (0 CRC failures, 97 invalid); motor 2: median eRPM=0 < min_median_erpm=10000
+motor2_decode_invalid=97
+gc_runs=0
+motor2_decode_crc_fail=0
+max_loop_gap_us=8176
+rx_clock_hz=3375000
+gc_max_us=0
+bidir_motor_indices=2
+total_records=1945
+motor2_decode_crc_ok=0
+outcome=completed
+record_fmt=<I4H16I
+dshot_speed=2400000
+motor2_captures_published=6324

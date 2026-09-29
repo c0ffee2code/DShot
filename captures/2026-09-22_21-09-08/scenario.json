@@ -1,0 +1,67 @@
+{
+  "_comment": "One-off isolation test: channel 3 bidirectional ALONE (channel 1 idle), to tell apart 'channel 3 itself' from 'two bidirectional motors at once' as the trigger for the known stuck-ESC/no-spin finding.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 8000,
+  "arm_duration_ms": 3000,
+  "status_interval_ms": 4000,
+  "poll_ms": 1,
+  "decode_every": 20,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 100,
+    "min_crc_valid_pct": {
+      "2": 99.0
+    },
+    "min_median_erpm": {
+      "2": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 8000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 2,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 8000
+        }
+      ]
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "bidirectional": true,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 8000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 6,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 8000
+        }
+      ]
+    }
+  ]
+}

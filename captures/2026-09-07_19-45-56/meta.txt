@@ -1,0 +1,7 @@
+outcome=completed
+ch1_complete_captures=10000
+ch1_partial_captures=0
+ch1_frames_queued=10000
+ch1_misaligned_captures=0
+ch1_arm_window_groups=6136
+ch1_fifo_occupancy_hist=5001,0,0,0,4999

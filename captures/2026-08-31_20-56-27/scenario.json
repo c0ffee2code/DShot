@@ -1,0 +1,39 @@
+{
+  "_comment": "PENDING first run. Concurrency/stability stress test for the only 2 motor-mounted channels on this ESC instance (channels 1 and 3), using the natural production layout - channel 1 on PIO0 (sm0/rx1), channel 3 on PIO1 (sm4/rx5), separate blocks (not the artificially-shared-PIO0 config from two_channel_bidir_smoke.json's decisive cross-talk test). Both start at throttle 60, hold 5s, ramp together to 200 over 5s, then diverge for the remaining 50s: motor 1 accelerates 200->300, motor 3 decelerates 200->100 - the divergent trend is corroborating evidence on top of CRC-valid% (the primary corruption signal): if there were any cross-talk between the two channels' RX state machines, the eRPM traces would show it as an implausible merge/aliasing between the two diverging curves, not just as CRC failures. Channels 2 and 4 held idle (TX-only, no motor mounted) - channel 4 is separately known-bad and parked, not exercised here. min_record_rate_hz=450: conservative floor below the ~514.6/s observed for 2 bidir channels sharing one PIO block (two_channel_bidir_smoke.json, 15437 records/30s) - this run's channels are on separate blocks so should be at least as good, but unmeasured for this exact layout/duration until this run completes.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 60000,
+  "arm_duration_ms": 3000,
+  "stop_duration_ms": 300,
+  "status_interval_ms": 15000,
+  "poll_ms": 10,
+  "expect": {
+    "max_dropped": 0,
+    "max_gap_ms": 20,
+    "min_record_rate_hz": 450,
+    "min_crc_valid_pct": {"0": 99.0, "2": 99.0}
+  },
+  "motors": [
+    {
+      "pin": 6, "sm_id": 0, "bidirectional": true, "rx_sm_id": 1,
+      "profile": [
+        {"type": "hold", "throttle": 60, "duration_ms": 5000},
+        {"type": "ramp", "to": 200, "step": 14, "duration_ms": 5000},
+        {"type": "ramp", "to": 300, "step": 5, "duration_ms": 50000}
+      ]
+    },
+    {"pin": 7, "sm_id": 2, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 60000}
+    ]},
+    {
+      "pin": 8, "sm_id": 4, "bidirectional": true, "rx_sm_id": 5,
+      "profile": [
+        {"type": "hold", "throttle": 60, "duration_ms": 5000},
+        {"type": "ramp", "to": 200, "step": 14, "duration_ms": 5000},
+        {"type": "ramp", "to": 100, "step": 5, "duration_ms": 50000}
+      ]
+    },
+    {"pin": 9, "sm_id": 6, "profile": [
+      {"type": "hold", "throttle": 0, "duration_ms": 60000}
+    ]}
+  ]
+}

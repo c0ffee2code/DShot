@@ -1,0 +1,76 @@
+{
+  "_comment": "REGRESSION SCENARIO: a long single-channel run with throttle steps, to catch problems that only show over minutes (memory growth, a gap that appears late, telemetry drifting out of sync). Channel 1 bidirectional at 100, 200, then 300; channels 2-4 idle.",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 186000,
+  "arm_duration_ms": 3000,
+  "status_interval_ms": 15000,
+  "poll_ms": 1,
+  "expect": {
+    "max_gap_ms": 200,
+    "min_record_rate_hz": 100,
+    "min_crc_valid_pct": {
+      "0": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 3000
+        },
+        {
+          "type": "hold",
+          "throttle": 200,
+          "duration_ms": 3000
+        },
+        {
+          "type": "hold",
+          "throttle": 300,
+          "duration_ms": 180000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 2,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 186000
+        }
+      ]
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 186000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 6,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 186000
+        }
+      ]
+    }
+  ]
+}

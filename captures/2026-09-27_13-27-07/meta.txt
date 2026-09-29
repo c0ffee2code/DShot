@@ -1,0 +1,22 @@
+motor0_decode_crc_fail=0
+motor0_decode_sampled=245
+outcome=completed
+motor2_decode_crc_ok=239
+motor2_captures_published=25590
+motor2_decode_invalid=0
+gc_max_us=5673
+motor2_decode_crc_fail=1
+motor0_decode_crc_ok=245
+largest_gap_us=16222
+max_loop_gap_us=5810
+motor0_decode_invalid=0
+bidir_motor_indices=0,2
+total_records=4919
+verdict=fail: motor 2: median eRPM=917 < min_median_erpm=10000
+rx_clock_hz=12395413
+motor0_captures_published=25590
+motor2_decode_sampled=240
+dshot_speed=4800000
+record_fmt=<I4H4I
+captures_missed=41342
+gc_runs=188

@@ -1,0 +1,8 @@
+record_fmt=<I4H16I
+dshot_speed=2400000
+rx_clock_hz=3375000
+dropped=0
+largest_gap_us=10748
+bidir_motor_indices=0,2
+total_records=28798
+outcome=completed

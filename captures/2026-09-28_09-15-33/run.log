@@ -1,0 +1,28 @@
+=== Scenario Capture ===
+Loaded scenario: duration=3000ms dshot_speed=4800000 bidir_motors=[0, 2] core1_interval_us=None arming_frame_gap_us=0
+Session: /sd/dshot_captures/2026-09-28_09-15-33
+
+Arming for 2000ms...
+Stopping...
+Motors stopped and disarmed.
+SD card flushed and unmounted.
+
+=== Summary ===
+Session: /sd/dshot_captures/2026-09-28_09-15-33
+Outcome: failed
+Records (captures seen for the first time): 0
+Records with a real (non-all-zero) reply: 0
+Captures published (last sequence per motor): {0: 19510, 2: 19511}
+Captures published but never seen: 0
+Largest gap between records: 0.0ms
+Oldest capture at the moment it was read: 0.0ms
+Longest gap between update() calls (measured on Core 1): 14.0ms
+Packets sent while arming: 19516 (min 240us, max 14024us, avg 922us)
+Motor 0 decoded on the device (every 20th capture): decoded=0 crc_ok=0 crc_fail=0 invalid=0 median_erpm=0
+Motor 2 decoded on the device (every 20th capture): decoded=0 crc_ok=0 crc_fail=0 invalid=0 median_erpm=0
+=== Test FAILED ===
+Traceback (most recent call last):
+  File "<stdin>", line 504, in <module>
+  File "<stdin>", line 337, in run_scenario
+  File "<stdin>", line 256, in arm_group
+RuntimeError: arming did not complete within 18000ms; per motor (replying_for_ms, last_reply_ms_ago), None = no reply: [None, None, (17919, 1), None]

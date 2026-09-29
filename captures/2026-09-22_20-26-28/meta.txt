@@ -1,0 +1,5 @@
+rx_clock_hz=6750000
+record_fmt=<I4H16I
+bidir_motor_indices=0,2
+outcome=running
+dshot_speed=4800000
