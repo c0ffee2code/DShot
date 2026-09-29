@@ -9,25 +9,11 @@ Run from project root:
 
 Pico must be connected on COM10.
 
-`mpremote run` does NOT reset the board - it execs the script in the same
-live MicroPython VM the previous invocation left behind. Confirmed on
-hardware 2026-09-12: a bidirectional test run immediately following another
-one (same or different channel, same or different exit path - clean
-completion or an uncaught exception, it didn't matter) reliably corrupted
-that next run's RX capture - the ESC still armed and TX still went out, but
-every captured word came back zero, exactly mimicking a dead ESC. A hard
-reset before the run made it succeed every time; skipping the reset and
-simply re-running failed every time. This is why deploy() below resets the
-board after every upload rather than relying on the test script's own
-cleanup - only an actual hardware reset was found to fix it. What carried
-over was not root-caused. Checked on 2026-09-21 with no ESC attached: state
-machines left armed and a Core 1 thread left running are both gone by the
-next `mpremote run`, so neither is it; pad configuration (a pull-up set by the
-previous run) does survive a soft reset, and the ESC is not reset by either. This also means every hardware capture
-session from before this fix that immediately followed another `mpremote
-run` invocation (not a fresh reset) is suspect - see decision/
-ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section for which
-sessions that implicates.
+The reset is required, not just tidy: `mpremote run` execs a script in the
+same live MicroPython VM the previous invocation left behind, not a fresh
+one, and skipping the reset reliably corrupts the next run's RX capture -
+every captured word comes back zero, mimicking a dead ESC. A hard reset
+before the run is the only fix found for it.
 """
 
 import subprocess
@@ -103,11 +89,8 @@ def deploy(scenario_path=None):
     if failed:
         return False
 
-    # See this module's docstring: without this, a run immediately following
-    # another mpremote run invocation reliably corrupts RX capture on
-    # whichever bidirectional channel runs next - confirmed on hardware
-    # 2026-09-12. A hard reset first, every time, is the only fix found so
-    # far; it costs about a second.
+    # See this module's docstring: skipping this corrupts the next run's RX
+    # capture. Costs about a second.
     print(f"\nResetting {COM_PORT}...")
     subprocess.run(
         [PYTHON, "-m", "mpremote", "connect", COM_PORT, "reset"],
@@ -115,8 +98,8 @@ def deploy(scenario_path=None):
     )
     # The board reboots and the USB CDC serial port briefly disappears and
     # re-enumerates - connecting too soon fails with "failed to access
-    # COM10 (it may be in use by another program)" (confirmed on hardware
-    # 2026-09-12). This is comfortably longer than the re-enumeration takes.
+    # COM10 (it may be in use by another program)". This is comfortably
+    # longer than the re-enumeration takes.
     time.sleep(3)
     return True
 
