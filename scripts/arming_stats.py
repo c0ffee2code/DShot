@@ -53,7 +53,12 @@ def config_label(session_dir, meta):
     label += ", frame gap %d us" % scenario.get("arming_frame_gap_us", 0)
     if scenario.get("core1_interval_us") is not None:
         label += ", core1_interval_us %d" % scenario["core1_interval_us"]
-    label += ", class bins %d us" % scenario.get("arming_class_bin_width_us", 100000)
+    bins = scenario.get("arming_class_bin_width_us")
+    if bins is None:
+        # Older scenario files have no key; the bins ran only if meta.txt
+        # holds their totals (2026-09-28 evening on, where they were default-on)
+        bins = 100000 if any(key.endswith("_class_totals") for key in meta) else 0
+    label += ", class bins %d us" % bins
     return label
 
 
@@ -110,6 +115,9 @@ def session_result(session_dir):
         "name": session_dir.name,
         "config": config_label(session_dir, meta),
         "armed_ms": armed_ms,
+        # Mean time between update() calls while arming, i.e. between one
+        # motor's packets (2026-09-28 on; earlier sessions don't record it)
+        "tick_us": int(meta["arming_call_avg_us"]) if "arming_call_avg_us" in meta else None,
         "refused": "armed_ticks_us" not in meta,
         "motors": motors,
         "unpowered": unpowered,
@@ -169,6 +177,10 @@ def main():
             line += ", ARMED after arm(): median %.2f s (%.2f-%.2f)" % (
                 armed_times[len(armed_times) // 2], armed_times[0], armed_times[-1])
         print(line)
+        ticks = sorted(r["tick_us"] for r in results if r["tick_us"] is not None)
+        if ticks:
+            print("  packet spacing while arming: median %d us (%d-%d)" % (
+                ticks[len(ticks) // 2], ticks[0], ticks[-1]))
         for kind in KINDS:
             outcomes = [p[1] for r in results for periods in r["motors"].values()
                         for p in periods if p[0] == kind]
