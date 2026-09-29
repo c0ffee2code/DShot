@@ -20,8 +20,8 @@ log ends inside counts as undecided. Periods are counted by how they started:
   after reset    the ESC reset while arming and booted into our frames again
 
 Sessions are grouped by configuration (DShot speed, the bidirectional motors'
-pins and state machines, arming_frame_gap_us, core1_interval_us), read from each
-session's own scenario.json. A session where a bidirectional ESC never replied
+pins and state machines, arming_frame_gap_us, core1_interval_us,
+arming_class_bin_width_us), read from each session's own scenario.json. A session where a bidirectional ESC never replied
 and never held the line low is reported and left out: its ESC was not powered.
 """
 
@@ -53,6 +53,7 @@ def config_label(session_dir, meta):
     label += ", frame gap %d us" % scenario.get("arming_frame_gap_us", 0)
     if scenario.get("core1_interval_us") is not None:
         label += ", core1_interval_us %d" % scenario["core1_interval_us"]
+    label += ", class bins %d us" % scenario.get("arming_class_bin_width_us", 100000)
     return label
 
 
