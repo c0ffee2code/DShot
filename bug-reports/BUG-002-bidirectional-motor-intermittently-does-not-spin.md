@@ -5,7 +5,9 @@ ESC keeps replying with valid, CRC-good telemetry - has not recurred once across
 That's because arming no longer trusts a timer alone; it waits for evidence that the ESC is
 actually listening (BUG-003). What's still open is *why* the ESC so often rejects our frames when
 our signal starts - that root cause is unconfirmed, and a motor stuck in that state for too long
-still won't fly this run, just loudly instead of silently.
+still won't fly this run, just loudly instead of silently. **Current lead:** first-contact acceptance
+follows the spacing between our packets while arming (23% below 950 us, 94% at 977-1095 us) - see
+"Lead: packet spacing while arming", and its one confirming test, which comes before anything else.
 
 **Refusals (arming timing out rather than a motor failing to spin), across all 132 runs to date:**
 6 (4.5%), all clustered in two batches - 3 of 38 on 2026-09-27 and 3 of 6 on one 2026-09-28 morning
@@ -66,7 +68,8 @@ design) is 18s, sized off the ~2.46s reboot-cycle period to give margin for abou
   not been observed to reset again. The whole reset problem, on the data gathered so far, is
   first-contact rejection followed by AM32's own arm-then-0.5s-timeout chain - not an ESC dropping
   out after it was already accepted.
-- **First-contact acceptance rate drifts over time, cause unconfirmed.**
+- **First-contact acceptance rate drifts over time.** The drift tracks packet spacing while
+  arming - see "Lead: packet spacing while arming" below.
 
   | How the ESC's listening period started | Accepted, 2026-09-27 17:57-18:34 | Accepted, 18:49-20:19 |
   |---|---|---|
@@ -100,6 +103,79 @@ design) is 18s, sized off the ~2.46s reboot-cycle period to give margin for abou
   failure. A fixed-length arming window fixing this at any length - 2000ms vs 3000ms produced
   identical results, because the reset lands ~1.9s in and recovery takes ~2.5s more.
 
+## Lead: packet spacing while arming (2026-09-29, cloud analysis)
+
+**What the data shows.** First-contact acceptance follows the time between one motor's packets
+while arming. That is `meta.txt`'s `arming_call_avg_us` from 2026-09-28 on; for 09-27 sessions,
+which predate it, it is estimated from capture counts over the arming time. All 149 two-motor
+sessions with an arming log, `18-34-47` and the unpowered `18-48-15` left out:
+
+| Packet spacing while arming | Runs | Refused | First contact accepted | After a reset accepted |
+|---|---|---|---|---|
+| 760-946 us (09-27, 09-28 morning; older code) | 42 | 6 | 15 of 65 (23%) | 49 of 85 (58%) |
+| 977-1095 us (09-28 evening on) | 88 | 0 | 157 of 167 (94%) | 15 of 19 (79%) |
+| 1101-1185 us (mostly 09-29's padded runs, `core1_interval_us` 130) | 19 | 0 | 28 of 38 (74%) | 10 of 17 (59%) |
+
+- **All 6 refusals came below 950 us,** and there have been none in the 107 runs since. The ESC
+  was also mid-startup-tune at `arm()` in 19 of 84 motor-runs below 950 us, but only 9 of 214
+  above.
+- **Where the spacing comes from.** Nothing paces the command loop: `UPDATE_INTERVAL_US = 0`, and
+  `core1_runner.py` only sleeps `interval_us` after each call. So the spacing is however long one
+  `update()` pass takes. It grew in two steps:
+  - from ~796 us on 09-27 to ~930 us on the 09-28 morning, when `243c585` added per-tick timing
+    stats to the harness's `measured()` wrapper;
+  - to ~980-1050 us from the 09-28 evening on, with `f131596`'s class-bin code in
+    `CaptureMailbox.drain()` and `update()`. That code costs time even with the bins off.
+
+  `driver/dshot_pio.py` did not change. Its last change, BUG-004's, landed on 09-27 at 13:32,
+  before every batch here.
+- **It is the spacing, not the recording.** With the class bins off, the same code accepted 25 of
+  30 first contacts (83%) at ~985 us. With them on it was 94% at ~1046 us.
+- **It is not the time between runs.** An earlier cloud reading said it was, and is retracted: with
+  the newer code, runs started more than 20 s apart accepted 22 of 23 first contacts.
+
+**Why this isn't proven:**
+- **Spacing and code version change together.** Every run below 950 us used the older code, and
+  every run above it the newer. The only same-code change of spacing, padding to ~1127 us, did not
+  help further (74-78%). That fits a threshold somewhere between ~930 and ~980 us better than
+  "longer is better".
+- **The effect is concentrated on first contact.** First contact went from 23% to 90%; acceptance
+  after a reset only from 58% to 69%, on 36 periods, which is not significant.
+- **AM32's source shows no dependence on the gap between frames.** Neither in detecting DShot
+  (`checkDshot()` looks only at pulse widths inside one 32-edge capture,
+  [`signal.c#L201-L227`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/signal.c#L201-L227))
+  nor in the frame-length window it learns
+  ([`signal.c#L166-L174`](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Src/signal.c#L166-L174)).
+  Betaflight also drives AM32's bidirectional DSHOT600 much faster than once a millisecond. If
+  spacing is causal, the mechanism is not simply "AM32 needs slower frames".
+
+**The test: the older code at its own spacing against the same code padded, nothing else
+different.** `243c585` is the 09-28 morning code (~930 us). It records `arming_call_avg_us` and
+ignores the `arming_class_bin_width_us` key. It predates the `disarm()` pacing, equally in both
+arms. The padded scenario adds 130 us, to ~1060 us.
+
+```
+git checkout 243c585 -- driver tests/harness   # 09-28 morning code; today's scripts stay
+python scripts/run_scenarios.py --scenario tests/harness/scenarios/two_channel_arming_check_600_bins_off.json --scenario tests/harness/scenarios/two_channel_arming_check_600_bins_off_padded.json --rounds 10 --pull
+git checkout HEAD -- driver tests/harness       # back to the current code
+git status                                      # must show driver/ and tests/harness/ clean
+python scripts/arming_stats.py --since <first session of this batch>
+```
+
+`arming_stats.py` prints each arm as its own group, with its packet spacing and first-contact
+rate. Commit the sessions and paste that output here.
+
+**Reading the result:**
+- **Unpadded ~25%, padded ~90%.** Spacing is the cause. The fix is to run `update()` at a fixed
+  period of about 1 ms or more (the application's loop, or `Core1Runner`'s interval), with a short
+  scan (e.g. 900, 950, 1000 us) to find the threshold. Arming then no longer depends on how much
+  diagnostic code happens to sit in the loop.
+- **Both ~25%.** Spacing is not the cause. It is elsewhere in `f131596`: the class-bin code
+  paths, `reboot_log`, or the `disarm()` pacing (though the 09-28 evening batch, before the
+  pacing, already reached 94-98%). Apply those pieces to `243c585` one at a time.
+- **Both ~90%.** The old code works now too, so something outside the code changed around 09-28
+  midday. Re-run the current code's bins-off baseline alongside to confirm.
+
 ## Open questions
 
 1. **Why does an ESC reject our frames on first contact, and why does it need two DSHOT600
@@ -131,8 +207,8 @@ design) is 18s, sized off the ~2.46s reboot-cycle period to give margin for abou
    today the line between runs is driven low by `stop()`, then held by the RP2350's default
    pull-down; a pull-up before `arm()` would likely park a resetting ESC in its bootloader instead.
 3. **What changed at 18:48 on 2026-09-27**, and whatever is behind 2026-09-29's much higher
-   first-contact acceptance (see below) - not pursued as its own investigation, but a live confound
-   for reading any A/B result against the old baseline.
+   first-contact acceptance. The second is most likely packet spacing (see "Lead: packet spacing
+   while arming"); the first is a smaller shift at unchanged spacing and stays unexplained.
 4. **Pre-arm instrumentation, not yet built.** Nothing currently records anything between the
    Pico's reset and `arm()`, which is exactly the window open question 1's edge would form in.
    Candidates: log `ticks_us` at each pin-state transition from construction through
@@ -141,6 +217,10 @@ design) is 18s, sized off the ~2.46s reboot-cycle period to give margin for abou
    "the usual spacing between runs").
 
 ## A one-time startup-sequence delay from the class-bin diagnostic (2026-09-29, unconfirmed candidate)
+
+**Superseded as the leading explanation** by "Lead: packet spacing while arming": runs with the
+class bins off, which don't have this delay (3.35 ms, as on 2026-09-27), still reached 83% first
+contact. Its "Next test" below ranks after the packet-spacing test.
 
 Adding ground-truth capture classification (`CaptureMailbox.enable_class_bins()`, below) measurably
 changed the arming sequence's own timing. Investigated directly rather than assumed, since a
@@ -224,6 +304,9 @@ pair at DSHOT600. **Configurations, still unrun as an interleaved bisection:**
 | D | `two_channel_arming_check_600_spaced` | motor 2's frame goes out 300us after motor 0's while arming (`arming_frame_gap_us`) |
 | E | `single_channel_bidirectional_600` | control: one bidirectional pair only |
 
+Run the packet-spacing test ("Lead: packet spacing while arming") first: if spacing is confirmed,
+re-plan this bisection around it.
+
 Procedure: 10+ rounds of A,B,C,D,E interleaved (not blocked - first-contact acceptance drifts), via
 `scripts/run_test.py --scenario ...`, read with `scripts/arming_stats.py --since <session>`. **Must
 be re-baselined first** - the 21%-acceptance baseline this was sized against is stale (see above).
@@ -233,6 +316,12 @@ PIO setup matters. Nothing moves -> bisect the receiver itself, then scope both 
 
 ## Instrumentation available
 
+- **`scripts/arming_stats.py`**: per configuration, runs armed and refused, median time to
+  `ARMED`, median packet spacing while arming (`arming_call_avg_us`), and how often an ESC accepted
+  our frames by how its listening period started. A session whose `scenario.json` predates the
+  `arming_class_bin_width_us` key counts as bins-on only if its `meta.txt` holds class-bin totals;
+  before 2026-09-29 it counted every such session as bins-on, lumping 09-28 morning's bins-free
+  runs in with the evening's.
 - **`scripts/classify_reply_timeline.py --from-arm`**: classifies every capture.bin/arming.bin
   record as spin/stop/echo/low/garbled from the sampled capture log. Works on a run that never
   armed. Sampled at whatever rate the application happened to poll - not ground truth.
