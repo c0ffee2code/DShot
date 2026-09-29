@@ -41,7 +41,7 @@ class MotorSpec:
 class Scenario:
     def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
                  status_interval_ms, poll_ms, decode_every, gc_every_ms, expect, motors,
-                 core1_interval_us=None, arming_frame_gap_us=0):
+                 core1_interval_us=None, arming_frame_gap_us=0, arming_class_bin_width_us=100000):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
@@ -63,6 +63,15 @@ class Scenario:
         # the bidirectional motors' frames while arming, to test whether their
         # arriving close together decides whether an ESC accepts them.
         self.arming_frame_gap_us = arming_frame_gap_us
+        # Sets MotorGroup.arming_class_bin_width_us for this run (0 disables
+        # the ground-truth classification bins entirely). Defaults on
+        # (100000, 100ms bins) since that has been every session's
+        # configuration since it was added - but it costs real per-tick time
+        # inside CaptureMailbox.drain(), which is itself now a live confound
+        # for BUG-002's refusal-rate numbers (see the bug report's
+        # "A confound" section), so a scenario needs to be able to turn it
+        # off to separate that cost from tick period.
+        self.arming_class_bin_width_us = arming_class_bin_width_us
 
     @property
     def bidir_indices(self):
@@ -224,6 +233,11 @@ def build_scenario(data):
     if not isinstance(arming_frame_gap_us, int) or arming_frame_gap_us < 0:
         raise ValueError("arming_frame_gap_us must be a whole number >= 0, got " + str(arming_frame_gap_us))
 
+    arming_class_bin_width_us = data.get("arming_class_bin_width_us", 100000)
+    if not isinstance(arming_class_bin_width_us, int) or arming_class_bin_width_us < 0:
+        raise ValueError("arming_class_bin_width_us must be a whole number >= 0, got " +
+                          str(arming_class_bin_width_us))
+
     expect = _require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     for name in ("min_crc_valid_pct", "min_median_erpm"):
@@ -246,4 +260,5 @@ def build_scenario(data):
         motors=motors,
         core1_interval_us=core1_interval_us,
         arming_frame_gap_us=arming_frame_gap_us,
+        arming_class_bin_width_us=arming_class_bin_width_us,
     )

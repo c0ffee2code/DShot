@@ -129,6 +129,17 @@ class ScenarioValidationTest(unittest.TestCase):
     def test_negative_arming_frame_gap(self):
         self.rejected(lambda d: d.update(arming_frame_gap_us=-1), "arming_frame_gap_us")
 
+    def test_arming_class_bin_width_defaults_on(self):
+        self.assertEqual(build_scenario(valid_scenario()).arming_class_bin_width_us, 100000)
+
+    def test_arming_class_bin_width_is_read(self):
+        data = valid_scenario()
+        data["arming_class_bin_width_us"] = 0
+        self.assertEqual(build_scenario(data).arming_class_bin_width_us, 0)
+
+    def test_negative_arming_class_bin_width(self):
+        self.rejected(lambda d: d.update(arming_class_bin_width_us=-1), "arming_class_bin_width_us")
+
     def test_a_unidirectional_motor_cannot_share_a_bidirectional_motors_pio_block(self):
         self.rejected(lambda d: d["motors"][1].update(sm_id=2), "shares PIO block")
 

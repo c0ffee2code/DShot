@@ -328,6 +328,13 @@ def run_scenario():
     try:
         group = MotorGroup([build_motor(spec, scenario.dshot_speed) for spec in scenario.motors])
         group.arming_frame_gap_us = scenario.arming_frame_gap_us
+        if bidir_indices:
+            # BUG-002: ground-truth classification bins, immune to how often
+            # this loop happens to poll latest_capture() - see
+            # CaptureMailbox.enable_class_bins(). Scenario-controlled (not
+            # just on/off) since the diagnostic's own per-tick cost is itself
+            # under investigation as a confound - see the bug report.
+            group.arming_class_bin_width_us = scenario.arming_class_bin_width_us
         interval_us = scenario.core1_interval_us
         if interval_us is None:
             interval_us = group.UPDATE_INTERVAL_US
@@ -456,6 +463,28 @@ def run_scenario():
             extra["arming_call_min_us"] = arming_call_stats[1]
             extra["arming_call_max_us"] = arming_call_stats[2]
             extra["arming_call_avg_us"] = arming_call_stats[3] // arming_call_stats[0]
+        if group is not None:
+            for index in bidir_indices:
+                log = group.reboot_log(index)
+                if log:
+                    extra["motor" + str(index) + "_reboot_log"] = ";".join(
+                        "{}:{}:{}".format(ms, gap, source) for ms, gap, source in log)
+                mailbox = group.motors[index].mailbox
+                if mailbox.class_bins is not None:
+                    totals = [0, 0, 0]
+                    for b in range(mailbox.class_bin_count):
+                        totals[0] += mailbox.class_bins[b * 3]
+                        totals[1] += mailbox.class_bins[b * 3 + 1]
+                        totals[2] += mailbox.class_bins[b * 3 + 2]
+                    extra["motor" + str(index) + "_class_totals"] = "{}/{}/{}".format(*totals)
+                    width_ms = mailbox.class_bin_width_us // 1000
+                    entries = []
+                    for b in range(mailbox.class_bin_count):
+                        nr, zero, other = (mailbox.class_bins[b * 3], mailbox.class_bins[b * 3 + 1],
+                                            mailbox.class_bins[b * 3 + 2])
+                        if nr or zero or other:
+                            entries.append("{}:{}/{}/{}".format(b * width_ms, nr, zero, other))
+                    extra["motor" + str(index) + "_class_bins_ms"] = ",".join(entries)
         if arm_times[0] is not None:
             # Time 0 for classify_reply_timeline.py --from-arm, on a run that
             # never armed as well: that is the run whose arming log matters most
@@ -488,6 +517,17 @@ def run_scenario():
             print("Packets sent while arming: {} (min {}us, max {}us, avg {}us)".format(
                 arming_call_stats[0], arming_call_stats[1], arming_call_stats[2],
                 arming_call_stats[3] // arming_call_stats[0]))
+        if group is not None:
+            for index in bidir_indices:
+                log = group.reboot_log(index)
+                if log:
+                    print("Motor {} reboot log (ms since arm(), duration ms, source): {}".format(index, log))
+                mailbox = group.motors[index].mailbox
+                if mailbox.class_bins is not None:
+                    total_key = "motor" + str(index) + "_class_totals"
+                    if total_key in extra:
+                        print("Motor {} ground-truth captures while arming (not_running/low/other): {}".format(
+                            index, extra[total_key]))
         if gc_runs:
             print("Forced garbage collections: {} (longest {:.1f}ms)".format(gc_runs, gc_max_us / 1000))
         for index in tallies:
