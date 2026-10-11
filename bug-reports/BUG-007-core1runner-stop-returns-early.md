@@ -10,7 +10,7 @@ avoid by stopping the loop first.
 ## Summary
 
 `stop()` clears `running`, then polls `stopped` for `(interval_us + STOP_GRACE_US) // POLL_US`
-iterations (`core1_runner.py:90-93`). That is **4 ms** at the library's `UPDATE_INTERVAL_US = 0`.
+iterations (`Core1Runner.stop()`'s poll loop). That is **4 ms** at the library's `UPDATE_INTERVAL_US = 0`.
 It then **returns silently whether or not the loop has exited.** ADR-002 measured garbage-collection
 stalls of the command loop of up to 14 ms, longer than that grace.
 

@@ -37,8 +37,22 @@ constant to one specific measurement of `update()`'s own cost.
 is ever handed out before ARMED." The chain, by confidence:
 
 1. *(code)* That check ran on Core 0, concurrently with Core 1's `update()` loop.
-2. *(code)* MicroPython's RP2 port shares one interpreter lock across both cores, so Core 0 Python
-   execution raises Core 1's own `update()` cost, even on unrelated work.
+2. *(code, corrected 2026-10-11)* Not an interpreter lock - MicroPython's RP2 port has none
+   (`MICROPY_PY_THREAD_GIL=0`, confirmed at the bench's own v1.28.0 and at `master`); the two
+   cores genuinely run Python bytecode in parallel (see ADR-005). Exactly how Core 0's extra
+   per-tick polling raised Core 1's own `update()` cost was not identified - candidates, not
+   confirmed, and not mutually exclusive:
+   - Contention on MicroPython's cross-core GC/allocation mutex (`py/gc.c`'s `gc_mutex`).
+     `raw_telemetry()` returns a fresh tuple on every poll, so this mutex is plausible even
+     though `update()`'s own hot path was separately tuned to near-zero allocation.
+   - A full garbage-collection pause: ADR-002 measured that a collection triggered on either
+     core pauses both, for up to several milliseconds. This would need to fire often enough,
+     and for long enough each time, to shift a ~530us median by the observed 30-85us - not
+     shown either way.
+   - RP2's shared-bus access contention between the two cores.
+
+   Steps 3 and 6 below - the measured cost and the causal isolation test - don't depend on which
+   mechanism it is.
 3. *(measured)* `update()`'s cost: ~530us baseline vs. ~560-615us with the check active (9 runs).
 4. *(measured, correlational)* Cost increase correlated with worse arming outcomes (r≈0.67).
 5. *(inferred, not independently verified at the firmware level)* that cost landing inside AM32's
@@ -84,9 +98,15 @@ arming reliability specifically.
 
 The `arm_group()` check predates the whole investigation - present in every batch this file ever
 reported, on *both* sides of every comparison made (pad vs. deadline, threshold scans, the burst-bug
-retest). Absolute reliability figures from before 2026-10-10 should be read as potentially
-harness-inflated; relative rankings between mechanisms may still hold, but weren't as clean as they
-looked at the time. None of that historical work was re-run. The full day-by-day log, including
+retest). The cutoff is functional, not a timestamp: any run made while the check was still
+present in the code actually on the bench. Per this project's own rule that commit timestamps lag
+bench-verified code, that is *not* simply "before `1d23629`'s commit time" - that same commit
+includes its own post-fix confirmation sessions, which necessarily predate it, since the fix was
+bench-tested first. Absolute reliability figures from before the check was
+actually removed should be read as potentially harness-inflated - including this file's own
+"periodic status print" clean-arming-rate figure above, from a batch committed 08:59 that same
+day, well before the fix; relative rankings between mechanisms may still hold, but weren't as
+clean as they looked at the time. None of that historical work was re-run. The full day-by-day log, including
 everything pruned from this distillation, was deliberately not kept - by explicit user decision, in
 preparation for merging this branch (whose history is squashed at merge anyway). This summary is
 the permanent record.

@@ -1966,7 +1966,8 @@ plus a 600ms startup tune after a cold boot - about 2s worst case, well above th
 500/1000ms non-arming result above is now explained, not just observed: those windows were simply
 shorter than AM32's own gate. Offline re-analysis of BUG-002's stored captures the same day found a
 2.0-2.5s CRC-failing prefix at the start of every affected motor's log, in the same range as this
-gate - see that bug report's "Offline re-analysis" section; not confirmed as the same mechanism.
+gate - not confirmed as the same mechanism, and not retained in BUG-002.md's later distillation
+(this paragraph is now the only record of that specific finding).
 
 **W19 — Run-length capture in the PIO receiver (idea)** · `driver/dshot_pio.py` (`dshot_bidir_rx`), `driver/gcr_decode.py`, `driver/dshot_profiles.py`, `decision/ADR-002-bidirectional-dshot.md`
 

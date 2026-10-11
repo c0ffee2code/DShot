@@ -11,7 +11,7 @@ Consequences include ESC EEPROM writes.
 
 In DShot, values 1-47 are commands, not throttle. The library lets them through:
 
-- `MotorGroup.clamp_throttle()` only limits to 0..2047 (`motor_group.py:393`).
+- `MotorGroup.clamp_throttle()` only limits to 0..2047.
 - `throttle_profile.py` accepts hold values and ramp targets in 0..2047 (`:37`, `:48`), and
   ramps step through every value in between.
 

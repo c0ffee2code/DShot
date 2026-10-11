@@ -5,8 +5,9 @@ bisection runs are judged by these numbers.
 
 Reads arming.bin, which the harness stopped writing 2026-10-06 (BUG-002: real
 per-tick overhead on the exact loop being measured - see BUG-002.md's
-"measure_arming" findings). Still works on any already-archived session from
-before that date; a session captured after it has no arming.bin to read.
+"Telemetry overhead and the timed window" section). Still works on any
+already-archived session from before that date; a session captured after it
+has no arming.bin to read.
 
 Run from the project root:
   python scripts/arming_stats.py captures/2026-09-28_*          # these sessions
@@ -17,7 +18,7 @@ A listening period starts when an ESC can first hear us: at arm() if it was
 already running, or where a startup tune (the line held low for ~600 ms) ends.
 It ends at the ESC's first reply - accepted, 60-100 ms in, its bidirectional
 latch - or at its next reset - rejected, ~1.86 s in, after it armed on frames it
-never validated and timed out (BUG-002's "What actually happens"). A period the
+never validated and timed out. A period the
 log ends inside counts as undecided. Periods are counted by how they started:
 
   first contact  the ESC was already running at arm() and met our first frame

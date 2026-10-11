@@ -35,10 +35,10 @@ safe to retry:
                  shows N below CLEAN_ARM_THRESHOLD_MS. This is BUG-002's
                  stable-arming KPI (target: in >=99% of attempts, every
                  configured motor reaches ARMED within CLEAN_ARM_THRESHOLD_MS
-                 of arm() - see BUG-002.md's "Goal: stable-arming KPI" for why
-                 the duration bound, not "did an ESC reboot cycle happen," is
-                 the actual requirement: a caller doesn't know or care about
-                 AM32's internal reboot mechanism, only how long they waited)
+                 of arm()) - the duration bound, not "did an ESC reboot cycle
+                 happen," is the actual requirement: a caller doesn't know or
+                 care about AM32's internal reboot mechanism, only how long
+                 they waited
                  - a design principle for the driver's own public contract,
                  not just a bench convenience: arm() tries to arm within a
                  bounded time, and a caller that doesn't see it succeed
@@ -96,9 +96,9 @@ ARMED_AFTER_RE = re.compile(r"Armed after (\d+)ms\.")
 # only prints when the count is nonzero.
 SCHEDULE_BEHIND_RE = re.compile(r"fell behind (\d+) time\(s\)")
 
-# This IS the KPI's duration bound (BUG-002.md's "Goal: stable-arming KPI": in
-# >=99% of attempts, every configured motor reaches ARMED within this many ms
-# of arm() - not a classification convenience). It also happens to sit in the
+# This IS the KPI's duration bound (BUG-002's stable-arming KPI: in >=99% of
+# attempts, every configured motor reaches ARMED within this many ms of
+# arm() - not a classification convenience). It also happens to sit in the
 # gap between the "no reboot" duration cluster (~2.1-2.6s) and the "one
 # reboot" cluster (~4.6s, one ~2.46s reboot cycle added) - reconfirmed
 # archive-wide 2026-10-04 (698 sessions): clean arms 2078-2593ms, reboot arms

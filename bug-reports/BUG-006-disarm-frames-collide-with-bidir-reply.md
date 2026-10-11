@@ -1,6 +1,8 @@
 # BUG-006: `disarm()` queues bidirectional frames back to back into the ESC's reply window
 
-**Status:** OPEN - fix proposed, not implemented
+**Status:** `disarm()`'s own collision FIXED (`DISARM_ROUND_GAP_US`, below). `update()`'s "same
+exposure in principle" (see below) is OPEN and possibly live for a single-bidirectional-motor
+group at max-rate pacing - unmeasured since the hot-path tightening that followed this bug.
 **Severity:** Medium. The emergency stop relies on a single frame for bidirectional motors, and a
 faster command loop would collide on every frame.
 **Component:** `driver/motor_group.py` (`disarm()`), `driver/dshot_pio.py` (`dshot_bidir_tx`)
@@ -33,6 +35,24 @@ MicroPython's tick (~175-450 µs) is slower than 135 µs.
 
 **Betaflight's Pico driver never sends into a pending exchange.** It checks the state machine's
 program counter and skips the cycle ([`dshot_pico.c#L191-L228`][bf-skip]).
+
+**Status update (2026-10-11).** `MotorGroup.disarm()`'s own collision is fixed: it now paces its
+`DISARM_FRAMES` rounds with `DISARM_ROUND_GAP_US` (200us) between them, matching this bug's fix
+plan item 2 below (implemented as one flat constant rather than a per-speed-computed
+`min_frame_period_us`, but 200us clears both this table's floors). No dedicated bench verification
+of this specific fix (frames 2-4 decoding as valid replies, this bug's own "Verification" ask) was
+found in the commit history that introduced it - every scenario run disarms a bidirectional motor
+without reported failure, which is incidental exercise, not the targeted check this bug asked for.
+
+The `update()` exposure above is still open, and its margin against this table's own floor is
+unmeasured on the current code: the last single-bidirectional-motor `update()` tick figure on
+record is ~175us, from ADR-002's 2026-09-19 measurement - several code versions before BUG-003's
+per-tick arming-gate work, drain-before-send, and the `@micropython.native` hot-path tightening
+that followed this bug (ADR-002's "Further hot-path tightening" section). None of those changes'
+combined effect on a single-bidirectional-motor group's tick has been measured since. A direct
+check is cheap: one bench run of `single_channel_bidirectional_300.json` (DSHOT300 has the
+tighter ~135us floor) at full CRC-valid would settle whether this is live. Not run as part of this
+sweep - offered to the user rather than run unasked.
 
 ## Fix plan
 

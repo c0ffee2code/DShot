@@ -11,7 +11,7 @@ Pico port (see "Betaflight's Pico port" below) and against how AM32 measures a f
 ## Summary
 
 **Transmitter.** When a frame's last bit is a "1", `dshot_bidir_tx` releases the pin while it is
-still low (`dshot_pio.py:85`, `set(pindirs, 0).side(0)`). The final rising edge is then made only
+still low (`dshot_bidir_tx`'s "one" bit path, `set(pindirs, 0).side(0)`). The final rising edge is then made only
 by the two weak pull-ups: the Pico's and AM32's. Every zero-throttle frame ends in "1", and so does
 throttle 100.
 

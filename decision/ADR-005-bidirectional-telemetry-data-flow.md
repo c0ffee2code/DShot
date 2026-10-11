@@ -14,7 +14,7 @@ The measurements taken on hardware changed what the decision has to solve:
 - **Pairing a reply with its command is not the problem.** In an unpaced run, all 10,000 frames sent produced a structurally correct, correctly paired capture. In a run that deliberately left the RX FIFO undrained for 5ms, every one of 22 cycles recovered in exactly 4 frames, with no misaligned or partial capture.
 - **The content is.** A capture can be complete, correctly framed and correctly paired, and still fail its CRC. This clustered around timing disruptions - most clearly right after the RX FIFO had been left undrained: with the confound removed, 0 of 4 captures were CRC-valid after each of 3 resumes, on a baseline that was otherwise 100% valid. A cheap structural check ("does the capture's first bit read 0") passed every one of those captures, so only a real CRC check can tell.
 - **Decoding cannot run on the command loop.** One decode costs about 1.3ms on the Pico (it was about 10ms before the decoder was rewritten to work on integers). A DShot300 frame lasts about 53us, the command loop's tick is a few hundred microseconds and the loop runs with no delay between calls, so decoding per frame is out of the question; it has to be sampled, off the hot path.
-- **The two cores really run in parallel.** MicroPython on the RP2350 has no global interpreter lock (`sys.implementation._thread` reports `'unsafe'`), so any state shared between the command loop and the application is genuinely concurrent.
+- **The two cores really run in parallel.** MicroPython on the RP2350 has no global interpreter lock (`sys.implementation._thread` reports `'unsafe'`; confirmed in source too - `MICROPY_PY_THREAD_GIL=0` in the RP2 port's own build config, both at the bench's v1.28.0 and at current `master`), so any state shared between the command loop and the application is genuinely concurrent.
 
 ## Decision
 
@@ -49,6 +49,11 @@ The measurements taken on hardware changed what the decision has to solve:
 ## Verification
 
 On the AM32 4-in-1 bench ESC (channels 1 and 3 mounted), with the arm window set to 3000ms. Every run below goes through `MotorGroup` (`tests/harness/run_scenario.py`): the group's `update()` on Core 1, Core 0 sampling `raw_telemetry()`, every 20th new capture decoded on the device and every logged capture decoded again on a PC. In each run the device's tally and the PC's replay of the same sampling were identical.
+
+(Scenario names below are historical - `telemetry_settled_300/600`, `single_channel_baseline` and
+`smoke_unidirectional` were later deleted in the harness's scenario-library restructure. These are
+the names the runs actually used at the time; later scenarios with similar names and purposes
+exist but did not produce these specific numbers, so they aren't swapped in here.)
 
 | Scenario | Result |
 |---|---|

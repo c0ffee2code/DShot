@@ -193,9 +193,11 @@ def arm_group(group, scenario, runner, arm_times):
     hands out a capture before ARMED. BUG-002, 2026-10-10: that check was
     itself found to be the dominant cause of this harness's own unreliable
     arming - its extra per-tick Core 0 work during arming measurably raised
-    Core 1's own update() cost (cross-core GIL-style contention), and removing
-    it alone took a scenario that had been arming cleanly only 0-40% of the
-    time back to 10/10. The invariant it checked is already guaranteed by
+    Core 1's own update() cost (not a GIL - MicroPython's RP2 port has none -
+    the exact mechanism was never identified, see BUG-002.md's root-cause
+    section), and removing it alone took a scenario that had been arming
+    cleanly only 0-40% of the time back to 10/10. The invariant it checked is
+    already guaranteed by
     MotorGroup.raw_telemetry() itself (`if self.state != ARMED: return None`)
     and already covered, with no hardware timing cost, by
     tests/unit/test_motor_group.py's `test_no_capture_is_handed_out_while_disarmed_or_arming`

@@ -9,7 +9,7 @@ found only by reading logs afterwards.
 ## Summary
 
 1. **The reply failsafe cannot trip with the frame receiver.**
-   - `check_reply_failsafe()` (`run_scenario.py:69-88`) trips only if every captured record is
+   - `check_reply_failsafe()` (`run_scenario.py`) trips only if every captured record is
      all-zero words.
    - When the ESC does not reply, `dshot_bidir_rx_frame` falls through to our own next frame and
      pushes it, and that capture is non-zero. So a completely silent ESC keeps

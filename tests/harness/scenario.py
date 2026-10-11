@@ -222,8 +222,8 @@ def build_scenario(data):
     # something it no longer does (see _require()'s own rationale above) - a
     # lingering "0" is harmless and left alone.
     if data.get("arming_class_bin_width_us", 0):
-        raise ValueError("arming_class_bin_width_us was retired 2026-10-03 - see BUG-002.md's "
-                          "perf review; CaptureMailbox no longer supports class-bin classification")
+        raise ValueError("arming_class_bin_width_us was retired 2026-10-03; "
+                          "CaptureMailbox no longer supports class-bin classification")
     if data.get("min_send_interval_us", 0):
         raise ValueError("min_send_interval_us was retired 2026-10-03 - see BUG-002.md's "
                           "perf review; MotorGroup no longer supports a pacing floor")
@@ -240,9 +240,8 @@ def build_scenario(data):
     # to False (the removed meaning) - a lingering True is harmless and left
     # alone, since it already matches the only behavior there is now.
     if data.get("core1_fixed_schedule", True) is False:
-        raise ValueError("core1_fixed_schedule was retired 2026-10-09 - see BUG-002.md's "
-                          "\"don't do padded tests\" entry; Core1Runner no longer supports "
-                          "the sleep-after-work pad mode")
+        raise ValueError("core1_fixed_schedule was retired 2026-10-09; Core1Runner no longer "
+                          "supports the sleep-after-work pad mode")
 
     expect = _require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}

@@ -1,5 +1,5 @@
 {
-  "_comment": "BUG-002/BUG-003 arming-gate reliability check (bug-reports/BUG-002-...md, 'Do 10 more runs of arming checks for both motors'). Both motor-mounted channels (1 and 3) are bidirectional and held at a flat throttle 100 the whole run - short on purpose, since this is not testing sustained spin, only whether the reply-gated arm() reliably reaches ARMED and each ESC's first post-arm reply is a real, non-sentinel eRPM. Channels 2 and 4 idle (no motor mounted). No forced GC - that stress is two_channel_gc_600's job, not this one's. Meant to be run back-to-back several times to build up a sample size larger than R7's.",
+  "_comment": "BUG-002/BUG-003 arming-gate reliability check. Both motor-mounted channels (1 and 3) are bidirectional and held at a flat throttle 100 the whole run - short on purpose, since this is not testing sustained spin, only whether the reply-gated arm() reliably reaches ARMED and each ESC's first post-arm reply is a real, non-sentinel eRPM. Channels 2 and 4 idle (no motor mounted). No forced GC - that stress is two_channel_gc_600's job, not this one's. Meant to be run back-to-back several times to build up a sample size larger than one bench round.",
   "dshot_speed": "DSHOT600",
   "duration_ms": 3000,
   "arm_duration_ms": 2000,

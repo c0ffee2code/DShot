@@ -1,7 +1,7 @@
 # BUG-003: Arming is open-loop; nothing checks that the ESC actually armed
 
-**Status:** FIX IMPLEMENTED AND BENCH-VERIFIED 2026-09-27 (BUG-002's R7 and its 10-run and 10-run
-post-fix samples: 28 runs total, 0 silent failures - see BUG-002.md). Fix plan steps 1, 2, 3, 5 and
+**Status:** FIX IMPLEMENTED AND BENCH-VERIFIED 2026-09-27 (a pre-fix round and two 10-run post-fix
+samples: 28 runs total, 0 silent failures; not retained in BUG-002.md's later distillation). Fix plan steps 1, 2, 3, 5 and
 7 are in; step 6 (a 3000 ms default for unidirectional-only groups) is not. It is the fix for
 BUG-002 as well.
 
@@ -12,8 +12,7 @@ way. It does not (source-verified, `specification/AM32.md`#16) - only non-zero t
 reboot resets it, and the reboot case is what the reply gate below already handles. A bench test widening the floor to 12 s exposed the consequence directly: both ESCs had
 long since satisfied the reply gate, but the floor itself never completed, because at least one
 ordinary Core 1 scheduling gap landed somewhere in the window and restarted it. Removed the
-gap-reset entirely; the floor is now plain elapsed time since `arm()`. See BUG-002.md's "Fix: the
-arming floor's own gap-reset was ungrounded" for the full bench writeup.
+gap-reset entirely; the floor is now plain elapsed time since `arm()`.
 
 **As implemented** (small departures from the plan below):
 - `CaptureMailbox.drain()` returns how many captures were `AM32_NOT_RUNNING_FRAME`.
@@ -23,9 +22,10 @@ arming floor's own gap-reset was ungrounded" for the full bench writeup.
 - `MotorGroup.READY_SPAN_MS = 2000`, `READY_GAP_MS = 450`, `READY_FRESH_MS = 50`;
   `bidir_ready(now)` checks them once the floor has passed.
 - `MotorGroup.arming_status()`: per motor, `None`, or `(replying_for_ms, last_reply_ms_ago)`.
-  The harness prints it when arming times out, now after `arm_duration_ms + 8000` ms.
-- `MotorGroup.wait_for_replies` (default `True`) turns the gate off. Only
-  `tests/device/test_pio_lifecycle.py` does that, because it has no ESC attached.
+  The harness prints it when arming times out, now after `arm_duration_ms + 8000` ms (since
+  raised to `arm_duration_ms + 16000`, `run_scenario.py`'s `ARM_TIMEOUT_MARGIN_MS`).
+- `MotorGroup.wait_for_replies` (default `True`) keeps the gate on; set it `False` to turn the
+  gate off. Only `tests/device/test_pio_lifecycle.py` does that, because it has no ESC attached.
 - Unit tests: `ArmingGateTest` in `tests/unit/test_motor_group.py`, the not-running count in
   `test_capture_mailbox.py`, and the constant's derivation in `test_gcr_decode.py`.
 **Severity:** High - design gap. Any delay on the ESC side means the motor never arms, and nothing
@@ -41,7 +41,8 @@ where this driver only checked elapsed time against its own clock.
 whether the ESC has armed:
 
 - replies received while arming are drained and discarded unread
-  (`motor_group.py:296`, `drain_rx(False)`);
+  (`update()`'s `ARMING` branch, `motors[i].drain_rx(publish)` where `publish` is
+  `self.publish_while_arming`, default `False`);
 - the application may send non-zero throttle on the very next tick.
 
 AM32 arms only after **more than 1.02 s of uninterrupted zero throttle, counted from when *it*
@@ -132,7 +133,8 @@ Betaflight never relies on a timer alone
      (cells × 400 ms) and exceeds 450 ms. The count then restarts after an ESC that has already
      armed. That costs 2 s, while zeros keep flowing.
 
-   **Replayed on BUG-002's R3 captures**, this gate would have held both motors at zero until
+   **Replayed on a bench round's captures from BUG-002's own investigation** (not retained in
+   BUG-002.md's later distillation), this gate would have held both motors at zero until
    2.5-3.0 s after the old `ARMED`, that is, until each ESC had replied for 2 s after its reboot.
    In the same runs, the ESC that was held at zero armed 0.97 s after its first post-reboot reply.
    It then replied without a break for the remaining 18 s. The ESC that got throttle 100 had
@@ -148,7 +150,8 @@ Betaflight never relies on a timer alone
    step as planned would have passed an ESC that armed and then reset (the chain above), since
    it only checked for the tune once rather than requiring a sustained span.
 5. **Make it inspectable.** Add `MotorGroup.arming_status()`, per motor: replying since, last reply,
-   gaps seen. The harness's `arm_group()` timeout grows to `arm_duration_ms + 8000` ms, enough for
+   gaps seen. The harness's `arm_group()` timeout grows to `arm_duration_ms + 8000` ms (since
+   raised to `arm_duration_ms + 16000`, `run_scenario.py`'s `ARM_TIMEOUT_MARGIN_MS`), enough for
    two reboots. On a timeout its error prints the status, so a failed arm names the motor that
    never became ready.
 6. **Unidirectional-only groups** have nothing to observe. Raise their default minimum to
