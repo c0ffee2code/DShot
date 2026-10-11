@@ -1,7 +1,7 @@
 # Test: BidirectionalDShot survives repeated arm/disarm cycles in one session
 #
 # Purpose: every scenario in tests/harness/ builds its motors once, arms once,
-# and disarms once - deploy.py resets the Pico before each run, so nothing has
+# and disarms once - run_test.py resets the Pico (via deploy.py) before each run, so nothing has
 # ever exercised BidirectionalDShot.start() reclaiming the pin from PIO after
 # stop() hands it to SIO (see stop()'s own comment). A scenario passing proves
 # the FIRST start() works; it says nothing about the second.
@@ -13,7 +13,7 @@
 # Core1Runner start/stop, in the documented order (stop the loop, then
 # disarm) so a race between them can't be mistaken for a reclaim failure.
 #
-# Wiring matches tests/harness/scenarios/telemetry_settled_300.json exactly
+# Wiring matches tests/harness/scenarios/single_channel_bidirectional_300.json exactly
 # (channel 1 bidirectional, channels 2-4 unidirectional at zero) so channel
 # 3's line stays driven, not floating - the same reason F3 used that scenario
 # rather than building channel 1 alone (see bidirectional_dshot_review.md's
@@ -47,7 +47,10 @@ def run_one_cycle(group, runner, cycle):
     print("=== Cycle %d/%d: arming ===" % (cycle, CYCLES))
     runner.start()
     group.arm(ARM_MS)
-    deadline = utime.ticks_add(utime.ticks_ms(), ARM_MS + 2000)
+    # MotorGroup also waits for 2s of ESC replies, several seconds more if
+    # the ESC reboots meanwhile (bug-reports/BUG-003; margin matches
+    # tests/harness/run_scenario.py's ARM_TIMEOUT_MARGIN_MS)
+    deadline = utime.ticks_add(utime.ticks_ms(), ARM_MS + 16000)
     while not group.is_armed():
         if utime.ticks_diff(deadline, utime.ticks_ms()) < 0:
             raise Exception("cycle %d: arming timed out" % cycle)

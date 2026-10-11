@@ -34,6 +34,10 @@ class Clock:
     def advance_ms(cls, milliseconds):
         cls.microseconds += milliseconds * 1000
 
+    @classmethod
+    def advance_us(cls, microseconds):
+        cls.microseconds += microseconds
+
 
 def ticks_diff(a, b):
     diff = (a - b) & TICKS_MASK
@@ -45,6 +49,7 @@ def _install_utime():
     module.ticks_ms = lambda: (Clock.microseconds // 1000) & TICKS_MASK
     module.ticks_us = lambda: Clock.microseconds & TICKS_MASK
     module.ticks_diff = ticks_diff
+    module.ticks_add = lambda ticks, delta: (ticks + delta) & TICKS_MASK
     module.sleep_us = lambda n: setattr(Clock, "microseconds", Clock.microseconds + n)
     module.sleep_ms = lambda n: setattr(Clock, "microseconds", Clock.microseconds + n * 1000)
     sys.modules["utime"] = module
@@ -178,9 +183,30 @@ def _install_hardware_modules():
     sys.modules["rp2"] = rp2
 
 
+def _native(function):
+    return function
+
+
+def _viper(function):
+    return function
+
+
+def _install_micropython_module():
+    # @micropython.native/@micropython.viper are no-ops here, same as
+    # asm_pio above: CPython has no emitter to apply, and these decorators'
+    # effect is purely a runtime speed difference on the real device, not a
+    # behavior change a PC test could observe (W33).
+    micropython = types.ModuleType("micropython")
+    micropython.native = _native
+    micropython.viper = _viper
+    sys.modules["micropython"] = micropython
+
+
 # The fakes replace the real modules only when those are absent, which is always
 # the case on a PC
 if "utime" not in sys.modules:
     _install_utime()
 if "machine" not in sys.modules:
     _install_hardware_modules()
+if "micropython" not in sys.modules:
+    _install_micropython_module()

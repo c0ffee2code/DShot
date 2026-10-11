@@ -255,6 +255,6 @@ The dual-core architecture completely eliminated arming failures. Previously, ar
 - [RP2040 Datasheet - Dual Core](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
 - [MicroPython _thread module](https://docs.micropython.org/en/latest/library/_thread.html)
 - [ARM Cortex-M0+ Memory Ordering](https://developer.arm.com/documentation/dui0662/latest/)
-- DShot Protocol Specification: `specification/DSHOT_PROTOCOL.md`
+- DShot Protocol Specification: `specification/DSHOT.md`
 - [BetaFPV Lava 1104 Motors](https://betafpv.com/products/lava-series-1104-brushless-motors)
 - [JHEMCU Dual 40A ESC](https://www.jhemcu.com/e_productshow/?81-JHEMCU-BRUSELESS-WING-DUAL-40A-2IN1-ESC-81.html)

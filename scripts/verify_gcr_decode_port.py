@@ -86,7 +86,7 @@ from dshot_profiles import BIDIR_PROFILES
 from capture_session import load_meta, iter_groups, rx_clock_hz_for, dshot_speed_for, expects_bidir_groups
 
 _FLOAT_FIELDS = ("period_cycles", "period_us", "bitrate_bps", "erpm")
-_EXACT_FIELDS = ("full", "crc_ok", "crc_kind", "data12")
+_EXACT_FIELDS = ("full", "crc_ok", "crc_kind", "data12", "not_running")
 _FLOAT_TOLERANCE = 1e-9
 
 

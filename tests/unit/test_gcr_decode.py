@@ -11,13 +11,15 @@
 # scripts/verify_gcr_decode_port.py cross-checks the same two decoders on whole
 # stored capture sessions; this file is what runs without them.
 
+import sys
 import unittest
+from pathlib import Path
 
 import fakes  # noqa: F401  puts driver/ on sys.path
 import gcr_decode
 from dshot_profiles import BIDIR_PROFILES, DSHOT_SPEEDS
 
-# The GCR code AM32 uses (specification/DSHOT_PROTOCOL.md), written out here so the
+# The GCR code AM32 uses (specification/AM32.md#11), written out here so the
 # encoder in this file does not share a table with the decoder under test.
 GCR_CODE = [
     0b11001, 0b11011, 0b10010, 0b10011, 0b11101, 0b10101, 0b10110, 0b10111,
@@ -282,6 +284,13 @@ class AnalyzeFrameTest(unittest.TestCase):
             result = gcr_decode.analyze_frame(frame)
             self.assertTrue(result["crc_ok"], data12)
             self.assertEqual(result["data12"], data12)
+            self.assertEqual(result["not_running"], data12 == gcr_decode.AM32_NOT_RUNNING_DATA12, data12)
+
+    def test_not_running_is_none_without_a_crc_valid_reply(self):
+        valid = GCR_CODE[3]
+        frame = frame_for([valid, 0b00001, valid, valid])  # invalid symbol -> no full number
+        result = gcr_decode.analyze_frame(frame)
+        self.assertIsNone(result["not_running"])
 
     def test_a_false_marker_bit_is_reported(self):
         frame = frame_for([GCR_CODE[n] for n in (0xA, 0x5, 0x0, 0xF)])
@@ -313,3 +322,19 @@ class UnusableCaptureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotRunningFrameTest(unittest.TestCase):
+    def test_it_is_what_am32_sends_for_a_stopped_motor(self):
+        # AM32's make_dshot_package() substitutes com_time 65535 when not running;
+        # scripts/verify_am32_reply.py ports it
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        from verify_am32_reply import am32_make_dshot_package, expected_frame
+        payload, levels = am32_make_dshot_package(65535)
+        self.assertEqual(payload, gcr_decode.AM32_NOT_RUNNING_DATA12)
+        self.assertEqual(expected_frame(levels), gcr_decode.AM32_NOT_RUNNING_FRAME)
+
+    def test_it_decodes_as_not_running(self):
+        result = gcr_decode.analyze_frame(gcr_decode.AM32_NOT_RUNNING_FRAME)
+        self.assertTrue(result["crc_ok"])
+        self.assertTrue(result["not_running"])

@@ -14,6 +14,7 @@ from fakes import Clock, Pin
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, UnsupportedOperationException,
                        DSHOT_SPEEDS, dshot_bidir_rx_frame)
 from dshot_profiles import frame_rx_speed
+from gcr_decode import AM32_NOT_RUNNING_FRAME
 from motor_group import (MotorGroup, MotorGroupException,
                                   DISARMED, ARMING, ARMED)
 
@@ -46,7 +47,10 @@ class GroupTestCase(unittest.TestCase):
         self.run_until_armed(group)
 
     def run_until_armed(self, group):
-        for _ in range(ARM_MS * 2):
+        """Tick until ARMED, every bidirectional ESC replying "not running" each tick."""
+        for _ in range(ARM_MS + group.READY_SPAN_MS + 100):
+            for motor in group.bidir_motors:
+                motor.rx_sm.feed([AM32_NOT_RUNNING_FRAME])
             group.update()
             if group.is_armed():
                 return
@@ -133,19 +137,21 @@ class ArmingTest(GroupTestCase):
         group.update()
         self.assertTrue(group.is_armed())
 
-    def test_a_gap_in_updates_restarts_the_arming_window(self):
+    def test_a_gap_in_updates_does_not_restart_the_arming_window(self):
+        """AM32 does not reset its own arming counter on a gap in our
+        transmissions - only non-zero throttle, or a gap long enough to be a
+        reboot, does that (specification/AM32.md#16). The floor is plain
+        elapsed time since arm(), unaffected by how unevenly update() gets
+        called."""
         group = self.make([uni(0, 6)])
         group.arm(ARM_MS)
         for _ in range(ARM_MS - 20):
             group.update()
             Clock.advance_ms(1)
-        Clock.advance_ms(group.ARM_GAP_TOLERANCE_MS + 5)
-        group.update()  # the gap: the window starts over from here
-        for _ in range(ARM_MS - 20):
-            group.update()
-            Clock.advance_ms(1)
         self.assertFalse(group.is_armed())
-        self.run_until_armed(group)
+        Clock.advance_ms(1000)  # a gap far larger than update() ever leaves in practice
+        group.update()
+        self.assertTrue(group.is_armed())  # armed on the very next call - the floor kept counting through the gap
 
     def test_set_throttles_are_transmitted_once_armed(self):
         group = self.make([uni(0, 6), uni(1, 7)])
@@ -157,6 +163,116 @@ class ArmingTest(GroupTestCase):
         group.update()
         self.assertEqual(group.motors[0].sm.sent, [0x0C840000])
         self.assertEqual(group.motors[1].sm.sent, [(500 << 4 | ((500 ^ (500 >> 4) ^ (500 >> 8)) & 0xF)) << 16])
+
+class ArmingGateTest(GroupTestCase):
+    """A group with bidirectional motors arms only once each ESC has been replying
+    AM32's not-running frame for READY_SPAN_MS (bug-reports/BUG-003)."""
+
+    def setUp(self):
+        super().setUp()
+        self.group = self.make([bidir(0, 6), uni(2, 7)])
+        self.motor = self.group.motors[0]
+
+    def tick(self, milliseconds, words=(AM32_NOT_RUNNING_FRAME,), motors=None):
+        """Advance `milliseconds` 1ms ticks; each, the motors (default: every
+        bidirectional one) first receive `words` (none if empty)."""
+        motors = self.group.bidir_motors if motors is None else motors
+        for _ in range(milliseconds):
+            for motor in motors:
+                motor.rx_sm.feed(list(words))
+            self.group.update()
+            Clock.advance_ms(1)
+
+    def test_no_replies_keep_the_group_arming(self):
+        self.group.arm(ARM_MS)
+        self.tick(ARM_MS + 3 * self.group.READY_SPAN_MS, words=())
+        self.assertTrue(self.group.is_arming())
+        self.assertEqual(self.group.arming_status(), [None, None])
+
+    def test_armed_after_the_span_of_replies(self):
+        span = self.group.READY_SPAN_MS
+        self.group.arm(ARM_MS)
+        self.tick(span - 1)
+        self.assertFalse(self.group.is_armed(), "the floor has passed, the span has not")
+        self.tick(2)
+        self.assertTrue(self.group.is_armed())
+
+    def test_the_arming_window_is_still_a_floor(self):
+        long_window = self.group.READY_SPAN_MS + 1000
+        self.group.arm(long_window)
+        self.tick(long_window - 1)
+        self.assertFalse(self.group.is_armed())
+        self.tick(2)
+        self.assertTrue(self.group.is_armed())
+
+    def test_the_span_counts_from_the_first_reply(self):
+        self.group.arm(ARM_MS)
+        self.tick(500, words=())
+        self.tick(self.group.READY_SPAN_MS - 1)
+        self.assertFalse(self.group.is_armed())
+        self.tick(2)
+        self.assertTrue(self.group.is_armed())
+
+    def test_an_arming_tune_gap_does_not_restart_the_span(self):
+        self.group.arm(ARM_MS)
+        self.tick(1000)
+        self.tick(300, words=())  # AM32's arming tune: interrupts off, no replies
+        self.tick(self.group.READY_SPAN_MS - 1300 + 1)
+        self.assertTrue(self.group.is_armed())
+
+    def test_a_reboot_length_gap_restarts_the_span(self):
+        self.group.arm(ARM_MS)
+        self.tick(1500)
+        self.tick(700, words=())  # startup tune plus the bidirectional latch
+        self.tick(self.group.READY_SPAN_MS - 1)
+        self.assertFalse(self.group.is_armed(), "the first 1500ms of replies no longer count")
+        self.tick(2)
+        self.assertTrue(self.group.is_armed())
+
+    def test_a_stale_reply_blocks_promotion(self):
+        self.group.arm(ARM_MS)
+        self.tick(self.group.READY_SPAN_MS - 100)
+        self.tick(400, words=())  # past the span, but the ESC has gone quiet
+        self.assertFalse(self.group.is_armed())
+
+    def test_one_silent_motor_holds_the_whole_group(self):
+        group = self.make([bidir(0, 6), bidir(4, 8)])
+        self.group = group
+        group.arm(ARM_MS)
+        self.tick(ARM_MS + 2 * group.READY_SPAN_MS, motors=[group.motors[0]])
+        self.assertTrue(group.is_arming())
+        status = group.arming_status()
+        self.assertIsNotNone(status[0])
+        self.assertIsNone(status[1])
+
+    def test_only_the_not_running_frame_counts(self):
+        self.group.arm(ARM_MS)
+        self.tick(ARM_MS + 2 * self.group.READY_SPAN_MS, words=(0xC8BB3,))  # a real eRPM reply
+        self.tick(ARM_MS + 2 * self.group.READY_SPAN_MS, words=(0,))  # the line held low
+        self.assertFalse(self.group.is_armed())
+
+    def test_arming_status_reports_the_run_of_replies(self):
+        self.group.arm(ARM_MS)
+        self.tick(20, words=())
+        self.tick(100)
+        self.tick(30, words=())
+        replying_for_ms, last_reply_ms_ago = self.group.arming_status()[0]
+        self.assertEqual(replying_for_ms, 130)
+        self.assertEqual(last_reply_ms_ago, 31)
+        self.assertIsNone(self.group.arming_status()[1], "unidirectional")
+
+    def test_without_wait_for_replies_the_window_alone_arms(self):
+        self.group.wait_for_replies = False  # a bench test with no ESC attached
+        self.group.arm(ARM_MS)
+        self.tick(ARM_MS + 1, words=())
+        self.assertTrue(self.group.is_armed())
+
+    def test_arm_again_needs_new_replies(self):
+        self.arm_fully(self.group)
+        self.group.disarm()
+        self.group.arm(ARM_MS)
+        self.tick(ARM_MS + self.group.READY_SPAN_MS, words=())
+        self.assertFalse(self.group.is_armed())
 
 
 class UpdateOrderTest(GroupTestCase):
@@ -170,10 +286,18 @@ class UpdateOrderTest(GroupTestCase):
                 log.append(("send", i))
                 real(throttle)
             motor.send_throttle_command = send
+            # update()'s ARMING branch sends through send_zero(), not
+            # send_throttle_command(0) (see dshot_pio.py's own note on why) -
+            # patched the same way so "while arming" sees the same log shape
+            # as "while armed".
+            def send_zero(i=i, real=motor.send_zero):
+                log.append(("send", i))
+                real()
+            motor.send_zero = send_zero
             if motor.bidirectional:
                 def drain(publish, i=i, real=motor.drain_rx):
                     log.append(("drain", i, publish))
-                    real(publish)
+                    return real(publish)
                 motor.drain_rx = drain
         return self.make(motors), log
 
@@ -330,6 +454,18 @@ class TelemetryTest(GroupTestCase):
         self.run_until_armed(self.group)
         self.assertEqual(self.motor.rx_sm.rx_fifo(), 0, "they were taken from the receiver...")
         self.assertIsNone(self.group.raw_telemetry(0), "...but not published")
+
+    def test_publish_while_arming_keeps_arming_replies_on_the_motor_only(self):
+        self.group.publish_while_arming = True
+        self.group.arm(ARM_MS)
+        self.motor.rx_sm.feed(self.CAPTURE)
+        self.group.update()
+        self.assertEqual(self.motor.latest_capture()[1:], (1, self.CAPTURE),
+                         "published to the motor's slot...")
+        self.assertIsNone(self.group.raw_telemetry(0), "...but still withheld by the group")
+        self.run_until_armed(self.group)
+        self.assertEqual(self.group.raw_telemetry(0)[2], (AM32_NOT_RUNNING_FRAME,),
+                         "handed out once ARMED: the last reply published while arming")
 
     def test_a_reply_after_arming_is_handed_out_with_its_sequence(self):
         self.arm_fully(self.group)

@@ -1,6 +1,11 @@
 # ADR-003: DShot Special Commands Implementation
 
-**Status:** Blocked (cannot verify - several different ESCs required for testing)
+**Status:** TODO as of 2026-10-11 - the original blocker below (written for BLHeli_S, before
+AM32 became the project's sole ESC target) no longer applies. AM32 itself implements commands
+(`specification/AM32.md`#7), and this bench has already heard a `BEEP1` while armed (sent as
+throttle value 1 through `send_throttle_command()`, not a dedicated command API - BUG-005's
+exact path). What's still missing is a driver-side command API - there is none today - and
+`BUG-005`'s throttle 1-47 clamp should land first, since it addresses the same value range.
 **Date:** 2026-02-01
 **Context:** Implementing DShot special commands beyond throttle control
 
@@ -136,6 +141,6 @@ For future reference when compatible ESCs are available:
 
 ## References
 
-- DShot Protocol Specification: `specification/DSHOT_PROTOCOL.md`
+- DShot Protocol Specification: `specification/DSHOT.md`
 - [BLHeli_S Command Reference](https://github.com/bitdump/BLHeli/blob/master/BLHeli_S%20SiLabs/Dshotprog%20spec%20BLHeli_S.txt)
 - [Betaflight DShot Commands](https://betaflight.com/docs/development/API/Dshot)

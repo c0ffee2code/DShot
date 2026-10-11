@@ -27,12 +27,17 @@ sample's position is computed as its exact CYCLE (sample_cycle()), not
 assumed from its index.
 
 Unlike the reference script, check_crc() here accepts ONLY the inverted CRC
-polarity: every CRC-valid capture from real hardware has been inverted,
-matching AM32's firmware source, and accepting the plain polarity as well
-would double the false-accept probability of the 4-bit CRC (2/16 instead of
-1/16) for a polarity the hardware never produces. The reference script
-accepts both because a stray plain hit is diagnostic there; this module is
-the driver's validity gate and has no such use for it.
+polarity: every CRC-valid capture from real hardware has been inverted
+(798/798 on this bench), matching AM32's firmware source - AM32 inverts its
+reply CRC unconditionally (see specification/AM32.md) - and accepting the
+plain polarity as well would double the false-accept probability of the
+4-bit CRC (2/16 instead of 1/16) for a polarity the hardware never produces.
+The reference script accepts both because a stray plain hit is diagnostic
+there; this module is the driver's validity gate and has no such use for it.
+scripts/verify_am32_reply.py independently confirms the whole GCR table
+against AM32's own encoder: it reproduces make_dshot_package() line for
+line and decodes all 2,304 distinct payloads AM32 can emit, with 0
+mismatches against this module.
 
 analyze_capture()'s reconstruction method:
 1. Find the edges - the samples whose value differs from the one before - by
@@ -63,6 +68,20 @@ GCR_ENCODE_TABLE = [
 GCR_DECODE_TABLE = {symbol: nibble for nibble, symbol in enumerate(GCR_ENCODE_TABLE)}
 
 FRAME_LENGTH_BITS = 21  # marker (1) + 20 differentially-encoded data bits - see module docstring
+
+# AM32's fixed "motor not running" payload (mantissa 0x1FF, exponent 0b111 -
+# all 12 data bits set): sent whether the ESC is armed-but-stopped or fully
+# disarmed, so a CRC-valid reply of exactly this value proves nothing about
+# arm state, only that the motor isn't turning right now (see
+# specification/AM32.md#9).
+AM32_NOT_RUNNING_DATA12 = 0xFFF
+
+# That payload as dshot_bidir_rx_frame pushes it: the whole 21-bit frame (marker,
+# then 0xFFF and its inverted CRC in GCR). The only word a stopped AM32 ever
+# replies with, so MotorGroup's arming gate recognises it with one integer compare
+# instead of a decode (bug-reports/BUG-003). Our own throttle-0 frame, captured
+# when the ESC is silent, never produces it.
+AM32_NOT_RUNNING_FRAME = 0x52951
 
 # Exact per-sample cycle position for dshot_bidir_rx's nested 4-outer x
 # 32-inner sample loop: pass p in 0..3, inner index i in 0..31, global
@@ -144,8 +163,10 @@ def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
     DShot decoder uses). rx_speed is tuned so a reply bit spans a known,
     measured number of RX cycles, so the period does not have to be searched
     for on every capture. The ratio is measured on hardware rather than derived
-    from the protocol's nominal bit rate, because ESC oscillators run a few
-    percent off nominal (see driver/dshot_profiles.py).
+    from the protocol's nominal bit rate, because AM32 clocks its reply from a
+    per-MCU timer/prescaler - a deterministic, per-MCU-family offset from
+    nominal, not oscillator drift (see driver/dshot_profiles.py,
+    specification/AM32.md).
 
     `edges` is find_edges()' result.
 
@@ -268,6 +289,29 @@ def decode_result(frame):
       crc_kind  - "inverted" on a CRC hit, else None
       data12    - the 12-bit payload (mantissa + exponent), if decoded
       erpm      - electrical RPM, or None if not decodable/CRC-invalid
+      not_running - True if data12 is AM32's fixed not-running sentinel
+                  (AM32_NOT_RUNNING_DATA12), else False; None if CRC-invalid.
+                  Deliberately not folded into erpm: erpm keeps reporting the
+                  same ~917 either way, so callers that already threshold on
+                  eRPM magnitude are unaffected, while callers that need an
+                  exact answer (not a fuzzy eRPM range) can check this instead.
+
+    Known caveat, not necessarily a decode bug here: a CRC-valid frame has
+    been seen reporting a wildly implausible erpm (data12=2, i.e. 30,000,000)
+    shortly after a motor's throttle crosses from zero to nonzero. AM32's own
+    source has an eRPM moving-average array that is zero-initialized at boot;
+    one re-read of this project's pinned commit found a gating condition
+    (`old_routine`, default-on at boot) under which the array can stay
+    untouched until the motor's first real commutation, so the first reply
+    computed after "running" flips could read it as genuinely all-zero. A
+    separate hypothesis for *why* this never reproduces at a different
+    throttle (a polling-rate difference) was checked against this project's
+    own measured numbers and ruled out - the gap is still unexplained. Treat
+    the whole mechanism as a candidate, not confirmed: it already reversed
+    once between two source reads, and this driver's own TX-echo
+    capture path has not been ruled out as a competing explanation either. See
+    bug-reports/BUG-009-motors-sometimes-start-rough.md for the full,
+    still-open account - do not treat this as settled.
     """
     full = decode(frame)
     result = {
@@ -277,6 +321,7 @@ def decode_result(frame):
         "crc_kind": None,
         "data12": None,
         "erpm": None,
+        "not_running": None,
     }
     if full is None:
         return result
@@ -285,6 +330,7 @@ def decode_result(frame):
     result["data12"] = data12
     result["crc_ok"] = crc_kind is not None
     if crc_kind is not None:
+        result["not_running"] = data12 == AM32_NOT_RUNNING_DATA12
         mantissa = data12 & 0x1FF
         exponent = (data12 >> 9) & 0x7
         eperiod_us = mantissa << exponent

@@ -1,0 +1,74 @@
+{
+  "_comment": "BUG-002/BUG-003 arming-gate reliability check (bug-reports/BUG-002-...md, 'Do 10 more runs of arming checks for both motors'). Both motor-mounted channels (1 and 3) are bidirectional and held at a flat throttle 100 the whole run - short on purpose, since this is not testing sustained spin, only whether the reply-gated arm() reliably reaches ARMED and each ESC's first post-arm reply is a real, non-sentinel eRPM. Channels 2 and 4 idle (no motor mounted). No forced GC - that stress is two_channel_gc_600's job, not this one's. Meant to be run back-to-back several times to build up a sample size larger than R7's.",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 3000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 1000,
+  "poll_ms": 1,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_record_rate_hz": 150,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "2": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "2": 10000
+    }
+  },
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "bidirectional": true,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 3000
+        }
+      ]
+    },
+    {
+      "pin": 7,
+      "sm_id": 8,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 3000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "bidirectional": true,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 3000
+        }
+      ]
+    },
+    {
+      "pin": 9,
+      "sm_id": 9,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 3000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0
+}

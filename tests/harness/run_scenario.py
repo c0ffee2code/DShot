@@ -17,6 +17,10 @@
 # Captures published but never seen (the sequence jumped) are counted as missed;
 # they are not an error, because reading the latest is the contract - the
 # scenario's `expect` thresholds say how much sampling a run must achieve.
+# Nothing is logged while the group is still arming (see arm_group()) - no
+# per-capture diagnostics run during that window - so capture.bin, and
+# everything judged on it, starts at ARMED; meta.txt's armed_ticks_us marks
+# the boundary.
 #
 # Fail-fast, deliberately: a Core 1 error, a gap/rate violation of the
 # scenario's own "expect" thresholds, a tripped reply failsafe (see
@@ -45,9 +49,9 @@ from core1_runner import Core1Runner
 from scenario import load_scenario
 from bidir_capture_sink import BidirCaptureSink
 from decode_tally import DecodeTally, is_sampled
+from array import array
 import gc
 import utime
-from array import array
 
 SCENARIO_PATH = "scenario.json"
 
@@ -60,8 +64,27 @@ SCENARIO_PATH = "scenario.json"
 REPLY_FAILSAFE_GRACE_MS = 2000
 
 # How long past the scenario's own arming window arming may take before it is
-# an error: arming completes inside update() on Core 1, so a dead loop shows here
-ARM_TIMEOUT_MARGIN_MS = 1000
+# an error: arming completes inside update() on Core 1, so a dead loop shows
+# here, and MotorGroup also waits for 2s of replies from every bidirectional
+# ESC - ~4.5s after arm() when an ESC reboots once while arming, ~7s twice,
+# ~9.5s three times (bug-reports/BUG-003; BUG-002's "10-run arming-reliability
+# sample" measured a ~2.46s reboot-cycle period and saw up to 4 reboots on one
+# motor before it settled). Sized for 6 reboot cycles with margin, not the
+# floor itself - MotorGroup.arm()'s duration_ms is left alone, since raising it
+# only delays every healthy arm and was tried and found not to help (see the
+# bug report's "bigger waiting time?" note).
+ARM_TIMEOUT_MARGIN_MS = 16000
+
+# Grace window, after ARMED, before a bidirectional motor commanded to nonzero
+# throttle that has never once decoded a real (non-"not running") eRPM is
+# treated as stuck rather than still starting up. With the reply-gated ARMED
+# transition (bug-reports/BUG-003), reaching ARMED already means the ESC was
+# replying steadily - this catches the remaining case, where it replies but
+# the motor still never turns (per the user: "if it continuously returns this
+# eRPM constant - no point to run the test scenario, motors won't spin").
+# Matches REPLY_FAILSAFE_GRACE_MS - every healthy spin-up on this bench starts
+# well inside it.
+STUCK_AT_REST_GRACE_MS = 2000
 
 RECORD_ZERO_WORDS = (0,)
 
@@ -88,18 +111,33 @@ def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
         )
 
 
-def check_expect(expect, largest_gap_us, records, elapsed_ms, loop_gap_us):
+def check_stuck_at_rest_failsafe(bidir_indices, real_spin_seen, throttles, elapsed_ms):
+    """
+    A bidirectional motor commanded to nonzero throttle that has never once
+    decoded a real eRPM is BUG-002's own signature: CRC-valid replies, no
+    error state, and no spin, ever. Past the grace window this stops the run
+    instead of waiting out its full duration for a result already decided.
+
+    A motor deliberately held at 0 throttle (an idle bidirectional motor used
+    as a second-line control - see two_channel_bidir_one_idle_600) legitimately
+    replies the same sentinel forever and must not trip this - only checked
+    for motors with nonzero commanded throttle right now.
+    """
+    if elapsed_ms < STUCK_AT_REST_GRACE_MS:
+        return
+    for index in bidir_indices:
+        if throttles[index] > 0 and not real_spin_seen[index]:
+            raise RuntimeError(
+                "stuck-at-rest failsafe tripped: motor " + str(index) + " has been commanded a "
+                "nonzero throttle for " + str(elapsed_ms) + "ms since ARMED and every decoded "
+                "reply is still AM32's not-running sentinel (917 eRPM) - it is not going to start "
+                "on its own this run (see bug-reports/BUG-002-bidirectional-motor-intermittently-does-not-spin.md)"
+            )
+
+
+def check_expect(expect, largest_gap_us, records, elapsed_ms):
     if not expect:
         return
-
-    # The longest gap between two update() calls, measured on Core 1 itself -
-    # checked against how long the ESC tolerates a stalled command loop before
-    # disarming on its own. See CLAUDE.md's disarm() notes for that timeout figure.
-    max_loop_gap_ms = expect.get("max_loop_gap_ms")
-    if max_loop_gap_ms is not None and loop_gap_us > max_loop_gap_ms * 1000:
-        raise RuntimeError(
-            "command loop gap " + str(loop_gap_us / 1000) + "ms > max_loop_gap_ms=" + str(max_loop_gap_ms)
-        )
 
     max_gap_ms = expect.get("max_gap_ms")
     if max_gap_ms is not None and largest_gap_us > max_gap_ms * 1000:
@@ -133,30 +171,6 @@ def check_decode_expect(expect, tallies):
     return failures
 
 
-def measured(update, times):
-    """
-    Wrap `update` so Core 1 records the longest gap between two calls into
-    times[1] (times[0] is the last call's time). It costs one extra Python call
-    and a few integer operations per tick, and allocates nothing. Measuring on
-    Core 1 is the point: a garbage collection pauses both cores, so Core 0 only
-    ever sees the loop after it has caught up.
-    """
-    ticks_us = utime.ticks_us
-    ticks_diff = utime.ticks_diff
-
-    def wrapper():
-        now = ticks_us()
-        last = times[0]
-        if last:
-            gap = ticks_diff(now, last)
-            if gap > times[1]:
-                times[1] = gap
-        times[0] = now
-        update()
-
-    return wrapper
-
-
 def build_motor(spec, dshot_speed):
     if spec.bidirectional:
         return BidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed,
@@ -164,9 +178,39 @@ def build_motor(spec, dshot_speed):
     return UnidirectionalDShot(spec.sm_id, Pin(spec.pin), dshot_speed)
 
 
-def arm_group(group, scenario, runner, bidir_indices):
-    """Arm, and check that no capture is handed out before the group is ARMED."""
+def arm_group(group, scenario, runner, arm_times):
+    """
+    Arm and wait for the group to reach ARMED.
+
+    No per-capture logging or diagnostics run during this window. BUG-002's
+    arming.bin/measured() instrumentation, and MotorGroup's own reboot_log,
+    were both retired 2026-10-06: real overhead on the exact loop whose timing
+    this investigation cares about, measured at ~90us/call even once idle -
+    see BUG-002.md's "Telemetry overhead" section. A real application calling
+    update() directly never paid this cost, so this harness shouldn't either.
+
+    This loop used to also re-verify, every tick, that raw_telemetry() never
+    hands out a capture before ARMED. BUG-002, 2026-10-10: that check was
+    itself found to be the dominant cause of this harness's own unreliable
+    arming - its extra per-tick Core 0 work during arming measurably raised
+    Core 1's own update() cost (cross-core GIL-style contention), and removing
+    it alone took a scenario that had been arming cleanly only 0-40% of the
+    time back to 10/10. The invariant it checked is already guaranteed by
+    MotorGroup.raw_telemetry() itself (`if self.state != ARMED: return None`)
+    and already covered, with no hardware timing cost, by
+    tests/unit/test_motor_group.py's `test_no_capture_is_handed_out_while_disarmed_or_arming`
+    and `test_the_group_itself_refuses_captures_while_arming` - so this bench
+    check added no safety value a real application's documented usage
+    (CLAUDE.md's `while not is_armed(): sleep_ms(10)`, which never calls
+    raw_telemetry() during arming at all) doesn't already have for free.
+
+    `arm_times` still gets the ticks_us of arm() as soon as it is called and
+    of ARMED once reached - "Armed after Nms" and the clean/reboot KPI
+    classification need nothing else.
+    """
     print("Arming for {}ms...".format(scenario.arm_duration_ms))
+    gc.collect()  # start the window with a clean heap: fewer collections pausing Core 1 while arming
+    arm_times[0] = utime.ticks_us()
     group.arm(scenario.arm_duration_ms)
     arm_start = utime.ticks_ms()
     arm_timeout_ms = scenario.arm_duration_ms + ARM_TIMEOUT_MARGIN_MS
@@ -174,12 +218,12 @@ def arm_group(group, scenario, runner, bidir_indices):
         if runner.error is not None:
             raise runner.error
         if utime.ticks_diff(utime.ticks_ms(), arm_start) > arm_timeout_ms:
-            raise RuntimeError("arming did not complete within " + str(arm_timeout_ms) + "ms")
-        for index in bidir_indices:
-            if group.raw_telemetry(index) is not None:
-                raise RuntimeError("raw_telemetry(" + str(index) + ") returned a capture while arming")
+            raise RuntimeError("arming did not complete within " + str(arm_timeout_ms) +
+                               "ms; per motor (replying_for_ms, last_reply_ms_ago), None = no reply: " +
+                               str(group.arming_status()))
         utime.sleep_ms(1)
-    print("Armed.")
+    arm_times[1] = utime.ticks_us()
+    print("Armed after {}ms.".format(utime.ticks_diff(arm_times[1], arm_times[0]) // 1000))
     print()
 
 
@@ -187,8 +231,9 @@ def run_scenario():
     print("=== Scenario Capture ===")
 
     scenario = load_scenario(SCENARIO_PATH)
-    print("Loaded scenario: duration={}ms dshot_speed={} bidir_motors={}".format(
-        scenario.duration_ms, scenario.dshot_speed, scenario.bidir_indices))
+    print("Loaded scenario: duration={}ms dshot_speed={} bidir_motors={} core1_interval_us={}".format(
+              scenario.duration_ms, scenario.dshot_speed, scenario.bidir_indices,
+              scenario.core1_interval_us))
 
     sink = BidirCaptureSink()
     sink.init_session(scenario, SCENARIO_PATH)
@@ -206,26 +251,57 @@ def run_scenario():
     last_record_us = None
     largest_gap_us = 0
     max_age_us = 0
-    loop_times = array('I', [0, 0])  # Core 1's last update() time, and the longest gap between calls
     last_gc_ms = 0
     gc_runs = 0
     gc_max_us = 0
     outcome = "failed"
+    arm_times = [None, None]  # ticks_us of arm() and of ARMED, filled in by arm_group()
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
+    real_spin_seen = [False, False, False, False]  # per motor: ever decoded a non-"not running" eRPM
     failures = []
+    # Set for real once the running loop starts (below); 0 here covers a run
+    # that fails before reaching it, so finally's status-printing loop is a
+    # no-op rather than a NameError that would mask the real failure
+    status_count = 0
 
     try:
         group = MotorGroup([build_motor(spec, scenario.dshot_speed) for spec in scenario.motors])
-        runner = Core1Runner(measured(group.update, loop_times), group.UPDATE_INTERVAL_US)
+        interval_us = scenario.core1_interval_us
+        if interval_us is None:
+            interval_us = group.UPDATE_INTERVAL_US
+        runner = Core1Runner(group.update, interval_us)
         runner.start()
 
-        arm_group(group, scenario, runner, bidir_indices)
+        arm_group(group, scenario, runner, arm_times)
 
         print("Running scenario for {}ms...".format(scenario.duration_ms))
         run_start = utime.ticks_ms()
         last_status_ms = run_start
         last_gc_ms = run_start
+        # Reused every iteration below instead of allocating a fresh list each
+        # pass - this loop runs for the whole scenario at poll_ms cadence
+        words = [RECORD_ZERO_WORDS] * 4
+
+        # Status snapshots are stored as raw numbers in preallocated arrays
+        # while the loop runs - no string formatting, no print(), no file
+        # I/O - and only formatted/printed once the loop has ended (see
+        # below). Any COM-port or SD-card write during this loop is a Core 0
+        # cost that can stall Core 1's deadline schedule (advisor's
+        # 2026-10-09 performance review found status_interval_ms's own old
+        # print() lining up almost exactly with schedule_behind_count's
+        # fall-behind timestamps - see bidirectional_dshot_review.md's W32/
+        # W34); the fix is not WHERE the write goes, it's that there is no
+        # write at all until after the window closes. Sized from the
+        # scenario's own already-known duration/interval, not a tuned
+        # constant, with one slot of headroom.
+        status_capacity = scenario.duration_ms // scenario.status_interval_ms + 1
+        status_count = 0
+        status_elapsed_ms = array('I', [0] * status_capacity)
+        status_records = array('I', [0] * status_capacity)
+        status_nonzero = array('I', [0] * status_capacity)
+        status_missed = array('I', [0] * status_capacity)
+        status_gap_us = array('I', [0] * status_capacity)
 
         while True:
             elapsed_ms = utime.ticks_diff(utime.ticks_ms(), run_start)
@@ -238,9 +314,12 @@ def run_scenario():
             for index, spec in enumerate(scenario.motors):
                 group.set_throttle(index, spec.profile.throttle_at(elapsed_ms))
 
+            throttles = group.get_all_throttles()
+
             # One record per pass in which any motor has a capture it has not
             # shown before; the other motors' word slots stay zero
-            words = [RECORD_ZERO_WORDS] * 4
+            for i in range(4):
+                words[i] = RECORD_ZERO_WORDS
             record_us = None
             for index in bidir_indices:
                 capture = group.raw_telemetry(index)
@@ -257,7 +336,10 @@ def run_scenario():
                 if any(capture_words):
                     seen[index] += 1
                     if is_sampled(seen[index], scenario.decode_every):
-                        tallies[index].add(group.decode_telemetry(index, capture_words))
+                        result = group.decode_telemetry(index, capture_words)
+                        tallies[index].add(result)
+                        if result is not None and result["crc_ok"] and not result["not_running"]:
+                            real_spin_seen[index] = True
                 if record_us is None or utime.ticks_diff(ticks_us, record_us) > 0:
                     record_us = ticks_us
                 age_us = utime.ticks_diff(utime.ticks_us(), ticks_us)
@@ -268,7 +350,6 @@ def run_scenario():
                 total_records += 1
                 if any(any(w) for w in words):
                     total_nonzero_records += 1
-                throttles = group.get_all_throttles()
                 sink.write_record(record_us, throttles, words)
                 if last_record_us is not None:
                     gap = utime.ticks_diff(record_us, last_record_us)
@@ -277,7 +358,8 @@ def run_scenario():
                 last_record_us = record_us
 
             check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
-            check_expect(scenario.expect, largest_gap_us, total_records, elapsed_ms, loop_times[1])
+            check_stuck_at_rest_failsafe(bidir_indices, real_spin_seen, throttles, elapsed_ms)
+            check_expect(scenario.expect, largest_gap_us, total_records, elapsed_ms)
 
             if scenario.gc_every_ms and utime.ticks_diff(utime.ticks_ms(), last_gc_ms) >= scenario.gc_every_ms:
                 gc_start_us = utime.ticks_us()
@@ -291,10 +373,15 @@ def run_scenario():
             now = utime.ticks_ms()
             if utime.ticks_diff(now, last_status_ms) >= scenario.status_interval_ms:
                 last_status_ms = now
-                elapsed_s = utime.ticks_diff(now, run_start) / 1000
-                rate = total_records / elapsed_s if elapsed_s else 0.0
-                print("  [{:7.1f}s] records={} nonzero={} missed={} rate={:.1f}/s largest_gap={:.1f}ms".format(
-                    elapsed_s, total_records, total_nonzero_records, missed, rate, largest_gap_us / 1000))
+                # Numbers only - no .format(), no print(), no file write.
+                # See this loop's own setup comment above for why.
+                if status_count < status_capacity:
+                    status_elapsed_ms[status_count] = utime.ticks_diff(now, run_start)
+                    status_records[status_count] = total_records
+                    status_nonzero[status_count] = total_nonzero_records
+                    status_missed[status_count] = missed
+                    status_gap_us[status_count] = largest_gap_us
+                    status_count += 1
 
             utime.sleep_ms(scenario.poll_ms)
 
@@ -321,6 +408,17 @@ def run_scenario():
         if group is not None:
             group.disarm()
         print("Motors stopped and disarmed.")
+
+        # Formatted and printed only now - runner.stop() above already
+        # returned, so Core 1 is idle and nothing here can affect its
+        # pacing. The loop above only ever stored raw numbers.
+        for i in range(status_count):
+            elapsed_s = status_elapsed_ms[i] / 1000
+            rate = status_records[i] / elapsed_s if elapsed_s else 0.0
+            print("  [{:7.1f}s] records={} nonzero={} missed={} rate={:.1f}/s largest_gap={:.1f}ms".format(
+                elapsed_s, status_records[i], status_nonzero[i], status_missed[i],
+                rate, status_gap_us[i] / 1000))
+
         published = {i: last_seq[i] for i in bidir_indices}
         # The thresholds are judged on a run that reached its end; one that was
         # cut short (a gap or rate threshold, a Core 1 error) has no verdict
@@ -330,8 +428,31 @@ def run_scenario():
             verdict = "fail: " + "; ".join(failures)
         else:
             verdict = "pass"
-        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict,
-                      {"max_loop_gap_us": loop_times[1], "gc_runs": gc_runs, "gc_max_us": gc_max_us})
+        extra = {"gc_runs": gc_runs, "gc_max_us": gc_max_us}
+        if runner is not None:
+            # >0 means the deadline schedule fell behind and had to skip
+            # forward at least once this run - the loop's own cost exceeded
+            # core1_interval_us for at least one tick - see Core1Runner's
+            # own note on this counter.
+            extra["schedule_behind_count"] = runner.schedule_behind_count
+        if arm_times[0] is not None:
+            # Time 0 for classify_reply_timeline.py --from-arm, on a run that
+            # never armed as well: that is the run whose arming log matters most
+            extra["arm_ticks_us"] = arm_times[0]
+            if runner is not None and runner.schedule_behind_count:
+                # When (ms since arm()) each of the first few fall-behind
+                # events happened - BUG-002, 2026-10-08: testing whether
+                # these land disproportionately inside AM32's narrow
+                # early-boot calibration window, not just how often they
+                # happen. Same clock as arm_ticks_us.
+                filled = min(runner.schedule_behind_count, runner.BEHIND_AT_CAPACITY)
+                extra["schedule_behind_at_ms_since_arm"] = ",".join(
+                    str(utime.ticks_diff(runner.behind_at_us[i], arm_times[0]) // 1000)
+                    for i in range(filled))
+        if arm_times[1] is not None:
+            # Time 0 for scripts/classify_reply_timeline.py
+            extra["armed_ticks_us"] = arm_times[1]
+        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict, extra)
         sink.close()
         print("SD card flushed and unmounted.")
 
@@ -348,9 +469,12 @@ def run_scenario():
         print("Captures published but never seen:", missed)
         print("Largest gap between records: {:.1f}ms".format(largest_gap_us / 1000))
         print("Oldest capture at the moment it was read: {:.1f}ms".format(max_age_us / 1000))
-        print("Longest gap between update() calls (measured on Core 1): {:.1f}ms".format(loop_times[1] / 1000))
         if gc_runs:
             print("Forced garbage collections: {} (longest {:.1f}ms)".format(gc_runs, gc_max_us / 1000))
+        if runner is not None and runner.schedule_behind_count:
+            print("WARNING: the deadline schedule fell behind {} time(s) - update() cost "
+                  "exceeded core1_interval_us for at least that many ticks".format(
+                      runner.schedule_behind_count))
         for index in tallies:
             print("Motor {} decoded on the device (every {}th capture): {}".format(
                 index, scenario.decode_every, tallies[index].summary()))

@@ -131,9 +131,15 @@ def list_remote():
 
 
 def list_local():
+    # meta.txt is written only by fetch() below, once the session's binary
+    # captures have actually arrived - checked instead of mere directory
+    # existence because scripts/run_test.py now creates captures/<session>/
+    # itself, right after the run, to save the console log (run.log) next to
+    # where this script will later put the rest of that same session. A
+    # directory holding only that log must still count as new.
     if not LOCAL_DIR.exists():
         return set()
-    return {p.name for p in LOCAL_DIR.iterdir() if p.is_dir()}
+    return {p.name for p in LOCAL_DIR.iterdir() if p.is_dir() and (p / "meta.txt").exists()}
 
 
 def _delete_script(session_ids):

@@ -4,6 +4,13 @@
 
 **Review status:** 2026-08-25
 
+**Note (2026-10-11):** this file references `specification/DSHOT_PROTOCOL.md`,
+`AM32_SOURCE_VERIFICATION.md` and `AM32_ARMING_AND_BETAFLIGHT.md` in several historical entries
+below, describing edits made to those files at the time. Those three were replaced by
+`specification/DSHOT.md`, `AM32.md` and `BETAFLIGHT.md` on 2026-10-11; the historical mentions
+below are left as-is (they describe what existed when each entry was written), except where a
+pointer was updated to the fact's current home.
+
 ---
 
 ## Executive summary
@@ -1070,7 +1077,7 @@ but not a squash).
 | W7 | Implement transaction model + atomic `read_capture()` | R1, R2, R3 | L | DONE (reshaped: one-slot capture, see note) |
 | W8 | Epoch-clean `start()`/`stop()` + startup ordering | R8, R9, TC | M | DONE |
 | — | **Phase 3 gate: continuous transaction engine proven — integration may build on it** | — | — | — |
-| W9 | On-Pico eRPM decoder (returns eRPM, not RPM) | R10, R15 | L | IN PROGRESS — port, offline verification and on-device timing done; now used live via `decode_capture()`; the on-Pico-vs-offline comparison of the same words is still outstanding |
+| W9 | On-Pico eRPM decoder (returns eRPM, not RPM) | R10, R15 | L | MOSTLY DONE (2026-10-11) — port, offline verification, on-device timing, and the on-Pico-vs-offline cross-check (now a standard part of every scenario run via `analyze_bidir_capture_log.py`) are all done; EDT/stopped-motor frame-type discrimination remains genuinely deferred, confirmed absent from `gcr_decode.py` |
 | W10 | Telemetry health state | R16 | M | TODO |
 | W11 | `MotorGroup` bidir integration + PIO allocator | R7, R13 | L | DONE (reshaped: motors injected, no allocator; one bidirectional motor verified through the facade) |
 | W12 | Multi-motor simultaneous telemetry test | TD, R7 | M | TODO |
@@ -1080,7 +1087,7 @@ but not a squash).
 | W15 | ADR-002 accuracy fixes | A1, A2, A3, A6, A7 | S | DONE (2026-09-19) |
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
-| W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | IN PROGRESS |
+| W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | MOSTLY DONE (scenario engine and channels 1/2/3 solid; channel 4 PARKED, root cause unknown) - own harness-failure-path gating condition never completed, later found to be a real gap, see BUG-008 (OPEN) |
 | W19 | Run-length capture in the PIO receiver | — | L | DONE (code), hardware verification of W27/W28 still open - see those rows. Spike DONE 2026-09-20 (100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us); integrated as an opt-in `receiver=` 2026-09-26, validated on the bench (W23-W25), adopted as the sole production receiver (W26), harness ported and sample receiver removed from `BidirectionalDShot` (W27-W28, code done 2026-09-26, bench was powered off) |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
@@ -1095,6 +1102,10 @@ but not a squash).
 | W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Driver removal DONE and bench-verified (unaffected by W27's tests). The new calibrate_bidir_rx.py standalone tool is BROKEN - see its own header and the note below |
 | W29 | Tooling cleanup: retire rle_bench.py and its duplicates, fix PIO-block conflicts in device tests, move the calibration tool out of tests/ | — | M | DONE (2026-09-26) |
 | W30 | Investigate and fix calibrate_bidir_rx.py's broken capture (reads TX's own echo, not the ESC's reply) | — | M | TODO |
+| W31 | Serialise board commands on the PC side: lock, instructions, timeout reset | — | M | TODO |
+| W32 | Sleep reliability on this MicroPython/RP2350 port: can Core 1 wake up late, and does Core 0 activity stall it | — | M | PARTIALLY CLOSED (2026-10-11) - arming-correlation scope superseded by BUG-002 (moot, not built); GC-pauses-both-cores answered (ADR-002/ADR-005); `sleep_us` busy-wait-vs-early-return question still OPEN |
+| W33 | Driver hot-path tightening: fewer per-tick allocations/lookups in update()/drain_rx()/send_throttle_command() | — | M | DONE (2026-10-10) - detail moved to ADR-002's "Further hot-path tightening" section |
+| W34 | Buffer the harness's periodic status numbers in memory; format/write only before or after the timed window, never during | — | S | DONE (2026-10-09; bench-confirmed 2026-10-10, see its own caveat note below - that confirmation predates BUG-002's fix) |
 
 ### Work items
 
@@ -1532,6 +1543,18 @@ narrower than the original round: comparing those on-Pico verdicts against an of
 re-decode of the same logged words. The stopped-motor/extended-telemetry discrimination remains
 deferred.
 
+*Note (2026-10-11), mostly DONE - the narrowed scope above is satisfied, just not under this
+item's original name.* The entire receiver architecture this item was written against (the sample
+receiver, `analyze_capture()`, `poll_telemetry()`) was replaced by the frame receiver in W19-W29;
+`scripts/analyze_bidir_capture_log.py` now does exactly the comparison this note asked for as a
+standard part of every scenario run - it decodes every logged capture offline and cross-checks
+that against the device's own sampled tally (`decode_tally.py`), not as a one-off experiment.
+Still genuinely deferred, confirmed by grepping `driver/gcr_decode.py` (no match): EDT/stopped-
+motor frame-type discrimination is documented (`specification/AM32.md`#10's bit-8 discrimination
+note) but not implemented in production code - carries forward as real remaining scope, not
+closed by the architecture pivot. `MOTOR_POLES` verification against the bench encoder is W16's
+own separate scope, not this one's.
+
 **W10 — Telemetry health state (R16)** · driver module from W9
 Wrap decoded telemetry in explicit health state: `valid`, `erpm`, `timestamp` (ticks),
 `age_us`-style accessor, and counters — `frames_received`, `crc_errors`, `frames_missed`,
@@ -1926,6 +1949,24 @@ hung Pico are not observable from here). The default is 500ms as decided; the be
 for 3000ms explicitly and check eRPM, the code comment says what is and is not established, and
 the minimum window that reliably starts the motor has not been measured. Lesson recorded in
 `tests/test_motor_group_telemetry.py`: CRC-valid replies do not prove the motor spun.
+
+*Note (2026-10-11).* This item's own DONE-gating condition from above - "deliberately trigger one
+on-device failure... to confirm the harness actually aborts, exits non-zero, and marks
+`outcome=failed`" - was never completed, and when it was finally examined by a later code review
+(2026-09-27), the answer was worse than "unverified": `bug-reports/BUG-008-harness-misses-silent-
+esc-and-loop-stalls.md` found the reply failsafe genuinely cannot trip with the frame receiver (a
+silent ESC's capture of our own echoed frame keeps `total_nonzero_records` climbing, so the check
+never fires), and is OPEN, fix proposed but not implemented. The scenario engine and channels
+1-3 substance of this item are solidly done (everything above); its own harness-failure-path
+check is not just outstanding, it is a confirmed real gap - don't flip this row to a plain DONE
+without BUG-008 landing first.
+AM32's own arming gate needs more than 1s of continuous zero throttle after it starts listening,
+plus a 600ms startup tune after a cold boot - about 2s worst case, well above the 500ms default.
+`DEFAULT_ARM_DURATION_MS` was raised to 2000ms on that basis (user decision, same date). The
+500/1000ms non-arming result above is now explained, not just observed: those windows were simply
+shorter than AM32's own gate. Offline re-analysis of BUG-002's stored captures the same day found a
+2.0-2.5s CRC-failing prefix at the start of every affected motor's log, in the same range as this
+gate - see that bug report's "Offline re-analysis" section; not confirmed as the same mechanism.
 
 **W19 — Run-length capture in the PIO receiver (idea)** · `driver/dshot_pio.py` (`dshot_bidir_rx`), `driver/gcr_decode.py`, `driver/dshot_profiles.py`, `decision/ADR-002-bidirectional-dshot.md`
 
@@ -2423,3 +2464,250 @@ doesn't reuse) was not isolated - see the tool's own header for the full diagnos
 **Done when:** the tool captures a real, varying-with-eRPM 4-word GCR reply from a spinning motor,
 matching what the sample receiver produced when it was still wired into `BidirectionalDShot` (see
 W24's comparison).
+
+**W31 — Serialise board commands on the PC side: lock, instructions, timeout reset** ·
+`scripts/deploy.py`, `scripts/run_test.py`, `scripts/pull_captures.py`, `.claude/commands/deploy.md`,
+CLAUDE.md
+
+Found 2026-09-27, reviewing how the local Claude session drives the bench while chasing BUG-002.
+Taken one at a time, the harness is sound; what is missing is anything that stops two board commands
+from overlapping, and nothing in the instructions asks for one at a time.
+
+- **Nothing serialises board commands.** `deploy.py` (13-14 separate `mpremote cp` calls, then
+  `mpremote reset`), `run_test.py` (deploy, then `mpremote run`) and `pull_captures.py` (several
+  `mpremote run` calls) each open COM10 many times. Windows holds the port only while one call has it
+  open, so two commands started together (parallel tool calls, or one in the background) interleave:
+  - every run uploads its scenario to the same device name, `scenario.json`, so run A can execute run
+    B's scenario while its console output is read as A's;
+  - one command's `mpremote reset`, or the Ctrl-C every connect sends, kills the other's live run;
+  - `pull_captures.py` connecting during a live run interrupts it (its docstring says not to; no
+    instruction does). An interrupt that lands while `run_scenario.py`'s `finally` is disarming or
+    finalising the SD card can leave the session at `outcome=running` and the card unmounted
+    uncleanly.
+- **The instructions don't constrain it.** `.claude/commands/deploy.md` says only "run `run_test.py`
+  and report". Nothing says one board command at a time, in the foreground, never alongside
+  `pull_captures.py`, or which timeout to use. CLAUDE.md calls `run_test.py` "the only one that
+  touches hardware", but `deploy.py` resets the board and `pull_captures.py` interrupts it. This
+  backlog's own "How to work" step 5 still names `deploy.py --scenario` as the way to run a scenario;
+  since the deploy/run split it is `run_test.py --scenario`.
+- **A run killed on the PC side keeps running on the Pico.** Claude Code's Bash tool times out after
+  2 minutes by default. A scenario takes ~50-80 s (arming can now take up to ~12 s with BUG-003's
+  reply gate); `pull_captures.py` can take minutes by its own comments. If the tool kills
+  `run_test.py`, the scenario carries on with the motors following their profile, and the next board
+  command interrupts it mid-way, with the risks above.
+- **Not a race, recorded for context:** between sessions the ESC resets 0.5 s after the last frame and
+  then reboots every ~2.6 s while the line is held low; consecutive stored sessions are ~20 s apart, so
+  the next `arm()` meets it at a random point of that loop. That fed BUG-002 under a timer-only
+  `ARMED`; BUG-003's reply gate (27722bb) absorbs it, so no change is needed here. The Pico-side race
+  at the end of a session (`Core1Runner.stop()` returning before Core 1 has left `update()`) is
+  BUG-007, not repeated here.
+
+Plan:
+1. **A board lock.** One small helper in `scripts/` used by `deploy.py`, `run_test.py` and
+   `pull_captures.py` around all their `mpremote` calls: an exclusive lock file (atomic create, holding
+   the PID, the command line and the start time). A second command fails at once with "board busy:
+   <command>, pid N, since <time>". A lock whose PID is gone is reported and taken over.
+   `run_test.py` holds one lock across its deploy and its run, so nothing slips in between.
+2. **Instructions.** In `.claude/commands/deploy.md` and CLAUDE.md:
+   - board commands (`deploy.py`, `run_test.py`, `pull_captures.py`, any `mpremote`) run one at a
+     time, in the foreground, never as parallel tool calls or background jobs;
+   - give them a 10-minute Bash timeout;
+   - run `pull_captures.py` only after `run_test.py` has returned;
+   - if a run was killed or timed out, reset the board (`python scripts/deploy.py`) before anything
+     else;
+   - correct "the only one that touches hardware", and this backlog's step 5.
+3. **`run_test.py` resets the board when its own `mpremote run` timeout fires**, so a stuck run does
+   not leave the motors under throttle.
+4. **Optional:** `run_test.py` prints the scenario file name before the run starts, so the console
+   output can be matched to the `scenario.json` copy in the session folder.
+
+**Done when:** starting a second board command while one is running fails with the "board busy"
+message (checked on a PC with a fake `mpremote`, and once on the bench); the instructions above are in
+`.claude/commands/deploy.md` and CLAUDE.md; a `run_test.py` whose run times out leaves the board reset;
+unit tests still pass.
+
+**W32 — Sleep reliability on this MicroPython/RP2350 port** · `driver/dshot_pio.py` (`drain()`,
+`BidirectionalDShot.stop()`), `driver/motor_group.py` (`disarm()`), `tests/harness/core1_runner.py`,
+new tool under `tools/`
+
+Found 2026-10-09, during an advisor-assisted deep performance review of the DShot driver, prompted
+by the user asking how reliable `sleep_us`/`sleep_ms` actually are - whether code is guaranteed to
+resume right after the requested time, or can wake up earlier or later. `Core1Runner.loop()` and
+several points in `driver/` (`DShotPIO.drain()`, `MotorGroup.disarm()`'s `DISARM_ROUND_GAP_US`,
+`BidirectionalDShot.stop()`'s `STOP_REPLY_MARGIN_US`) all depend on `utime.sleep_us()` returning
+close to on time. Nobody has verified, against this firmware build's actual source, whether that
+sleep is a pure busy-wait against a hardware counter (can only return late, never early) or
+something interrupt/event-based, or whether this port's garbage collector stops both cores together
+(so a GC Core 0 triggers would stall Core 1's sleep too, even though Core 1 allocated nothing) - the
+"GC stalls both cores" suspicion already on record elsewhere has never been confirmed against
+source.
+
+A same-session finding sharpened why this matters, and has since been resolved: a 10-run bench
+batch's `schedule_behind_count` fall-behind timestamps clustered at roughly ARMED+1000ms and
+ARMED+2000ms in 9 of 10 runs, matching the test harness's own `status_interval_ms=1000` status
+print on Core 0. W34 fixed that (buffered the numbers, printed only after the loop stopped) and a
+re-run confirmed both the fix (fall-behind total 91->40, avg 9.1->4.0/attempt, max 15->8, clustering
+gone) and that it did **not** move clean-arm rate (0/10 vs. the prior 3/10, not statistically
+distinguishable at this n) - see BUG-002.md's "Telemetry overhead and the timed window" section. The user explicitly
+redirected the investigation after that result, away from ESC/hardware-side theories and back onto
+this project's own code running on the Pico - which is this item's actual scope.
+
+**Refined hypothesis, 2026-10-10 (supersedes the original framing below):** `schedule_behind_count`
+only fires when a tick blows through the *entire* `core1_interval_us` budget. It is blind to a tick
+that still finishes on time but took longer than typical - e.g. ~900us instead of the usual ~745us,
+still under a 1045us budget, zero recorded. Every fall-behind-based check so far (the original
+clustering, the absolute-period threshold test, W34's fix) has only ever looked at that coarse,
+period-busting signal, and none of it has moved clean-arm rate. Sub-threshold per-tick jitter
+*during the real arming window*, correlated against that run's actual clean/reboot outcome, has
+never been measured - this is the concrete, still-open, code-side mechanism this item now targets.
+
+Plan:
+1. Background, still useful, not yet done: run `os.uname()` on the actual Pico to get the exact
+   firmware build, then read that build's `ports/rp2/mphalport.c` (`mp_hal_delay_us`) and the
+   pico-sdk's `sleep_us`/`busy_wait_us` it calls, to establish whether Core 1's sleep is a pure
+   polling busy-wait (can only return late) or can return early; read this port's cross-core GC
+   implementation to confirm or refute "a GC triggered on Core 0 pauses Core 1 too". Useful for the
+   library's own correctness regardless of what the measurement below finds.
+2. **Primary: a standalone diagnostic tool, not wired into the regular harness** (the project
+   already retired one earlier attempt at per-tick arming instrumentation, `measure_arming`, for
+   costing ~90us/call on the exact loop being measured - this has to stay cheap enough per tick that
+   it doesn't distort what it measures: two `ticks_us()` calls and three preallocated-array stores,
+   nothing else, no string formatting or branching beyond a capacity bound check). It:
+   - runs a copy of `Core1Runner`'s actual deadline-scheduling logic (not the production class
+     itself, so no instrumentation lands in `tests/harness/core1_runner.py`) against **real**
+     `MotorGroup.update()` on **real** bidirectional motors, matching the current bench wiring;
+   - records, per tick, into three preallocated arrays (tick start, after-update, after-sleep
+     `ticks_us()`), reused across cycles rather than reallocated;
+   - runs several arm/disarm cycles in one session (matching `tests/device/test_bidir_restart_cycles.py`'s
+     already-validated pattern, `gc.collect()`'d at the start of each cycle to normalize heap state
+     between cycles - a real difference from this investigation's usual fresh-boot-per-attempt
+     practice, called out as a caveat, not hidden);
+   - classifies each cycle clean/reboot the same way `run_scenarios.py` does (armed-after-ms against
+     `CLEAN_ARM_THRESHOLD_MS`), and reports per-tick update-duration and total-tick-period
+     statistics (min/median/p95/max) separately for the arming phase and the post-armed phase of
+     each cycle, so a human can see whether jitter *during arming specifically* differs between
+     clean and reboot cycles - not just whether it differs overall.
+3. Write is strictly before/after each cycle's measured window (W34's own corrected principle),
+   never during - the per-cycle summary is formatted and printed only after that cycle's loop has
+   stopped.
+
+Needs the user's go-ahead before its first run on real hardware (standing project convention).
+
+**Done when:** the background source-reading in step 1 is done; the diagnostic tool has run enough
+cycles to say whether sub-threshold per-tick jitter during the real arming window correlates with
+clean/reboot outcome - either a real lead (worth a larger bench batch) or another ruled-out theory,
+recorded in BUG-002.md either way.
+
+**PARTIALLY CLOSED, 2026-10-11 - primary scope superseded; one of step 1's two questions already
+answered; the other is still genuinely open.** BUG-002's actual root cause, found the same day
+this item's "Refined hypothesis" was written, was this project's own test harness - not driver
+timing - and removing it took clean-arm rate from 14% to 100% (BUG-002.md). There is no outcome
+variance left for step 2's diagnostic tool to correlate sub-threshold jitter against, so the
+primary plan above is moot, not merely unfinished - do not build that tool.
+
+Of step 1's two standalone questions: whether this port's garbage collector pauses both cores
+together was already measured and answered independently (ADR-002's "Command-loop and decode
+performance" section and ADR-005's hot-path note, with exact before/after numbers). Whether
+`sleep_us` is a pure busy-wait or can return early is still **open** - nobody has read
+`mphalport.c`/the pico-sdk source for this. It still matters for exactly the reasons this item
+originally gave: `DISARM_ROUND_GAP_US`, `STOP_REPLY_MARGIN_US` and `drain()`'s timing assumptions
+all depend on `sleep_us` never returning early. An early return would shrink the disarm gap,
+which is the same collision risk `bug-reports/BUG-006-disarm-frames-collide-with-bidir-reply.md`
+already describes for a different reason. If this question is ever picked up again, it is a pure
+source-reading question, independent of arming outcomes or any bench measurement.
+
+(The "0/10 vs. the prior 3/10, not statistically distinguishable" clean-arm-rate comparison
+earlier in this entry, and W34's own "no accompanying change in clean-arm rate" confirmation, were
+both measured before the harness confound above was found and removed - see the caveat added to
+W34's own entry below. Neither comparison is evidence that Core 0 I/O timing is harmless to
+arming; both were run at the same confound-created floor on both sides.)
+
+**W33 — Driver hot-path tightening: fewer per-tick allocations/lookups** · `driver/dshot_pio.py`,
+`driver/motor_group.py`, `driver/capture_mailbox.py`
+
+Found 2026-10-09, same advisor review as W32. Per-tick cost during arming is two `drain_rx()` calls,
+four `send_throttle_command()` calls, `bidir_ready()`, and several `ticks_us()`/`ticks_diff()` calls
+- all inside `MotorGroup.update()`, the exact loop BUG-002 measures the pacing of. Concrete,
+allocation/lookup-reducing changes were flagged, none of which trade one magic number for another
+(per the user's standing direction: optimizations must reduce cost or variance, not add a new tuned
+constant):
+- During arming, the all-zero packet `send_throttle_command(0)` rebuilds and CRC-validates on every
+  call even though the result never changes - precompute it once.
+- Bind `self.sm.put` as a local the same way `drain_rx` is already bound to `mailbox.drain`
+  (`DShotPIO`'s own comment explains why: a Python-level call layer measurably slowed the loop
+  before).
+- Hoist the per-motor `self.ready_first_ms`/`self.ready_last_ms`/`self.ready_seen` element lookups
+  to locals inside `update()`'s per-motor loop.
+- Consider `@micropython.native` on `update()`/`drain()`/`send_throttle_command()` - check this
+  port's native emitter actually supports RP2350 before relying on it, don't assume.
+- `CaptureMailbox.latest()` allocates two tuples (the words tuple, the returned 3-tuple) per call;
+  called from Core 0 at roughly 2kHz in the harness's polling loop, not the command-loop hot path
+  itself, but worth measuring since it feeds the same GC-pressure question as W32.
+
+Plan: implement the changes above one at a time, each confirmed by a before/after measurement, not
+applied as a blind batch - and explicitly re-measure the exact frame-to-frame spacing between
+motors (what `arming_frame_gap_us` exists to test) before and after, since any per-tick cost change
+shifts that spacing. Never mix a perf change into the same bench batch as BUG-002 arming-reliability
+data without calling that out.
+
+**Done when:** `update()`'s own per-tick cost is measured before and after each change; each change
+is shown to reduce cost or variance without introducing a new tuned constant; the frame-to-frame
+spacing check above is recorded.
+
+**DONE, 2026-10-10.** `arming_frame_gap_us` itself was removed from the codebase the same day
+(dead code for a retired bisection test - see its own backlog note elsewhere in this file), so the
+frame-to-frame spacing check above no longer applies. The four measured changes (one kept-outright,
+two measured-and-reverted, one big kept win with a timing-interaction caveat) and their numbers now
+live in ADR-002's "Further hot-path tightening (2026-10-10)" section, self-contained - read that,
+not this entry, for the detail. `CaptureMailbox.latest()`'s double tuple allocation (lower
+priority) was not attempted this pass.
+
+**W34 — Buffer the harness's periodic status numbers; write only before/after the timed window** ·
+`tests/harness/run_scenario.py`, `tests/harness/capture_sink.py`, `tests/harness/bidir_capture_sink.py`
+
+Found 2026-10-09, same advisor review as W32: `run_scenario.py`'s periodic status line
+(`status_interval_ms`, default 1000ms) was the one `print()` happening on Core 0 during the
+scenario's timed running window, and it lined up almost exactly with the ARMED+1000ms/ARMED+2000ms
+clustering in `schedule_behind_count`'s fall-behind timestamps (W32's lead).
+
+First attempt moved the write from the COM port to an SD card file (`status.log`), on the
+reasoning "SD is faster than USB serial." The user corrected this: the right principle is that the
+bench may write to the COM port (or the SD card) only before a test session starts or after it has
+already finished - never during, because any I/O during the window risks a GC stall or its own
+latency spike that distorts the exact timing the harness exists to measure. Moving the write from
+one I/O target to another during the window was the same mistake in a different place. The content
+itself is also tiny - half a dozen small integers per interval, at most a few dozen intervals in any
+scenario run to date - so the actual fix is to do no formatting and no I/O inside the loop at all:
+store the raw numbers, format and write them only once the window has closed.
+
+Implemented: `run_scenario.py` preallocates five `array('I', ...)` buffers before the running loop
+starts, sized from the scenario's own already-known `duration_ms // status_interval_ms + 1` (not a
+new tuned constant - derived from values the scenario already declares). Inside the loop, reaching
+a status tick stores five raw integers (elapsed ms, records, nonzero records, missed, largest gap
+us) into the next slot and bumps a count - no `.format()`, no `print()`, no file write, the same
+zero-cost-when-healthy shape as `Core1Runner`'s own `behind_at_us`. The buffered lines are formatted
+and `print()`-ed only in the `finally` block, after `runner.stop()` has already returned - so Core 1
+is confirmed idle before any of this output happens, not just "after the measured window" by
+convention. `status_count` defaults to 0 before the `try` block, so a run that fails before
+reaching the loop prints nothing here rather than raising `NameError` out of `finally` and masking
+the real failure. The SD-card detour (`CaptureSinkBase.open_status_log()`/`log_status()`) was
+reverted in the same change - `capture.bin`'s own per-record writes (already existing, not added by
+this item) are the one SD write that happens during the window, and are out of this item's scope.
+
+**Done when:** (all met, confirmed on the bench 2026-10-10) - no formatting, print(), or file write
+happens between a status tick firing and the running loop ending; unit suite (203 tests) passes; a
+10-round `deadline` batch confirmed the ARMED+1000ms/+2000ms clustering is gone (fall-behind total
+dropped from 91 to 40, avg 9.1 to 4.0/attempt, max 15 to 8) with no accompanying change in clean-arm
+rate (not statistically distinguishable at n=10 either way - see BUG-002.md's "Telemetry overhead
+and the timed window" section). The fix is real and worth keeping.
+
+**Caveat (added 2026-10-11):** that 10-round confirmation batch was committed at 08:59, 2026-10-10
+(so run no later than that) - before `1d23629` (12:48, same day) removed the test harness's own
+arm_group() confound. Both arms of the clean-arm-rate comparison (before/after this fix) were
+measured at the low, confound-created floor, so "no accompanying change in clean-arm rate" cannot
+show whether this fix affects arming one way or the other - it was never a fair test of that, not
+evidence that Core 0 I/O is harmless to arming. The fall-behind-count reduction (91 to 40) still
+stands, but only as a relative comparison: both arms ran with the same confound, which inflates
+absolute fall-behind counts (the confound raised `update()`'s own cost from ~530us to ~560-615us,
+directly raising how often a tick blows its budget) but affects both arms alike, so the before/after
+difference between them is still meaningful even though the absolute counts on each side are not.

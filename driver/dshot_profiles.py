@@ -31,8 +31,10 @@ class DSHOT_SPEEDS:
 #                    samples land in each bit of the ESC's reply.
 #   expected_ratio   the reply's measured bit period in RX clock cycles. It is
 #                    measured on hardware rather than derived from the nominal
-#                    reply rate, because ESC oscillators run a few percent off
-#                    nominal. gcr_decode.estimate_bit_period_fixed uses it as a
+#                    reply rate, because AM32 clocks its reply from a per-MCU
+#                    timer/prescaler, not a fraction of the nominal rate - a
+#                    deterministic, per-MCU-family offset, not oscillator
+#                    drift (see specification/AM32.md). gcr_decode.estimate_bit_period_fixed uses it as a
 #                    fixed divisor instead of searching for the period on every
 #                    capture, which is what keeps decoding cheap enough to run
 #                    on the Pico.
@@ -43,7 +45,7 @@ class DSHOT_SPEEDS:
 # See decision/ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section
 # for how these values were measured and chosen.
 BIDIR_PROFILES = {
-    # rx_speed = 9 x the nominal 375kHz reply rate; the measured 8.7069 cycles per bit means the ESC replies ~3% faster than nominal
+    # rx_speed = 9 x the nominal 375kHz reply rate; the measured 8.7069 cycles per bit (the ESC replies ~3% faster than nominal) matches AM32's own per-MCU-timer math for an F051-class build, not oscillator drift
     DSHOT_SPEEDS.DSHOT300: {"rx_speed": 3_375_000, "expected_ratio": 8.7069, "ratio_tolerance": 0.0},
     # rx_speed = 9 x the nominal 750kHz reply rate
     DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129, "ratio_tolerance": 0.0},

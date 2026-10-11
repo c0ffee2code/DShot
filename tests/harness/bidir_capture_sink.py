@@ -84,8 +84,8 @@ class BidirCaptureSink(CaptureSinkBase):
         self.finalize_meta(outcome, fields)
 
     def write_record(self, ticks_us, throttles, words):
-        """Write one record: `throttles` is the 4 motors' throttle values, `words`
-        the 4 motors' captures (a 1-tuple each - see RECORD_FMT)."""
+        """Write one record to capture.bin: `throttles` is the 4 motors' throttle
+        values, `words` the 4 motors' captures (a 1-tuple each - see RECORD_FMT)."""
         fields = [ticks_us]
         fields.extend(throttles)
         for group in words:

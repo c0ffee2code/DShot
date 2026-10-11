@@ -18,17 +18,26 @@ SCENARIOS = sorted((HARNESS / "scenarios").glob("*.json"))
 
 def valid_scenario():
     """A minimal valid scenario: motor 0 bidirectional alone on PIO0 (its frame
-    receiver fills the block), three idle motors on the free PIO2 block."""
+    receiver fills the block), three idle motors on the free PIO2 block. Every
+    field here is one build_scenario() requires outright - there is no
+    "leave it out and get a default" case to fall back on (see scenario.py's
+    _require())."""
     idle = [{"type": "hold", "throttle": 0, "duration_ms": 1000}]
     return {
         "dshot_speed": "DSHOT300",
         "duration_ms": 1000,
+        "arm_duration_ms": 3000,
+        "status_interval_ms": 5000,
+        "poll_ms": 10,
+        "decode_every": 20,
+        "gc_every_ms": 0,
+        "expect": {},
         "motors": [
             {"pin": 6, "sm_id": 0, "bidirectional": True, "rx_sm_id": 1,
              "profile": [{"type": "hold", "throttle": 100, "duration_ms": 1000}]},
-            {"pin": 7, "sm_id": 8, "profile": idle},
-            {"pin": 8, "sm_id": 9, "profile": idle},
-            {"pin": 9, "sm_id": 10, "profile": idle},
+            {"pin": 7, "sm_id": 8, "bidirectional": False, "profile": idle},
+            {"pin": 8, "sm_id": 9, "bidirectional": False, "profile": idle},
+            {"pin": 9, "sm_id": 10, "bidirectional": False, "profile": idle},
         ],
     }
 
@@ -45,11 +54,25 @@ class ScenarioFilesTest(unittest.TestCase):
                 self.assertGreater(scenario.duration_ms, 0)
 
     def test_every_scenario_arms_long_enough_and_names_the_bench_pins(self):
+        # 2000ms matches AM32.md#16's computed floor (>1s zero-throttle gate
+        # + 600ms startup tune + margin, specification/AM32.md's "Time to
+        # armed" table), not an empirically re-verified safe value - see
+        # BUG-002 for evidence that even more than this can still leave the
+        # ESC unarmed on some runs.
         for path in SCENARIOS:
             with self.subTest(path.name):
                 scenario = load_scenario(str(path))
-                self.assertGreaterEqual(scenario.arm_duration_ms, 3000)
+                self.assertGreaterEqual(scenario.arm_duration_ms, 2000)
                 self.assertEqual(sorted(m.pin for m in scenario.motors), [6, 7, 8, 9])
+
+    def test_every_scenario_stays_under_30s(self):
+        # Keeps this checked-in set fast to iterate on (2026-09-27 decision) - a
+        # deliberately long soak run is a different kind of tool, not a member
+        # of this set, if one gets added back later.
+        for path in SCENARIOS:
+            with self.subTest(path.name):
+                scenario = load_scenario(str(path))
+                self.assertLessEqual(scenario.duration_ms, 30000)
 
 
 class ScenarioValidationTest(unittest.TestCase):
@@ -96,6 +119,32 @@ class ScenarioValidationTest(unittest.TestCase):
     def test_receiver_id_on_a_unidirectional_motor(self):
         self.rejected(lambda d: d["motors"][1].update(rx_sm_id=3), "bidirectional is false")
 
+    def test_arming_class_bin_width_zero_is_a_harmless_leftover_key(self):
+        # Retired 2026-10-03 - a lingering "0" (every scenario that had it on
+        # explicitly turned it off already) must not be rejected
+        data = valid_scenario()
+        data["arming_class_bin_width_us"] = 0
+        build_scenario(data)  # does not raise
+
+    def test_arming_class_bin_width_nonzero_is_rejected_as_retired(self):
+        self.rejected(lambda d: d.update(arming_class_bin_width_us=100000), "retired")
+
+    def test_min_send_interval_zero_is_a_harmless_leftover_key(self):
+        data = valid_scenario()
+        data["min_send_interval_us"] = 0
+        build_scenario(data)  # does not raise
+
+    def test_min_send_interval_nonzero_is_rejected_as_retired(self):
+        self.rejected(lambda d: d.update(min_send_interval_us=1000), "retired")
+
+    def test_core1_fixed_schedule_true_is_a_harmless_leftover_value(self):
+        data = valid_scenario()
+        data["core1_fixed_schedule"] = True
+        build_scenario(data)  # does not raise - already matches the only behavior there is
+
+    def test_core1_fixed_schedule_false_is_rejected_as_retired(self):
+        self.rejected(lambda d: d.update(core1_fixed_schedule=False), "retired")
+
     def test_a_unidirectional_motor_cannot_share_a_bidirectional_motors_pio_block(self):
         self.rejected(lambda d: d["motors"][1].update(sm_id=2), "shares PIO block")
 
@@ -111,6 +160,9 @@ class ScenarioValidationTest(unittest.TestCase):
     def test_every_motor_needs_a_profile(self):
         self.rejected(lambda d: d["motors"][1].pop("profile"), "profile is required")
 
+    def test_every_motor_needs_bidirectional_stated_explicitly(self):
+        self.rejected(lambda d: d["motors"][1].pop("bidirectional"), "missing required field: bidirectional")
+
     def test_profile_must_last_as_long_as_the_scenario(self):
         self.rejected(lambda d: d["motors"][1]["profile"][0].update(duration_ms=500), "!= scenario duration_ms")
 
@@ -125,8 +177,8 @@ class ScenarioValidationTest(unittest.TestCase):
         data["expect"] = {"min_crc_valid_pct": {"0": 99.0}, "min_median_erpm": {"0": 10000}}
         self.assertEqual(build_scenario(data).expect["min_median_erpm"], {"0": 10000})
 
-    def test_decode_every_defaults_to_a_sample_and_can_be_turned_off(self):
-        self.assertEqual(build_scenario(valid_scenario()).decode_every, 20)
+    def test_decode_every_is_required_but_can_be_turned_off(self):
+        self.rejected(lambda d: d.pop("decode_every"), "missing required field: decode_every")
         data = valid_scenario()
         data["decode_every"] = 0
         self.assertEqual(build_scenario(data).decode_every, 0)
@@ -138,8 +190,8 @@ class ScenarioValidationTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_scenario(data)
 
-    def test_gc_every_ms_defaults_to_never_and_must_be_a_non_negative_whole_number(self):
-        self.assertEqual(build_scenario(valid_scenario()).gc_every_ms, 0)
+    def test_gc_every_ms_is_required_and_must_be_a_non_negative_whole_number(self):
+        self.rejected(lambda d: d.pop("gc_every_ms"), "missing required field: gc_every_ms")
         data = valid_scenario()
         data["gc_every_ms"] = 100
         self.assertEqual(build_scenario(data).gc_every_ms, 100)
@@ -148,10 +200,14 @@ class ScenarioValidationTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_scenario(data)
 
-    def test_defaults(self):
-        scenario = build_scenario(valid_scenario())
-        self.assertEqual((scenario.arm_duration_ms, scenario.poll_ms), (500, 10))
-        self.assertEqual(scenario.expect, {})
+    def test_no_field_is_silently_defaulted(self):
+        """
+        This is a test suite, not an application - a scenario JSON that omits
+        a setting is a scenario mistake and must fail loudly, never fall back
+        to a guessed value. See scenario.py's _require().
+        """
+        for field in ("arm_duration_ms", "status_interval_ms", "poll_ms", "expect"):
+            self.rejected(lambda d, field=field: d.pop(field), "missing required field: " + field)
 
 
 class ThrottleProfileTest(unittest.TestCase):

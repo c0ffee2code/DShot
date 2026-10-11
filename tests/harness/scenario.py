@@ -40,7 +40,8 @@ class MotorSpec:
 
 class Scenario:
     def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
-                 status_interval_ms, poll_ms, decode_every, gc_every_ms, expect, motors):
+                 status_interval_ms, poll_ms, decode_every, gc_every_ms, expect, motors,
+                 core1_interval_us=None):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
@@ -50,15 +51,32 @@ class Scenario:
         self.gc_every_ms = gc_every_ms
         self.expect = expect
         self.motors = motors
+        # Overrides MotorGroup.UPDATE_INTERVAL_US for this run only (None = use the
+        # library's own default). Exists to investigate BUG-002: it lets a scenario
+        # reproduce a slower Core 1 tick (e.g. the one two bidirectional motors'
+        # RX drain naturally produces) without actually wiring a second motor, to
+        # separate "the tick period" from "a second bidirectional TX/RX pair" as
+        # BUG-002's trigger. Not a knob for tuning real applications.
+        self.core1_interval_us = core1_interval_us
 
     @property
     def bidir_indices(self):
         return [i for i, m in enumerate(self.motors) if m.bidirectional]
 
 
-# Decoding a capture costs about 1.3ms, so only a sample of them is decoded on the
-# device; this is often enough for a percentage and rare enough to stay cheap
-DEFAULT_DECODE_EVERY = 20
+def _require(data, key, context="scenario"):
+    """
+    Fail-fast field lookup: this is a test suite, not an application with
+    reasonable runtime defaults, so a scenario JSON that omits a setting is a
+    scenario mistake, not a signal to silently substitute a guessed value -
+    every one of these controls something that changes test behavior (timing,
+    sampling, thresholds), and a silently-defaulted one has already produced a
+    scenario that looked passing for the wrong reason (see git history around
+    2026-09-19's arm-duration investigation).
+    """
+    if key not in data:
+        raise ValueError(context + " is missing required field: " + key)
+    return data[key]
 
 
 def pio_block(sm_id):
@@ -93,7 +111,7 @@ def build_scenario(data):
     for index, entry in enumerate(motors_raw):
         pin = entry["pin"]
         sm_id = entry["sm_id"]
-        bidirectional = entry.get("bidirectional", False)
+        bidirectional = _require(entry, "bidirectional", "motor " + str(index))
         rx_sm_id = entry.get("rx_sm_id")
 
         if pin in seen_pins:
@@ -179,19 +197,54 @@ def build_scenario(data):
     # reply check is a coarser, cheap proxy: check_reply_failsafe in
     # run_scenario.py, which only asserts "at least one non-all-zero reply
     # appeared".
-    # Every Nth new capture per bidirectional motor is decoded on the device (0 = never)
-    decode_every = data.get("decode_every", DEFAULT_DECODE_EVERY)
+    # Every Nth new capture per bidirectional motor is decoded on the device (0 = never).
+    # Decoding a capture costs about 1.3ms, so only a sample of them is decoded on the
+    # device; this is often enough for a percentage and rare enough to stay cheap.
+    decode_every = _require(data, "decode_every")
     if not isinstance(decode_every, int) or decode_every < 0:
         raise ValueError("decode_every must be a whole number >= 0, got " + str(decode_every))
 
     # Core 0 forces a garbage collection this often (0 = never). A collection
     # pauses both cores, which is what heap churn does to a real application: it
     # shows whether a stall leaves lost or corrupted replies behind it.
-    gc_every_ms = data.get("gc_every_ms", 0)
+    gc_every_ms = _require(data, "gc_every_ms")
     if not isinstance(gc_every_ms, int) or gc_every_ms < 0:
         raise ValueError("gc_every_ms must be a whole number >= 0, got " + str(gc_every_ms))
 
-    expect = data.get("expect", {})
+    core1_interval_us = data.get("core1_interval_us")
+    if core1_interval_us is not None and (not isinstance(core1_interval_us, int) or core1_interval_us < 0):
+        raise ValueError("core1_interval_us must be a whole number >= 0, got " + str(core1_interval_us))
+
+    # Both retired 2026-10-03 (BUG-002 perf cleanup): class-bin ground-truth
+    # classification and the min_send_interval_us pacing floor. Rejected
+    # outright rather than silently ignored if a scenario still sets either
+    # to a nonzero value, so an old file doesn't look like it's still doing
+    # something it no longer does (see _require()'s own rationale above) - a
+    # lingering "0" is harmless and left alone.
+    if data.get("arming_class_bin_width_us", 0):
+        raise ValueError("arming_class_bin_width_us was retired 2026-10-03 - see BUG-002.md's "
+                          "perf review; CaptureMailbox no longer supports class-bin classification")
+    if data.get("min_send_interval_us", 0):
+        raise ValueError("min_send_interval_us was retired 2026-10-03 - see BUG-002.md's "
+                          "perf review; MotorGroup no longer supports a pacing floor")
+
+    # Retired 2026-10-09 (BUG-002, by the user's explicit direction): the
+    # sleep-after-work pad mode. It was the only configuration that ever
+    # reached 100% clean arms on this bench, but only by a constant tuned to
+    # one specific, local measurement of one specific code version - every
+    # such constant needed re-tuning the moment anything changed update()'s
+    # own cost (see bug-reports/BUG-002-...md's "Telemetry overhead" and
+    # "Option A re-tested" entries). Core1Runner now has only one pacing
+    # mechanism (the deadline-anchored one, immune to cost by construction).
+    # Rejected outright, not silently ignored, if a scenario still sets this
+    # to False (the removed meaning) - a lingering True is harmless and left
+    # alone, since it already matches the only behavior there is now.
+    if data.get("core1_fixed_schedule", True) is False:
+        raise ValueError("core1_fixed_schedule was retired 2026-10-09 - see BUG-002.md's "
+                          "\"don't do padded tests\" entry; Core1Runner no longer supports "
+                          "the sleep-after-work pad mode")
+
+    expect = _require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     for name in ("min_crc_valid_pct", "min_median_erpm"):
         for key in expect.get(name, {}):
@@ -204,11 +257,12 @@ def build_scenario(data):
     return Scenario(
         dshot_speed=dshot_speed,
         duration_ms=duration_ms,
-        arm_duration_ms=data.get("arm_duration_ms", 500),
-        status_interval_ms=data.get("status_interval_ms", 15000),
-        poll_ms=data.get("poll_ms", 10),
+        arm_duration_ms=_require(data, "arm_duration_ms"),
+        status_interval_ms=_require(data, "status_interval_ms"),
+        poll_ms=_require(data, "poll_ms"),
         decode_every=decode_every,
         gc_every_ms=gc_every_ms,
         expect=expect,
         motors=motors,
+        core1_interval_us=core1_interval_us,
     )

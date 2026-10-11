@@ -1,0 +1,61 @@
+{
+  "_comment": "REGRESSION SCENARIO: basic single-motor unidirectional DShot300 regression - half of the 2x2 basic matrix (1 motor x DSHOT300/600 x uni/bidirectional; see single_channel_bidirectional_300/600.json for the bidirectional half). All four channels are plain (non-bidirectional) DShot; channel 1's motor turns at throttle 100 while channels 2-4 idle - the 4-in-1 AM32 ESC only completes its arm handshake with a valid signal on all four. Nothing is read back, so this shows arming, a sustained command stream and disarm work; that the motor really turns is for the person watching (or the bidirectional pair's eRPM check).",
+  "dshot_speed": "DSHOT300",
+  "duration_ms": 20000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 5000,
+  "poll_ms": 10,
+  "motors": [
+    {
+      "pin": 6,
+      "sm_id": 0,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 7,
+      "sm_id": 2,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 8,
+      "sm_id": 4,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    },
+    {
+      "pin": 9,
+      "sm_id": 6,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 0,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": false
+    }
+  ],
+  "decode_every": 20,
+  "gc_every_ms": 0,
+  "expect": {}
+}

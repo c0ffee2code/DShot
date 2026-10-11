@@ -14,6 +14,7 @@
 
 import _thread
 import utime
+from array import array
 
 
 class Core1Runner:
@@ -40,11 +41,69 @@ class Core1Runner:
         """
         Args:
             update: Zero-argument callable to invoke on Core 1
-            interval_us: Delay between calls (default: 1000us = 1kHz)
+            interval_us: Target period between calls (default: 1000us = 1kHz).
+                0 means no fixed pacing at all (MotorGroup.UPDATE_INTERVAL_US's
+                own meaning) - update() is called back to back, as fast as it
+                returns.
+
+                A positive value is an absolute period, held by anchoring
+                each deadline to the *previous* one and sleeping only what is
+                left of the current one - matching Betaflight's own
+                fixed-period scheduler (`nextTargetCycles = lastTargetCycles
+                + desiredPeriodCycles`, verified against its source
+                2026-10-07). This makes the achieved period immune to
+                update()'s own cost changing (a GC pause, more queued than
+                usual, or - what actually happened in this project -
+                removing diagnostic overhead), as long as that cost stays
+                under interval_us. A call that still runs past its own next
+                deadline is not caught up with a burst of immediate extra
+                calls; the schedule skips forward by whole periods instead,
+                matching Betaflight's own catch-up behavior (`scheduler.c`
+                skips forward by whole periods too, never fires immediately).
+
+                There used to be a second mode here (`fixed_schedule=False`):
+                sleep a fixed pad *after* each call, so the achieved period
+                was `interval_us + however long that call took`. Removed
+                2026-10-09, by the user's explicit direction, not kept as an
+                option: every value tuned for it had to be re-tuned the
+                moment anything changed update()'s own cost - it was the
+                only configuration that ever reached 100% clean arms on this
+                bench (bug-reports/BUG-002-...md's "threshold test ran"
+                entry), but that 100% was earned by a constant tuned to one
+                specific, local measurement of one specific code version,
+                not by a mechanism that stays correct as the code changes.
+                The absolute-period mode above doesn't have that problem by
+                construction; it just hasn't yet matched the pad's
+                reliability on this ESC, which is BUG-002's still-open
+                question, not a reason to keep a mechanism that needs
+                re-tuning on every change.
         """
         self.update = update
         self.interval_us = interval_us
         self.running = False
+
+        # How many times the schedule has fallen behind and had to skip
+        # forward instead of holding the deadline - the one way this
+        # mechanism can degrade toward unpaced, cost-dependent behavior: if
+        # update() ever costs more than interval_us on a given tick, that
+        # tick's gap is no longer exactly interval_us (see loop()'s own
+        # comment for what it becomes instead). Zero cost when on schedule -
+        # this only increments inside the branch that already runs on the
+        # rare path. Reset by start(), like self.error - read it after
+        # stop() for one run's count. Meaningless (stays 0) when
+        # interval_us<=0 - there is no deadline to fall behind.
+        self.schedule_behind_count = 0
+
+        # Absolute ticks_us() of the first BEHIND_AT_CAPACITY fall-behind
+        # events, oldest first (2026-10-08, BUG-002: testing whether these
+        # events are disproportionately landing inside AM32's narrow
+        # early-boot calibration window, not just "how often" they happen -
+        # see bug-reports/BUG-002-...md). Same zero-cost-when-healthy shape
+        # as schedule_behind_count; stale entries past schedule_behind_count
+        # are meaningless, not re-zeroed on start() since the count already
+        # gates every read.
+        self.BEHIND_AT_CAPACITY = 8
+        self.behind_at_us = array('I', [0] * self.BEHIND_AT_CAPACITY)
 
         # Set by the thread as it exits, so stop() can wait for the real event
         # rather than guessing at a sleep
@@ -60,6 +119,7 @@ class Core1Runner:
             return
 
         self.error = None
+        self.schedule_behind_count = 0
         self.stopped = False
 
         # Set before the thread exists, because loop() tests it immediately
@@ -98,9 +158,43 @@ class Core1Runner:
         interval_us = self.interval_us
 
         try:
-            while self.running:
-                update()
-                utime.sleep_us(interval_us)
+            if interval_us > 0:
+                ticks_us = utime.ticks_us
+                ticks_add = utime.ticks_add
+                ticks_diff = utime.ticks_diff
+                sleep_us = utime.sleep_us
+                next_due = ticks_us()
+                behind_at_us = self.behind_at_us
+                behind_at_capacity = self.BEHIND_AT_CAPACITY
+                while self.running:
+                    update()
+                    next_due = ticks_add(next_due, interval_us)
+                    now = ticks_us()
+                    remaining = ticks_diff(next_due, now)
+                    if remaining <= 0:
+                        # Fell behind - skip forward by whole periods
+                        # instead of resyncing to "now", which would fire
+                        # the very next call with zero gap (a burst) -
+                        # see BUG-002.md's "deadline underperforms the
+                        # pad" entry for why that burst, not just a
+                        # mistuned period, explained a real regression.
+                        # Matches Betaflight's own catch-up behavior
+                        # (scheduler.c skips forward by whole periods,
+                        # never fires immediately).
+                        count = self.schedule_behind_count
+                        if count < behind_at_capacity:
+                            behind_at_us[count] = now
+                        self.schedule_behind_count = count + 1
+                        while remaining <= 0:
+                            next_due = ticks_add(next_due, interval_us)
+                            remaining = ticks_diff(next_due, ticks_us())
+                    sleep_us(remaining)
+            else:
+                # No fixed pacing at all - call back to back, as fast as
+                # update() returns. There is no deadline to fall behind, so
+                # schedule_behind_count stays at its initial 0.
+                while self.running:
+                    update()
         except Exception as e:
             self.error = e
             self.running = False

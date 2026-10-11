@@ -11,6 +11,7 @@ import unittest
 
 import fakes  # noqa: F401  puts driver/ on sys.path
 from capture_mailbox import CaptureMailbox
+from gcr_decode import AM32_NOT_RUNNING_FRAME
 
 
 class FakeSource:
@@ -102,6 +103,21 @@ class CaptureMailboxTest(unittest.TestCase):
     def test_a_slot_left_mid_update_is_not_returned(self):
         self.mailbox.slot_seq = 5  # odd: the writer was in the middle of an update
         self.assertIsNone(self.mailbox.latest())
+
+
+class NotRunningCountTest(unittest.TestCase):
+    """drain() reports how many captures were AM32's not-running reply, for
+    MotorGroup's arming gate, whether it publishes them or not."""
+
+    def test_counted_when_published_and_when_dropped(self):
+        for publish in (True, False):
+            source = FakeSource()
+            mailbox = new_mailbox(source)
+            source.add([AM32_NOT_RUNNING_FRAME, 0, AM32_NOT_RUNNING_FRAME, 0xC8BB3])
+            self.assertEqual(mailbox.drain(publish), 2, "publish=%s" % publish)
+
+    def test_nothing_waiting_counts_nothing(self):
+        self.assertEqual(new_mailbox(FakeSource()).drain(False), 0)
 
 
 if __name__ == "__main__":

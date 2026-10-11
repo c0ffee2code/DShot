@@ -76,7 +76,7 @@ This is what makes the library work under *any* scheduling arrangement, includin
 
 While arming, `update()` transmits literal zeros rather than the throttle array, so the arming window is genuinely at zero even if the application sets a throttle early.
 
-Because the ESC resets its own arming counter when commands stop arriving, `update()` restarts the arming window if more than `ARM_GAP_TOLERANCE_MS` has passed since the previous call. The library's notion of "armed" then tracks what the ESC actually observed.
+The arming window is plain elapsed time since `arm()`, unaffected by how unevenly `update()` gets called: AM32 does not reset its own arming counter on a gap in our transmissions, only on non-zero throttle or a gap long enough to be a reboot (source-verified). A group with bidirectional motors also gates on a separate reply-based check - every bidirectional ESC must have echoed its own "not running" frame steadily for a couple of seconds - which is what actually needs to notice a reboot, since a reboot is exactly the kind of gap that resets the ESC's own state.
 
 ### Sub-Decision: `update()` is inert while disarmed
 
@@ -103,7 +103,7 @@ The previous API had four overlapping methods — `start()`, `stop()`, `disarm()
 
 `disarm()` *is* the emergency stop, and it is stronger than the old one: it both commands the stop **and** cuts the signal, whereas the old version relied on a loop still running to deliver its zeros.
 
-Both halves are needed, and the order matters. Cutting the signal alone is not a stop — it only makes the ESC *eventually* time out, which on BLHeli_S is 100-250ms of a motor still spinning at its last commanded throttle. (BLHeli_S is no longer a supported target as of 2026-09-26 — this figure is the historical measurement behind the design, and has not been re-verified against AM32's own signal-loss timeout; see ADR-002's notes on AM32's reboot-on-timeout behavior for what is known there.) So `disarm()` transmits the zeros itself, waits for them to leave the shift register, and only then deactivates. That is a few hundred microseconds of blocking, in exchange for stopping the motor in about a millisecond rather than a quarter of a second. Cutting the signal afterwards is what makes the stop *stick* without any further `update()` calls.
+Both halves are needed, and the order matters. Cutting the signal alone is not a stop — it only makes the ESC *eventually* time out, which on AM32 is up to 500ms of a motor still spinning at its last commanded throttle (AM32's own signal-loss timeout is 500ms while armed, read from its firmware source; the design's original historical measurement was against BLHeli_S, which is no longer a supported target as of 2026-09-26). So `disarm()` transmits the zeros itself, waits for them to leave the shift register, and only then deactivates. That is a few hundred microseconds of blocking, in exchange for stopping the motor in about a millisecond rather than up to half a second. Cutting the signal afterwards is what makes the stop *stick* without any further `update()` calls.
 
 Draining before deactivating also parks the signal line low, because an idle state machine stalls on the `side(0)` instruction at the top of the PIO program. Deactivating mid-frame would instead freeze the pin at whatever level that frame was driving.
 
@@ -167,7 +167,7 @@ The original test hardware and pass criteria are those of ADR-001 — in particu
 | `test_dshot_single_motor.py` | Low-level driver plus the new `stop()` |
 | `test_motor_group.py` | Both motors arm reliably via an application-owned Core 1 loop |
 | Signal cut on disarm | Motors stop and the ESC beeps its lost-signal tone |
-| Stop latency from a spun-up motor | Confirms `disarm()`'s zeros land: the motor should wind down at once, not after the ESC's 100-250ms timeout |
+| Stop latency from a spun-up motor | Confirms `disarm()`'s zeros land: the motor should wind down at once, not after the ESC's signal-loss timeout (up to 500ms on AM32) |
 | Signal line after `disarm()` | A unidirectional line reads low and a bidirectional line reads high (released and pulled up), measured on the Pico with nothing attached (2026-09-21, `tests/device/test_pio_lifecycle.py`) |
 | `arm()` → `disarm()` → `arm()` | The state machines and the receiver work again each time: 15 re-arms on one group, each capturing afresh with the published sequence starting over (same test, no ESC). Re-arming an actual ESC after a disarm is exercised by every scenario run, not separately |
 | `update()` ×100 while disarmed | Returns immediately; confirms the TX FIFO hang guard |
@@ -179,4 +179,4 @@ The original test hardware and pass criteria are those of ADR-001 — in particu
 - [ADR-001: Dual-Core Architecture for Reliable Motor Control](ADR-001-dual-core-motor-control.md)
 - [MicroPython _thread module](https://docs.micropython.org/en/latest/library/_thread.html)
 - [MicroPython rp2.StateMachine](https://docs.micropython.org/en/latest/library/rp2.StateMachine.html)
-- DShot Protocol Specification: `specification/DSHOT_PROTOCOL.md`
+- DShot Protocol Specification: `specification/DSHOT.md`

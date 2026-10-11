@@ -142,9 +142,9 @@ ESC response uses GCR (Group Code Recording) for noise immunity:
 **GCR Symbol Table** (corrected 2026-08-23 against AM32 firmware source,
 `Src/dshot.c`'s `gcr_encode_table[16]` - the table originally here agreed
 with AM32's real table on only 7 of 16 entries and diverged on the rest; see
-"Implementation Update" below for the source-verification method.
-`specification/DSHOT_PROTOCOL.md` never carried a symbol table of its own, and
-now states that the encode table matches AM32's exactly):
+"Implementation Update" below for the source-verification method. This
+driver's table matches the one AM32 actually uses, cited at
+`specification/AM32.md`#11):
 
 | Nibble | GCR | Nibble | GCR |
 |--------|-----|--------|-----|
@@ -1469,6 +1469,26 @@ period_tally_short*.json` (since removed), `scripts/tally_period_cycles.py`,
 `scripts/capture_session.py`, `scripts/deploy.py`'s reset-before-run) is
 all reusable as-is.
 
+**What the measured ratio says about this bench's actual MCU (2026-10-11, cross-checked against
+AM32 source - see `specification/AM32.md`'s reply-timing table).** AM32's reply bit period is a
+deterministic function of which MCU family the firmware is built for (each family's own timer
+prescaler/ARR), not oscillator drift - so the measured ratio identifies the silicon actually on
+this bench's board. The measured periods (2.5798us at DSHOT300, 1.2908us at DSHOT600) match an
+F051-class build to within 0.14%/0.07% (the residual being normal internal-oscillator tolerance -
+F051's own HSI is [the clock source peripherals.c#L80-L85 configures](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Mcu/f051/Src/peripherals.c#L80-L85)),
+and are 8% off an E230-class build (E230's own
+[internal RC oscillator source, system_gd32e23x.c#L50](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Mcu/e230/Src/system_gd32e23x.c#L50)).
+AM32's only [published Skystars KM55 target, targets.h#L535-L541](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Inc/targets.h#L535-L541),
+however, is an E230 build - so this bench's unit is either a different MCU revision of that same
+product, or was flashed with a different AM32 target than its label suggests. `scripts/verify_am32_reply.py`
+reproduces this cross-check from source. This also bounds `BIDIR_PROFILES`' own portability - not
+from a hardware measurement on each family, but from running the project's own PIO receiver model
+(`scripts/simulate_frame_receiver.py`) against every family's theoretical reply period: as tuned,
+it reads 100% of frames correctly for F051/F031/F421/F415/V203, about 80% for G431, about 44% for
+L431, about 23% for E230, and effectively 0% for G071/G031 - a profile for any of those
+less-than-100% families would need its own real hardware measurement, not a copy of this one or a
+trust in the model alone.
+
 ### Per-pair TX/RX synchronization: stale-signal clearing and relative IRQ addressing (2026-08-29/30)
 
 The TX state machine tells its paired RX state machine that the pin has been
@@ -1731,6 +1751,51 @@ overhead per tick; a lookup table of packets and a flattened loop measured about
 throttle validation, so they were left. When to collect garbage - for example at
 points where a stall is harmless - is a scheduling matter for the application.
 The scenario harness no longer reads words itself: it runs through `MotorGroup` and samples the latest capture (ADR-005).
+
+### Further hot-path tightening (2026-10-10)
+
+A later pass measured four more changes to `MotorGroup.update()`'s arming-phase cost (same
+command loop as above), each confirmed on the bench before/after, one at a time, with a
+standalone timing tool (`tools/measure_arming_tick_timing_once.py`) built for exactly this -
+printing `update_us(min=... median=... p95=... max=...)` per phase - and which calls neither
+`raw_telemetry()` nor anything the test harness's own arming-check loop uses, so these per-call
+numbers are unaffected by whether that harness check (a separate, later-removed bug in the test
+harness itself, not this driver) was still present at the time:
+
+- **Precompute the all-zero packet.** During arming, `send_throttle_command(0)` was rebuilding
+  and CRC-validating an identical packet on every call. Precomputing it once dropped the
+  arming-phase median from 510us to 401us. Kept.
+- **Bind `self.sm.put` as a local**, the same pattern already used for `drain_rx`/`mailbox.drain`
+  (ADR-005). Measured *worse* on this build (401us to 405us arming, 441us to 452us post-armed) -
+  appears to be an instance attribute's general lookup overhead outweighing the one call site it
+  shortened, though the exact mechanism for a 4us difference wasn't isolated further. Reverted;
+  don't retry this specific binding without re-measuring from scratch, since the win from the
+  earlier `drain_rx` binding doesn't generalize to every call site on this interpreter.
+- **Hoist `ready_first_ms`/`ready_last_ms`/`ready_seen` to locals** inside the per-motor loop. A
+  real but tiny (~5us) zero-sum trade - arming-phase cost dropped 401us to 396us, post-armed cost
+  rose 441us to 446us by about the same amount. Reverted for an ambiguous payoff, not because it
+  was wrong.
+- **`@micropython.native` on `update()`, `drain()`, `send_throttle_command()` and `send_zero()`.**
+  By far the largest win, confirmed on this RP2350 build (not assumed): on its own, starting from
+  401us/441us (both reverted changes above left these unchanged), it dropped the arming-phase
+  median to 285us (about 29%) and the post-armed median to 291us (about 34%), applied in two steps
+  (`update()` alone first: 401us->343us arming, 441us->389us post-armed; then extended to the
+  other three: 343us->285us, 389us->291us).
+
+Combining the one kept-outright change with this one: arming-phase median went from 510us to
+285us (about 44%) and post-armed from 441us to 291us (about 34% - the same figure as native's own
+contribution, since nothing else in this pass touched the post-armed cost). These are different
+numbers from the 2026-09-19 section above, which measured different code paths.
+
+**A separate, less certain finding from the same pass.** Toggling the decorator off and back on
+was reported to flip a now-deleted fixed-frame-gap diagnostic scenario from 10/10 clean to 0/5 -
+unlike the per-call numbers above, that comparison ran through the test harness's own
+clean/reboot classification, which the harness-side arming-check bug could affect. Whether that
+specific 10/10-to-0/5 result was measured before or after that bug was removed could not be
+pinned down after the fact (the diagnostic scenario and its capture sessions are gone). Treat the
+underlying mechanism - a hot-path speedup changes real inter-motor frame timing, not just CPU
+cycles - as sound (it follows directly from the per-call numbers above, which are clean), but
+treat the specific 10/10-to-0/5 magnitude as unconfirmed rather than a settled fact.
 
 ### Idea, not built: run-length capture in the PIO receiver (2026-09-20)
 
@@ -2185,4 +2250,5 @@ touch.
 - [BLHeli_S to Bluejay Flashing Guide](https://github.com/mathiasvr/bluejay/wiki/Flashing)
 - [AM32 Firmware](https://github.com/am32-firmware/AM32) - `Src/dshot.c`, `Src/main.c`, `Src/signal.c`
 - [Betaflight Pico/RP2350 DShot PR #14618](https://github.com/betaflight/betaflight/pull/14618/files) - `src/platform/PICO/dshot.pio`, `dshot_bidir_pico.c`, `dshot_pico.c`
-- DShot Protocol Specification: `specification/DSHOT_PROTOCOL.md`
+- DShot Protocol Specification: `specification/DSHOT.md`, `specification/AM32.md`,
+  `specification/BETAFLIGHT.md`

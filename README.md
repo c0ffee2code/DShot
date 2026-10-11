@@ -82,11 +82,11 @@ requirements that drive it.
 
 ESCs disarm if commands stop arriving, so whatever context you choose must call
 `update()` continuously, without long or irregular gaps. How fast depends on
-the ESC firmware - see "Verified Parameters" below; AM32 needs near-back-to-back
-frames just to complete arming. On this test bench that
-means a dedicated Core 1 thread, keeping Core 0 free for the display and
-buttons - see `tests/harness/core1_runner.py` for a ready-made example to copy into
-your project.
+the ESC firmware - see "Verified Parameters" below; on this bench, AM32 arms reliably both with
+`Core1Runner`'s deadline-anchored pacing at 1045us (20/20, then 13/13 clean in later spot checks)
+and with `MotorGroup.UPDATE_INTERVAL_US`'s own default, max-rate/no-pacing (0us). On this test
+bench that means a dedicated Core 1 thread, keeping Core 0 free for the display and buttons -
+see `tests/harness/core1_runner.py` for a ready-made example to copy into your project.
 
 ## Quick Start
 
@@ -100,10 +100,12 @@ import utime
 motor = UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600)  # SM 0, GPIO 4
 motor.start()  # Activate PIO state machine
 
-# Arm ESC (send throttle=0 back-to-back for ~500ms). AM32 needs
-# near-continuous frames to arm at all - see "Verified Parameters" below.
+# Arm ESC (send throttle=0 back-to-back for 2000ms, matching
+# MotorGroup.DEFAULT_ARM_DURATION_MS - AM32's own gate needs more than 1s of
+# continuous zero throttle after a 600ms startup tune; see "Verified
+# Parameters" below).
 arm_start = utime.ticks_ms()
-while utime.ticks_diff(utime.ticks_ms(), arm_start) < 500:
+while utime.ticks_diff(utime.ticks_ms(), arm_start) < 2000:
     motor.send_throttle_command(0)
 
 # Run motor
@@ -170,23 +172,32 @@ while True:
 
 Timing requirements are ESC-firmware-dependent, not just protocol-dependent. The library's
 defaults (`MotorGroup.UPDATE_INTERVAL_US`, `DEFAULT_ARM_DURATION_MS`) are tuned to AM32's
-measured requirements, which are demanding enough (see "Command interval" below) that they
-need no further headroom.
+measured requirements.
 
 | Parameter | AM32 (Skystar KM55A2) |
 |-----------|------------------------|
-| Protocol | DShot300 |
-| Minimum throttle | 100 confirmed working |
-| Command interval | Back-to-back required (0us / no sleep) - a clean, jitter-free 1kHz was not enough; even sleep-paced 250us (4kHz) failed once real per-call overhead was added, but max-rate (no sleep) arms reliably |
-| Arming duration | 500ms (down to 300ms) armed cleanly, confirmed via genuine telemetry replies; re-tested 2026-09-12 with the corrected board-reset workflow (see `driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`) |
+| Protocol | DShot300 and DShot600, both bench-verified (the command-interval and arming-duration rows below don't depend on which) |
+| Minimum throttle | 60 confirmed spinning (DShot300, ADR-002; BUG-009 tracks an open rough-start question at low throttle) - 1-47 are special commands, not throttle (see `specification/DSHOT.md`, BUG-005) |
+| Command interval | Two mechanisms both bench-confirmed reliable post-BUG-002: `Core1Runner`'s deadline-anchored pacing at 1045us (20/20 clean, then 13/13 in later spot checks, see BUG-002.md) and max-rate/no-pacing (`UPDATE_INTERVAL_US=0`, the library default). An earlier (2026-08-23) bring-up failure at "1kHz/500ms" was never a clean test of pacing specifically - its 500ms arm window is well under AM32's own >1.6s gate (`specification/AM32.md`#16) by itself, so that result doesn't isolate what role pacing played, if any |
+| Arming duration | 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below. With bidirectional motors it is a floor: `ARMED` also waits until every ESC has replied "not running" for 2s without a reboot-length gap (`READY_SPAN_MS`, bug-reports/BUG-003) - usually ~2.1s, several seconds if an ESC reboots while arming |
 
-The AM32 ESC gave no indication via its beep pattern alone that arming was
-failing - it decodes individual commands correctly (confirmed via the DShot
-`BEEP1` special command) regardless of whether its arm state machine has
-ever been satisfied. The only reliable signal was the ESC's own "3 short
-beeps, then 2 deeper beeps" arm confirmation tone; current draw at the power
-supply (near-zero until genuinely armed and driving) was the second
-confirming signal.
+Earlier revisions of this table claimed 500ms (down to 300ms) armed cleanly, "confirmed via
+genuine telemetry replies". That reasoning was wrong: per AM32's source (`specification/AM32.md`#8
+and #9), a telemetry reply proves nothing about arm state - AM32 replies whether armed or
+disarmed, with the same at-rest sentinel eRPM either way - and a bench re-test at 300/500/1000ms
+confirmed the ESC was replying but the motor
+never actually spun at any of those durations (eRPM stayed at rest for the whole run; it only
+reached a real value in a 3000ms control). AM32's own arming gate needs more than 1s of continuous
+zero throttle after it starts listening, plus a 600ms startup tune after a cold boot, hence the
+2000ms default with margin. Likewise, the ESC's beep pattern was previously read as decoding
+commands "regardless of whether its arm state machine has ever been satisfied" - per source, AM32
+only executes DShot commands (including `BEEP1`) while armed, so a `BEEP1` heard on this bench
+(sent as throttle value 1 through `send_throttle_command()`, not a dedicated command API -
+BUG-005's exact path) that audibly beeped actually confirms the ESC **was** armed at that moment,
+not that arm state is irrelevant to command
+execution. The ESC's own "3 short beeps, then 2 deeper beeps" arm confirmation tone, and current
+draw at the power supply (near-zero until genuinely armed and driving), remain the reliable signals
+that the motor is actually armed and spinning.
 
 ## Project Structure
 
@@ -204,8 +215,11 @@ confirming signal.
 │   └── device/                      # on-Pico checks: two-core mailbox stress (no ESC needed),
 │   │                                # and a multi-cycle arm/disarm restart check (needs one)
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
+├── tools/                           # on-Pico diagnostics, not tests - no pass/fail, just data
 ├── specification/
-│   └── DSHOT_PROTOCOL.md            # Protocol documentation
+│   ├── DSHOT.md                      # Wire protocol (vendor/host-agnostic)
+│   ├── AM32.md                       # AM32 firmware facts
+│   └── BETAFLIGHT.md                 # Betaflight reference-host facts
 ├── decision/
 │   └── ADR-00N-*.md                 # Architecture decision records
 └── bug-reports/
@@ -217,20 +231,24 @@ lives in `tests/harness/` because it is an application concern, not a DShot one.
 
 ## DShot Protocol
 
-See [DSHOT_PROTOCOL.md](specification/DSHOT_PROTOCOL.md) for complete protocol documentation including:
+See [DSHOT.md](specification/DSHOT.md) for the wire protocol itself, including:
 
 - Packet structure (11-bit throttle + 1-bit telemetry + 4-bit CRC)
 - Bit timing for all DShot variants
 - Special commands (0-47)
 - Bidirectional DShot and eRPM telemetry
 
+See [AM32.md](specification/AM32.md) for how this project's target ESC firmware implements (and
+sometimes deviates from) that protocol, and [BETAFLIGHT.md](specification/BETAFLIGHT.md) for how
+a reference flight-controller host drives it.
+
 ## Roadmap
 
 | Feature | Status | Dependencies |
 |---------|--------|--------------|
-| **DShot commands** | Blocked | ADR-003: several different ESCs required for testing |
+| **DShot commands** | TODO | No driver-side command API yet (BUG-005's 1-47 clamp is the prerequisite). AM32 itself implements commands (`specification/AM32.md`#7), and this bench has already heard a `BEEP1` while armed (see above - sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, in production use |
-| **Extended telemetry (EDT)** | Blocked | Needs AM32-side EDT support to test against |
+| **Extended telemetry (EDT)** | TODO | Current AM32 source already implements it (`specification/AM32.md`#10) - whether this bench's own flashed build does is unconfirmed (see ADR-002's MCU-identification note). This driver's own decoder doesn't yet discriminate an EDT frame from an eRPM frame either way |
 
 See `decision/` folder for Architecture Decision Records (ADRs).
 
@@ -243,6 +261,6 @@ Original DShot PIO implementation from [jrddupont/DShotPIO](https://github.com/j
 ## References
 
 - [DShot Protocol](https://brushlesswhoop.com/dshot-and-bidirectional-dshot/)
-- [RP2040 Datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
+- [RP2350 Datasheet](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf)
 - [BetaFPV Lava 1104 Motors](https://betafpv.com/products/lava-series-1104-brushless-motors)
 - [AM32 Firmware](https://github.com/am32-firmware/AM32) - this project's ground truth for ESC behavior
