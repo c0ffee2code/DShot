@@ -3,7 +3,7 @@ run_scenarios.py - run one or more scenarios repeatedly on the bench,
 tallying outcomes.
 
 Run from project root:
-  python scripts/run_scenarios.py --scenario tests/harness/scenarios/two_channel_arming_check_600.json --rounds 10
+  python scripts/run_scenarios.py --scenario tests/harness/scenarios/two_channel_divergent_600.json --rounds 10
   python scripts/run_scenarios.py --scenario A.json --scenario B.json --scenario C.json --rounds 8
       # interleaves A, B, C, in that order, for 8 rounds each (24 runs total),
       # so anything that drifts over the session lands on every configuration

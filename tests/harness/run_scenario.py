@@ -119,9 +119,9 @@ def check_stuck_at_rest_failsafe(bidir_indices, real_spin_seen, throttles, elaps
     instead of waiting out its full duration for a result already decided.
 
     A motor deliberately held at 0 throttle (an idle bidirectional motor used
-    as a second-line control - see two_channel_bidir_one_idle_600) legitimately
-    replies the same sentinel forever and must not trip this - only checked
-    for motors with nonzero commanded throttle right now.
+    as a second-line control) legitimately replies the same sentinel forever
+    and must not trip this - only checked for motors with nonzero commanded
+    throttle right now.
     """
     if elapsed_ms < STUCK_AT_REST_GRACE_MS:
         return

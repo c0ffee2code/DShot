@@ -13,14 +13,15 @@
 # run_scenario.py's output - no changes needed there for this file to be
 # counted the same way.
 #
-# Wiring matches tests/harness/scenarios/two_channel_arming_check_600_deadline.json
-# (the current bench: channel 1 = Pin6/sm0/rx1, channel 3 = Pin8/sm4/rx5,
-# both bidirectional; channels 2/4 idle unidirectional) and needs the ESC
-# powered, motors mounted. Run standalone with:
+# Wiring matches the current bench (channel 1 = Pin6/sm0/rx1, channel 3 =
+# Pin8/sm4/rx5, both bidirectional; channels 2/4 idle unidirectional) and
+# needs the ESC powered, motors mounted. Uses Core1Runner's deadline-anchored
+# pacing at 1045us (the harness scenarios run max-rate/unpaced instead - see
+# their own core1_interval_us). Run standalone with:
 #   python scripts/run_test.py measure_arming_tick_timing_once.py
-# or interleaved against the harness scenario with:
+# or interleaved against a harness scenario with:
 #   python scripts/run_scenarios.py --scenario tools/measure_arming_tick_timing_once.py \
-#       --scenario tests/harness/scenarios/two_channel_arming_check_600_deadline.json --rounds 10
+#       --scenario tests/harness/scenarios/two_channel_divergent_600.json --rounds 10
 
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
@@ -32,7 +33,7 @@ import utime
 ARM_MS = 2000
 POST_ARM_HOLD_MS = 3000
 ARM_TIMEOUT_MARGIN_MS = 16000  # matches tests/harness/run_scenario.py's own constant
-INTERVAL_US = 1045             # matches two_channel_arming_check_600_deadline.json
+INTERVAL_US = 1045             # Core1Runner's deadline-anchored absolute period target
 CAPACITY = 18000                # see measure_arming_tick_timing.py's own note on sizing
 
 

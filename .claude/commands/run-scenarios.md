@@ -25,7 +25,7 @@ since the batch started."
 Example, interleaving two configurations for 10 rounds:
 ```
 python scripts/run_scenarios.py \
-  --scenario tests/harness/scenarios/two_channel_arming_check_600.json \
-  --scenario tests/harness/scenarios/two_channel_arming_check_300.json \
+  --scenario tests/harness/scenarios/two_channel_divergent_600.json \
+  --scenario tests/harness/scenarios/two_channel_divergent_300.json \
   --rounds 10 --pull
 ```
