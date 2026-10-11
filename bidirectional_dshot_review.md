@@ -1099,9 +1099,9 @@ but not a squash).
 | W26 | Decision: adopt the frame receiver as the sole production receiver | — | S | DONE (2026-09-26) — user decided: adopt as the sole production receiver, sample receiver moves to a standalone tool (W27, W28) |
 | — | **Phase gate: frame-receiver adoption decided — safe to port the harness and delete the sample receiver** | — | — | — |
 | W27 | Port the harness to frame-only 1-word records | — | L | DONE (2026-09-26) — bench-verified: single motor and two-full-block scenarios all clean at both speeds, offline analysis pipeline confirmed against real data |
-| W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Driver removal DONE and bench-verified (unaffected by W27's tests). The new calibrate_bidir_rx.py standalone tool is BROKEN - see its own header and the note below |
+| W28 | Hygiene: delete the sample receiver from the driver; move raw capture/calibration to a standalone script | — | M | Driver removal DONE and bench-verified (unaffected by W27's tests). The new calibrate_bidir_rx.py standalone tool was BROKEN - see its own header and the note below - and was itself deleted 2026-10-11 (W30) once the project settled on one ESC and the tool's use case never came up |
 | W29 | Tooling cleanup: retire rle_bench.py and its duplicates, fix PIO-block conflicts in device tests, move the calibration tool out of tests/ | — | M | DONE (2026-09-26) |
-| W30 | Investigate and fix calibrate_bidir_rx.py's broken capture (reads TX's own echo, not the ESC's reply) | — | M | TODO |
+| W30 | Investigate and fix calibrate_bidir_rx.py's broken capture (reads TX's own echo, not the ESC's reply) | — | M | DROPPED, not fixed (2026-10-11) - the tool was deleted instead; its use case (calibrating a new ESC type) hasn't come up, and the project is committed to one ESC. The driver code it depended on (`dshot_bidir_rx` in dshot_pio.py; `analyze_capture`/`find_edges`/`reconstruct_frame`/`sample_cycle` in gcr_decode.py) had a second real caller, scripts/simulate_frame_receiver.py, so only the reconstruction math (not analyze_capture() itself) was kept, relocated there |
 | W31 | Serialise board commands on the PC side: lock, instructions, timeout reset | — | M | TODO |
 | W32 | Sleep reliability on this MicroPython/RP2350 port: can Core 1 wake up late, and does Core 0 activity stall it | — | M | PARTIALLY CLOSED (2026-10-11) - arming-correlation scope superseded by BUG-002 (moot, not built); GC-pauses-both-cores answered (ADR-002/ADR-005); `sleep_us` busy-wait-vs-early-return question still OPEN |
 | W33 | Driver hot-path tightening: fewer per-tick allocations/lookups in update()/drain_rx()/send_throttle_command() | — | M | DONE (2026-10-10) - detail moved to ADR-002's "Further hot-path tightening" section |
@@ -2465,6 +2465,19 @@ doesn't reuse) was not isolated - see the tool's own header for the full diagnos
 **Done when:** the tool captures a real, varying-with-eRPM 4-word GCR reply from a spinning motor,
 matching what the sample receiver produced when it was still wired into `BidirectionalDShot` (see
 W24's comparison).
+
+**Outcome (2026-10-11):** dropped, not fixed - the tool was deleted instead of debugged. Its use
+case (calibrating a new ESC type's bit period) hasn't come up, and the project is committed to one
+ESC family (AM32). Deleting it meant deciding what to do with the driver code it was the sole
+caller of: `dshot_bidir_rx` (the sample receiver PIO program, `driver/dshot_pio.py`) had no other
+caller and was deleted outright, along with `analyze_capture()` and its result-shape plumbing in
+`driver/gcr_decode.py`. But the raw-sample reconstruction math underneath it
+(`find_edges`/`reconstruct_frame`/`sample_cycle`) had a second, independent caller -
+`scripts/simulate_frame_receiver.py`, which needs the same reconstruction to build a ground-truth
+frame from real captures to check the frame receiver's PIO-instruction model against - so that
+math was relocated there (and into its test file) rather than deleted. `scripts/
+verify_gcr_decode_port.py` lost its own `analyze_capture()`-vs-captures comparison half for the
+same reason: no on-device port of that path exists to check anymore.
 
 **W31 — Serialise board commands on the PC side: lock, instructions, timeout reset** ·
 `scripts/deploy.py`, `scripts/run_test.py`, `scripts/pull_captures.py`, `.claude/commands/deploy.md`,

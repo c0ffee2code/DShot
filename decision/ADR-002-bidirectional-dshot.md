@@ -2172,6 +2172,16 @@ in this manually-built setup. The exact cause, relative to what `BidirectionalDS
 construction does differently, was not isolated. Left broken for a future session - see the
 script's own header comment for the full account.
 
+**Update (2026-10-11): tool deleted, not fixed.** The broken tool's use case (measuring a new
+ESC unit's `expected_ratio`) never came up again, and the project is committed to one ESC family
+(AM32), so it was dropped rather than debugged - see the backlog's W30 entry for the full call.
+`dshot_bidir_rx` and `analyze_capture()` (its sole remaining caller) were deleted outright from
+`driver/dshot_pio.py` and `driver/gcr_decode.py`. The raw-sample reconstruction math underneath
+`analyze_capture()` - `find_edges`/`reconstruct_frame`/`sample_cycle` - had a second, independent
+caller (`scripts/simulate_frame_receiver.py`, mentioned above) and was relocated there instead of
+deleted; `estimate_bit_period_fixed` had no remaining caller once `analyze_capture()` was gone and
+was deleted along with it.
+
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.

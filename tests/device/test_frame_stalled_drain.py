@@ -5,8 +5,7 @@
 # comment argues a full RX FIFO cannot corrupt a capture, only delay
 # delivering an already-complete one: the 21st of its 21 reads is the one
 # autopush fires on, and every bit is already shifted into the ISR by then, so
-# the stall holds a finished value rather than an in-progress one - unlike
-# dshot_bidir_rx, which autopushes mid-capture and can push a torn one.
+# the stall holds a finished value rather than an in-progress one.
 #
 # Commands are paced at BURST_INTERVAL_US, wide enough for a full ESC reply to
 # complete before the next command re-arms TX - a tighter pacing (e.g.

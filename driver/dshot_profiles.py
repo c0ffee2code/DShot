@@ -23,21 +23,24 @@ class DSHOT_SPEEDS:
 # Settings for the bidirectional reply receiver, per DShot speed. Only speeds
 # with an entry here can be used with BidirectionalDShot.
 #
-#   rx_speed         the sample receiver's own clock (dshot_bidir_rx, used
-#                    directly by the standalone calibration tool, and by
-#                    frame_rx_speed() below to derive the frame receiver's).
-#                    Independent of the DShot speed (TX and RX have separate
-#                    clock dividers on the same PIO block) and sets how many
-#                    samples land in each bit of the ESC's reply.
+#   rx_speed         the measured reply clock this profile is tuned from;
+#                    frame_rx_speed() below derives the frame receiver's own
+#                    clock from it. Independent of the DShot speed (TX and
+#                    RX have separate clock dividers on the same PIO block)
+#                    and sets how many samples land in each bit of the ESC's
+#                    reply.
 #   expected_ratio   the reply's measured bit period in RX clock cycles. It is
 #                    measured on hardware rather than derived from the nominal
 #                    reply rate, because AM32 clocks its reply from a per-MCU
 #                    timer/prescaler, not a fraction of the nominal rate - a
 #                    deterministic, per-MCU-family offset, not oscillator
-#                    drift (see specification/AM32.md). gcr_decode.estimate_bit_period_fixed uses it as a
-#                    fixed divisor instead of searching for the period on every
-#                    capture, which is what keeps decoding cheap enough to run
-#                    on the Pico.
+#                    drift (see specification/AM32.md). Not read by the
+#                    production frame receiver (its bit period comes from
+#                    frame_rx_speed() instead, fixed by a clock divider, not
+#                    measured per capture) - this field is PC-side tooling
+#                    only now (scripts/simulate_frame_receiver.py,
+#                    scripts/dshot_bidir_decode.py), used as a fixed divisor
+#                    instead of searching for the period on every capture.
 #   ratio_tolerance  0.0 uses expected_ratio as a bare divisor; above 0.0 the
 #                    decoder searches a band of that half-width around it, for
 #                    a profile whose measured spread is too wide to trust bare.

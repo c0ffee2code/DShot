@@ -1,7 +1,7 @@
 # Test: what does the frame receiver capture before the ESC starts replying?
 #
 # Purpose: W25 (bidirectional_dshot_review.md). dshot_bidir_rx_frame waits for a
-# falling edge exactly like dshot_bidir_rx (see its own comment), so early in
+# falling edge with no assumption about what caused it, so early in
 # the arming window - before the ESC has locked onto bidirectional DShot and
 # started sending real GCR replies - a capture can just as easily be TX's own
 # waveform as a genuine reply. MotorGroup.arm()/update() already discards

@@ -1,76 +1,26 @@
 """
-verify_gcr_decode_port.py - diff driver/gcr_decode.py (the on-device port)
-against scripts/dshot_bidir_decode.py (the PC-side reference) on identical
-real hardware capture words, using each session's own tuned fixed-ratio
-profile (driver/dshot_profiles.py's BIDIR_PROFILES). Catches a mechanical
-porting bug for free, before MicroPython ever enters the picture.
-
-Also checks both files' analyze_frame() (the frame receiver's own path,
-see verify_frame_parity()) against 4096 synthetic values - there are no
-real frame-receiver capture sessions to diff yet, so this runs
-unconditionally, with or without arguments, unlike the analyze_capture()
-sweep below.
+verify_gcr_decode_port.py - checks driver/gcr_decode.py's analyze_frame()
+(the on-device port, the only decode path BidirectionalDShot has) against
+scripts/dshot_bidir_decode.py's own analyze_frame() (the PC-side reference),
+over all 4096 possible 12-bit eRPM payloads, synthetically GCR-encoded with
+the inverted CRC into the 21-bit frame dshot_bidir_rx_frame would push.
+Catches a mechanical porting bug for free, before MicroPython ever enters
+the picture.
 
 Not a one-off: this is a permanent regression check, kept alongside both
 files - re-run it whenever either changes.
 
 Run from project root:
-  python scripts/verify_gcr_decode_port.py [captures/<session> ...]
+  python scripts/verify_gcr_decode_port.py
 
-With no arguments, checks every session under captures/ (plus the frame
-parity check, which needs no sessions).
-
-**Scope, since 2026-09-12 (see decision/ADR-002-bidirectional-dshot.md's
-fixed-ratio RX sampling section):** this only checks sessions recorded at
-a rate a live BIDIR_PROFILES entry is currently tuned for - both DSHOT300
-and DSHOT600 now have a verified fixed ratio, and the on-device brute-force
-sweep (estimate_bit_period) that used to back a "reference sweep vs port
-sweep" comparison was deleted from driver/gcr_decode.py once both speeds
-were retuned, so there is no port-side sweep left to compare against for
-historical (pre-retune) sessions. This was a deliberate scope decision, not
-an oversight: those sessions (~377k groups at the old 4MHz DSHOT300 /
-8MHz DSHOT600 rates, plus the interim K=8/10/11 candidate sessions whose
-rx_speed no longer matches the committed K=9 profiles) simply stop being
-regression-checked going forward - they still exist on disk and remain
-analyzable ad hoc via scripts/dshot_bidir_decode.py directly (which keeps
-its own brute-force sweep permanently, specifically for this), just not
-through this automated diff any more. Sessions in that position are
-reported as SKIPPED (no tuned profile), not silently ignored and not
-counted as failures.
-
-A mismatch is only a real bug if it appears while the reference's own
-crc_kind is "inverted" - i.e. the reference itself considers this reply
-genuinely valid. Any disagreement on a group the reference does NOT
-consider crc_kind=="inverted" (a "plain" hit, or fully invalid) is
-expected divergence, not a porting bug, and is counted separately rather
-than flagged.
-
-A session that declares a bidirectional motor but yields zero groups is
-flagged as an anomaly (ESC never replied), not silently reported [OK] -
-iter_groups only yields a group when a motor's words are non-all-zero, so a
-session where the ESC never replied at all naturally has zero groups to
-check and would otherwise pass with "0 groups, 0 mismatches" looking
-identical to a real, clean result. See capture_session.py's
-expects_bidir_groups(). A session whose own on-device runtime check (the
-reply failsafe - see tests/harness/run_scenario.py's
-check_reply_failsafe - or any other expect-block violation) already
-tripped and recorded outcome=failed is a known, self-diagnosed failure and
-is skipped outright rather than flagged - the anomaly path is specifically
-for a zero-group session that still claims outcome=completed, i.e. one the
-failsafe should have caught but didn't (or one recorded before the
-failsafe existed). Anomaly detection happens independent of whether a
-tuned profile exists for that session's rate - zero real replies is worth
-flagging regardless of whether the rate is even checkable.
-
-Each session's own meta.txt records the rx_clock_hz it was actually
-captured at - read per-session, not assumed globally, since sessions
-recorded before and after a rx_speed retune are mixed together under
-captures/. Session loading (including the two different on-disk record
-formats and the historical rx_clock_hz fallback) is shared with
-scripts/tally_period_cycles.py via scripts/capture_session.py - see that
-module's docstring for why sharing this matters (a hardcoded-format bug
-here previously went undetected on every main-scenario-path session for
-exactly this reason).
+History: this used to also diff both files' analyze_capture() (the old
+sample receiver's raw-sample reconstruction path) against real stored
+capture sessions under captures/. That half was removed 2026-10-11 along
+with analyze_capture() itself - driver/gcr_decode.py no longer has an
+on-device "port" of that path to check against a reference (the reference's
+own analyze_capture() is now only compared against scripts/
+simulate_frame_receiver.py's independent PIO-instruction-level model, a
+different and still-live check - see that script).
 """
 
 import sys
@@ -78,138 +28,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "driver"))
 
-from dshot_bidir_decode import (analyze_capture as reference_analyze,
-                                analyze_frame as reference_analyze_frame,
-                                GCR_ENCODE_TABLE, crc_inverted)
-from gcr_decode import analyze_capture as port_analyze, analyze_frame as port_analyze_frame
-from dshot_profiles import BIDIR_PROFILES
-from capture_session import load_meta, iter_groups, rx_clock_hz_for, dshot_speed_for, expects_bidir_groups
-
-_FLOAT_FIELDS = ("period_cycles", "period_us", "bitrate_bps", "erpm")
-_EXACT_FIELDS = ("full", "crc_ok", "crc_kind", "data12", "not_running")
-_FLOAT_TOLERANCE = 1e-9
-
-
-def floats_agree(a, b):
-    if a is None or b is None:
-        return a is None and b is None
-    return abs(a - b) < _FLOAT_TOLERANCE
-
-
-def _compare(ref, port):
-    """
-    Returns (ok, expected_divergence) - the latter True whenever the
-    reference itself doesn't consider this reply genuinely valid
-    (crc_kind != "inverted"): a "plain" CRC hit the port correctly
-    rejects, or fully invalid data where the two implementations' bit-
-    period estimates are free to disagree since neither answer is "the"
-    real period.
-    """
-    if ref is None or port is None:
-        return (ref is None and port is None), False
-
-    if ref["crc_kind"] != "inverted":
-        return True, True
-
-    for field in _EXACT_FIELDS:
-        if ref[field] != port[field]:
-            return False, False
-    for field in _FLOAT_FIELDS:
-        if not floats_agree(ref[field], port[field]):
-            return False, False
-    return True, False
-
-
-def check_one_fixed(words, rx_clock_hz, expected_ratio, ratio_tolerance):
-    """
-    Diff the fixed-ratio decode path (estimate_bit_period_fixed) on both
-    port and reference - see decision/ADR-002-bidirectional-dshot.md's
-    fixed-ratio RX sampling section. Only meaningful for a session
-    recorded at a rate a BIDIR_PROFILES entry has actually been tuned for
-    - verify_session skips any session whose recorded rate has no live
-    expected_ratio rather than calling this.
-    """
-    ref = reference_analyze(words, rx_clock_hz, expected_ratio, ratio_tolerance)
-    port = port_analyze(words, rx_clock_hz, expected_ratio, ratio_tolerance)
-    return _compare(ref, port)
-
-
-def _tuned_profile_for(dshot_speed, rx_clock_hz):
-    """
-    Returns (expected_ratio, ratio_tolerance) if dshot_speed has a live
-    BIDIR_PROFILES entry AND that entry's rx_speed matches what this
-    session was actually recorded at (a session predating a retune must
-    not be checked against a newer profile's ratio) - otherwise None.
-    """
-    profile = BIDIR_PROFILES.get(dshot_speed)
-    if profile is None or profile["expected_ratio"] is None:
-        return None
-    if profile["rx_speed"] != rx_clock_hz:
-        return None
-    return profile["expected_ratio"], profile["ratio_tolerance"]
-
-
-def verify_session(session_dir):
-    """
-    Returns (total, mismatches, expected_divergences, status) where status
-    is one of:
-      "skipped_failed" - outcome=failed, a runtime check already flagged this run
-      "anomaly"        - declares a bidir motor, claims outcome=completed, zero groups
-      "untuned"        - no live BIDIR_PROFILES entry matches this session's rate
-      "ok"             - checked; total/mismatches/expected_divergences are meaningful
-    """
-    meta = load_meta(session_dir)
-
-    # A session whose own reply failsafe already tripped (see
-    # tests/harness/run_scenario.py's check_reply_failsafe) is a known,
-    # self-diagnosed failure - skip it rather than counting it against the
-    # regression bar. The alternative (still flagging it) would make this
-    # check permanently red for as long as any failed run sits in
-    # captures/, and a permanently-red check gets ignored.
-    if meta.get("outcome") == "failed":
-        return (0, [], 0, "skipped_failed")
-
-    groups = list(iter_groups(session_dir, meta))
-
-    # A session that declares a bidir motor, claims outcome=completed, yet
-    # yielded zero groups is an anomaly the reply failsafe should have
-    # caught (or predates it) - not a clean pass, and not simply "untuned"
-    # even if its rate also has no live profile. See capture_session.py's
-    # expects_bidir_groups() docstring.
-    if not groups:
-        return (0, [], 0, "anomaly" if expects_bidir_groups(meta) else "ok")
-
-    rx_clock_hz = rx_clock_hz_for(meta)
-    dshot_speed = dshot_speed_for(meta)
-    tuned = _tuned_profile_for(dshot_speed, rx_clock_hz) if dshot_speed is not None else None
-    if tuned is None:
-        return (0, [], 0, "untuned")
-
-    expected_ratio, ratio_tolerance = tuned
-    total = 0
-    mismatches = []
-    expected_divergences = 0
-    for words in groups:
-        total += 1
-        ok, expected = check_one_fixed(words, rx_clock_hz, expected_ratio, ratio_tolerance)
-        if expected:
-            expected_divergences += 1
-        elif not ok:
-            mismatches.append(words)
-
-    return (total, mismatches, expected_divergences, "ok")
+from dshot_bidir_decode import analyze_frame as reference_analyze_frame, GCR_ENCODE_TABLE, crc_inverted
+from gcr_decode import analyze_frame as port_analyze_frame
 
 
 def verify_frame_parity():
     """
     Synthetic parity check between driver/gcr_decode.py's analyze_frame() and
-    this script's own, for the frame receiver's path. Unlike analyze_capture()'s
-    sweep above, there are no stored real-capture sessions to diff against yet
-    (the harness only produces frame-receiver captures once BidirectionalDShot
-    is built with it - see decision/ADR-002-bidirectional-dshot.md's "run-length
-    capture" section), so this synthesizes every 12-bit value instead: GCR-encode
-    it with the inverted CRC into the 21-bit frame dshot_bidir_rx_frame would push,
-    and check both implementations agree on the whole result dict.
+    this script's own, for the frame receiver's path: synthesizes every
+    12-bit value, GCR-encodes it with the inverted CRC into the 21-bit frame
+    dshot_bidir_rx_frame would push, and checks both implementations agree
+    on the whole result dict.
 
     Returns a list of (data12, field, reference_value, port_value) mismatches.
     """
@@ -236,70 +65,11 @@ def verify_frame_parity():
 
 
 def main():
-    frame_mismatches = verify_frame_parity()
-    print(f"Frame receiver parity: 4096 synthetic values checked, {len(frame_mismatches)} mismatches")
-    for data12, field, ref_value, port_value in frame_mismatches[:5]:
+    mismatches = verify_frame_parity()
+    print(f"Frame receiver parity: 4096 synthetic values checked, {len(mismatches)} mismatches")
+    for data12, field, ref_value, port_value in mismatches[:5]:
         print(f"    mismatch: data12={data12} field={field} reference={ref_value!r} port={port_value!r}")
-    print()
-
-    args = sys.argv[1:]
-    if args:
-        sessions = [Path(a) for a in args]
-    else:
-        captures_dir = Path("captures")
-        sessions = sorted(p for p in captures_dir.iterdir() if p.is_dir())
-
-    if not sessions:
-        if frame_mismatches:
-            sys.exit(1)
-        sys.exit("No capture sessions found - run scripts/pull_captures.py first "
-                 "(the frame-receiver parity check above still ran).")
-
-    grand_total = 0
-    grand_mismatches = 0
-    grand_expected = 0
-    grand_skipped_failed = 0
-    grand_untuned = 0
-    anomaly_sessions = []
-    for session_dir in sessions:
-        total, mismatches, expected, status = verify_session(session_dir)
-
-        if status == "skipped_failed":
-            grand_skipped_failed += 1
-            print(f"{session_dir}: SKIPPED (outcome=failed - a runtime check already flagged this run)")
-            continue
-
-        if status == "untuned":
-            grand_untuned += 1
-            print(f"{session_dir}: SKIPPED (no tuned profile for this session's recorded rate)")
-            continue
-
-        grand_total += total
-        grand_mismatches += len(mismatches)
-        grand_expected += expected
-        if status == "anomaly":
-            anomaly_sessions.append(session_dir)
-            status_label = "ANOMALY: NO GROUPS - bidir motor declared, outcome=completed, but never replied"
-        else:
-            status_label = "OK" if not mismatches else "MISMATCH"
-        print(f"{session_dir}: {total} groups, {len(mismatches)} mismatches, "
-              f"{expected} expected divergences [{status_label}]")
-        for words in mismatches[:5]:
-            print(f"    mismatch: {[hex(w) for w in words]}")
-
-    print()
-    print(f"Total: {grand_total} groups checked, {grand_mismatches} real mismatches, "
-          f"{grand_expected} expected polarity divergences")
-    if grand_skipped_failed:
-        print(f"Skipped: {grand_skipped_failed} session(s) with outcome=failed (reply failsafe already tripped)")
-    if grand_untuned:
-        print(f"Skipped: {grand_untuned} session(s) with no tuned profile for their recorded rate")
-    if anomaly_sessions:
-        print(f"\n{len(anomaly_sessions)} session(s) declared a bidir motor, claim outcome=completed, "
-              f"but yielded ZERO groups (predates the reply failsafe, or the failsafe failed to catch it):")
-        for session_dir in anomaly_sessions:
-            print(f"    {session_dir}")
-    if grand_mismatches or anomaly_sessions or frame_mismatches:
+    if mismatches:
         sys.exit(1)
 
 

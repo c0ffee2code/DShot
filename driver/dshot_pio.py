@@ -97,79 +97,12 @@ def dshot_bidir_tx():
     irq(rel(1))                .side(1)   [0] # tell paired RX (id = this SM's id + 1) the pin was just released
     jmp("frame_start")         .side(1)   [0]
 
-# Captures an ESC's GCR telemetry reply as a dense, uniform raw waveform for
-# software to decode (see gcr_decode.py). Not used by BidirectionalDShot,
-# which uses dshot_bidir_rx_frame below instead - kept here for the standalone
-# calibration/diagnostic tool that builds a bare TX/raw-RX pair directly to
-# measure BIDIR_PROFILES' expected_ratio for a new ESC unit, since
-# dshot_bidir_rx_frame has no period search of its own to fall back on.
-#
-# The program assumes nothing about the reply's bit period. It samples the pin
-# every 2 PIO cycles, continuously, 128 times, which is several samples per bit
-# at the rx_speed chosen for the DShot speed (BIDIR_PROFILES) - dense enough that
-# software can find bit boundaries from the run lengths between edges rather
-# than trusting a bit period baked into the PIO program. The marker bit is
-# captured too, giving software an unambiguous 0 to anchor against.
-#
-# 128 samples are packed by autopush at push_thresh=32 (the maximum, which keeps
-# the word count down): exactly 4 words per reply. This state machine never uses
-# its TX FIFO, so fifo_join gives the RX FIFO that depth as well: 8 words, room
-# for a capture the CPU has not taken yet plus the next one. With the default
-# 4-word FIFO a capture the CPU was late to take left no room for the next: that
-# capture's first word blocked on the full FIFO, its sampling paused mid-reply,
-# and it came back as a short burst followed by idle-level words.
-#
-# What the program does, in order:
-#
-# 1. Clear the IRQ flag, then wait for the paired TX to raise it (its "pin
-#    released" signal). The flag is sticky, not a queue: a signal left over
-#    from a frame this state machine missed (autopush stalled on a full FIFO)
-#    would be consumed as fresh at the wait, phasing the capture against the
-#    wrong moment and possibly capturing TX's own waveform as a "reply".
-#    Clearing first makes the wait block for a genuinely new release every
-#    iteration - including the first after start(), which also stops a flag
-#    from a previous run surviving stop()'s restart(). rel(0) resolves to the
-#    same flag the paired TX raises with rel(1); see dshot_bidir_tx.
-#
-# 2. Delay about 14 cycles (two 7-cycle iterations): about 4.15us at DSHOT300's
-#    RX clock, 2.07us at DSHOT600's. This is a lower bound, not the reply's
-#    start - step 3 finds that. Step 3 is a level wait, not an edge detector, so
-#    a delay too short would let it re-trigger immediately on TX's own
-#    still-LOW tail.
-#
-# 3. Wait for the pin to go LOW: the reply's leading (marker) edge.
-#
-# 4. Take the 128 samples. set()'s immediate is a 5-bit field (max 31), so they
-#    cannot come from one loop: it is 4 outer passes (x) of 32 inner samples
-#    (y). Samples within a pass are 2 cycles apart, but at each of the 3 pass
-#    boundaries reloading y and looping x costs 2 extra cycles, so those gaps
-#    are 4. The seam is deterministic, and gcr_decode.sample_cycle() accounts
-#    for it.
-@asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=32, fifo_join=PIO.JOIN_RX)
-def dshot_bidir_rx():
-    wrap_target()
-    irq(clear, rel(0))               # step 1: drop any stale release signal...
-    wait(1, irq, rel(0))             # ...then block for the paired TX's per-frame release signal (auto-clears the flag)
-    set(x, 1)                        # step 2: predelay
-    label("predelay")
-    jmp(x_dec, "predelay")     [6]   # 2 iterations x 7 cycles = 14 cycles
-    wait(0, pin, 0)                  # step 3: the reply's leading (marker) edge
-    set(x, 3)                        # step 4: 4 outer passes
-    label("outer")
-    set(y, 31)
-    label("inner")
-    in_(pins, 1)                     # 1 cycle
-    jmp(y_dec, "inner")              # 1 cycle - 2 cycles/sample within a pass
-    jmp(x_dec, "outer")              # 1 cycle - only reached once per pass, after 32 samples
-    wrap()
-
 # BidirectionalDShot's receiver: the state machine rebuilds the reply itself
 # and hands the CPU one word per reply - the frame's 21 bits with the marker
-# at the top, the same integer gcr_decode.reconstruct_frame() returns - so the
-# CPU is left with gcr_decode.decode() and check_crc(). Replaced dshot_bidir_rx
-# (above), which stays in this file for the standalone calibration/diagnostic
-# tool that measures BIDIR_PROFILES' expected_ratio for a new ESC unit, since
-# this receiver has no period search of its own to fall back on.
+# at the top, the same integer gcr_decode.reconstruct_frame() used to build
+# from raw samples (see scripts/simulate_frame_receiver.py, which still does
+# that reconstruction for PC-side verification of this program) - so the CPU
+# is left with gcr_decode.decode() and check_crc().
 #
 # It reads the pin once per bit, at the bit's centre, and starts the count for
 # the next centre afresh at every flip - the way a hardware UART stays in step
@@ -180,15 +113,14 @@ def dshot_bidir_rx():
 # and a reply's worth of work always ends: the 21st read is the one autopush
 # fires on, and by then every bit is already shifted into the ISR, so a full
 # RX FIFO stalls there holding a complete, correct value rather than a partial
-# one - unlike dshot_bidir_rx, which autopushes mid-capture and so can push a
-# torn one. It only costs later replies, silently uncaptured while the state
+# one. It only costs later replies, silently uncaptured while the state
 # machine sits stalled - it does not resume watching for the next one until
 # room frees. See ADR-002's "run-length capture" section.
 #
 # What the program does, in order:
 #
 # 1. Wait for the paired TX's release signal and then for the reply's leading
-#    (marker) edge - the same synchronisation as dshot_bidir_rx, see there.
+#    (marker) edge.
 #
 # 2. Count down from a preset while the pin holds its level: one pass of the
 #    counting loop is 2 cycles (a pin test and a decrement), the loop for the
@@ -208,12 +140,11 @@ def dshot_bidir_rx():
 # and a run of low bits does not drift against a run of high bits.
 #
 # It takes 19 of a PIO block's 32 instruction slots and dshot_bidir_tx takes 13,
-# so a block that carries this pair is full: no other program fits beside it,
-# not even dshot_bidir_rx.
+# so a block that carries this pair is full: no other program fits beside it.
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=21)
 def dshot_bidir_rx_frame():
     wrap_target()
-    irq(clear, rel(0))               # step 1: as dshot_bidir_rx
+    irq(clear, rel(0))               # step 1: drop any stale release signal, then wait below
     wait(1, irq, rel(0))
     wait(1, pin, 0)            [26]  # BUG-004: wait for the line high (not just a fixed delay) before
                                       # arming the marker wait below - never starts looking for a falling

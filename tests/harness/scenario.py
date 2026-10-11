@@ -132,7 +132,7 @@ def build_scenario(data):
             # docstring) - failing here means a bad scenario JSON is caught
             # before any hardware is touched, rather than at motor
             # construction time. rx_sm_id must be sm_id+1: dshot_bidir_tx/
-            # dshot_bidir_rx synchronize via RP2040/2350's relative IRQ
+            # dshot_bidir_rx_frame synchronize via RP2040/2350's relative IRQ
             # addressing, which gives every pair on a shared PIO block its
             # own private flag as long as the TX-to-RX id offset is this
             # fixed constant (see driver/dshot_pio.py). CONFIRMED on
