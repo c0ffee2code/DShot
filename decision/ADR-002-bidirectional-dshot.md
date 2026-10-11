@@ -41,7 +41,7 @@ row's evidence is in the dated sections below.
 | eRPM value from a CRC-valid eRPM frame | Verified; mechanical RPM is not - the motor pole count is an unverified constant |
 | Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing); corruption after a stall under the production command loop not re-tested |
 | RX FIFO management | 8 words deep (joined), drained on every command-loop tick before the commands are sent, capped per call (ADR-005); two bidirectional motors verified 100% CRC-valid at both speeds, deliberate consumer stalls not re-tested |
-| `update()`'s own frame-to-reply-window spacing for one bidirectional motor | Not verified since the hot-path tightening below - a single-bidirectional-motor group at max-rate pacing may now tick faster than DSHOT300's own reply-collision floor (bug-reports/BUG-006) |
+| `update()`'s own frame-to-reply-window spacing for one bidirectional motor | Checked 2026-10-11 after the hot-path tightening below raised the concern: one bidirectional motor, DSHOT300, max-rate pacing, 8s - 114/114 CRC-valid, no collision observed (bug-reports/BUG-006); a longer/varied-load run would still be worth it before relying on this configuration |
 | Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4 fails and is parked, cause unknown; four bidirectional motors through the facade not verified |
 | Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one bidirectional motor verified through the facade, several not yet |
 | DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |

@@ -1,8 +1,12 @@
 # BUG-006: `disarm()` queues bidirectional frames back to back into the ESC's reply window
 
 **Status:** `disarm()`'s own collision FIXED (`DISARM_ROUND_GAP_US`, below). `update()`'s "same
-exposure in principle" (see below) is OPEN and possibly live for a single-bidirectional-motor
-group at max-rate pacing - unmeasured since the hot-path tightening that followed this bug.
+exposure in principle" (see below) was flagged as possibly live for a single-bidirectional-motor
+group at max-rate pacing, unmeasured since the hot-path tightening that followed this bug - bench
+test 2026-10-11 (`single_channel_bidirectional_300.json`, max-rate, DSHOT300, 8s): 114/114
+CRC-valid, 0 failures, median eRPM 21,614. No collision observed in this run. Kept open rather
+than closed outright - one clean run is good evidence, not exhaustive proof against an
+intermittent timing margin.
 **Severity:** Medium. The emergency stop relies on a single frame for bidirectional motors, and a
 faster command loop would collide on every frame.
 **Component:** `driver/motor_group.py` (`disarm()`), `driver/dshot_pio.py` (`dshot_bidir_tx`)
@@ -44,15 +48,16 @@ of this specific fix (frames 2-4 decoding as valid replies, this bug's own "Veri
 found in the commit history that introduced it - every scenario run disarms a bidirectional motor
 without reported failure, which is incidental exercise, not the targeted check this bug asked for.
 
-The `update()` exposure above is still open, and its margin against this table's own floor is
-unmeasured on the current code: the last single-bidirectional-motor `update()` tick figure on
-record is ~175us, from ADR-002's 2026-09-19 measurement - several code versions before BUG-003's
-per-tick arming-gate work, drain-before-send, and the `@micropython.native` hot-path tightening
-that followed this bug (ADR-002's "Further hot-path tightening" section). None of those changes'
-combined effect on a single-bidirectional-motor group's tick has been measured since. A direct
-check is cheap: one bench run of `single_channel_bidirectional_300.json` (DSHOT300 has the
-tighter ~135us floor) at full CRC-valid would settle whether this is live. Not run as part of this
-sweep - offered to the user rather than run unasked.
+The `update()` exposure above was flagged as a live concern given the hot-path tightening that
+followed this bug (the last single-bidirectional-motor tick figure on record, ~175us from
+ADR-002's 2026-09-19 measurement, predates BUG-003's per-tick arming-gate work, drain-before-send,
+and `@micropython.native` - see ADR-002's "Further hot-path tightening" section - so the combined
+effect wasn't known). **Checked 2026-10-11**, `single_channel_bidirectional_300.json` (DSHOT300,
+the tighter ~135us floor, max-rate pacing, 8s hold at throttle 100): 114/114 CRC-valid, 0 CRC
+failures, median eRPM 21,614 - no collision in this run. Still worth a longer/varied-load run if
+this configuration matters for production use, since one clean 8s run doesn't rule out an
+intermittent margin, but the acute "it's definitely too fast now" concern this note raised did
+not materialize.
 
 ## Fix plan
 
