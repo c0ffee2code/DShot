@@ -54,8 +54,10 @@ class Core1Runner:
                 2026-10-07). This makes the achieved period immune to
                 update()'s own cost changing (a GC pause, more queued than
                 usual, or - what actually happened in this project -
-                removing diagnostic overhead), as long as that cost stays
-                under interval_us. A call that still runs past its own next
+                removing diagnostic overhead; see BUG-002.md's "Telemetry
+                overhead and the timed window" section specifically, not its
+                "Root cause" section, which is a separate, larger fix), as
+                long as that cost stays under interval_us. A call that still runs past its own next
                 deadline is not caught up with a burst of immediate extra
                 calls; the schedule skips forward by whole periods instead,
                 matching Betaflight's own catch-up behavior (`scheduler.c`
@@ -66,17 +68,17 @@ class Core1Runner:
                 was `interval_us + however long that call took`. Removed
                 2026-10-09, by the user's explicit direction, not kept as an
                 option: every value tuned for it had to be re-tuned the
-                moment anything changed update()'s own cost - it was the
-                only configuration that ever reached 100% clean arms on this
-                bench (bug-reports/BUG-002-...md's "threshold test ran"
-                entry), but that 100% was earned by a constant tuned to one
-                specific, local measurement of one specific code version,
-                not by a mechanism that stays correct as the code changes.
-                The absolute-period mode above doesn't have that problem by
-                construction; it just hasn't yet matched the pad's
-                reliability on this ESC, which is BUG-002's still-open
-                question, not a reason to keep a mechanism that needs
-                re-tuning on every change.
+                moment anything changed update()'s own cost - at one point it
+                reached 100% clean arms on this bench, but that 100% was
+                earned by a constant tuned to one specific, local measurement
+                of one specific code version, not by a mechanism that stays
+                correct as the code changes. The absolute-period mode above
+                doesn't have that problem by construction. That pad-vs-
+                deadline comparison ran under a harness bug found the next
+                day (BUG-002.md's "Root cause" section), so it was never
+                cleanly measured; the pad mode was never re-run after the
+                fix. The deadline-anchored mode here has armed 20/20, then
+                13/13, since.
         """
         self.update = update
         self.interval_us = interval_us

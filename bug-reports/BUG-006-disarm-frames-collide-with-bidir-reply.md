@@ -1,6 +1,12 @@
 # BUG-006: `disarm()` queues bidirectional frames back to back into the ESC's reply window
 
-**Status:** OPEN - fix proposed, not implemented
+**Status:** `disarm()`'s own collision FIXED (`DISARM_ROUND_GAP_US`, below). `update()`'s "same
+exposure in principle" (see below) was flagged as possibly live for a single-bidirectional-motor
+group at max-rate pacing, unmeasured since the hot-path tightening that followed this bug - bench
+test 2026-10-11 (`single_channel_bidirectional_300.json`, max-rate, DSHOT300, 8s): 114/114
+CRC-valid, 0 failures, median eRPM 21,614. No collision observed in this run. Kept open rather
+than closed outright - one clean run is good evidence, not exhaustive proof against an
+intermittent timing margin.
 **Severity:** Medium. The emergency stop relies on a single frame for bidirectional motors, and a
 faster command loop would collide on every frame.
 **Component:** `driver/motor_group.py` (`disarm()`), `driver/dshot_pio.py` (`dshot_bidir_tx`)
@@ -33,6 +39,25 @@ MicroPython's tick (~175-450 µs) is slower than 135 µs.
 
 **Betaflight's Pico driver never sends into a pending exchange.** It checks the state machine's
 program counter and skips the cycle ([`dshot_pico.c#L191-L228`][bf-skip]).
+
+**Status update (2026-10-11).** `MotorGroup.disarm()`'s own collision is fixed: it now paces its
+`DISARM_FRAMES` rounds with `DISARM_ROUND_GAP_US` (200us) between them, matching this bug's fix
+plan item 2 below (implemented as one flat constant rather than a per-speed-computed
+`min_frame_period_us`, but 200us clears both this table's floors). No dedicated bench verification
+of this specific fix (frames 2-4 decoding as valid replies, this bug's own "Verification" ask) was
+found in the commit history that introduced it - every scenario run disarms a bidirectional motor
+without reported failure, which is incidental exercise, not the targeted check this bug asked for.
+
+The `update()` exposure above was flagged as a live concern given the hot-path tightening that
+followed this bug (the last single-bidirectional-motor tick figure on record, ~175us from
+ADR-002's 2026-09-19 measurement, predates BUG-003's per-tick arming-gate work, drain-before-send,
+and `@micropython.native` - see ADR-002's "Further hot-path tightening" section - so the combined
+effect wasn't known). **Checked 2026-10-11**, `single_channel_bidirectional_300.json` (DSHOT300,
+the tighter ~135us floor, max-rate pacing, 8s hold at throttle 100): 114/114 CRC-valid, 0 CRC
+failures, median eRPM 21,614 - no collision in this run. Still worth a longer/varied-load run if
+this configuration matters for production use, since one clean 8s run doesn't rule out an
+intermittent margin, but the acute "it's definitely too fast now" concern this note raised did
+not materialize.
 
 ## Fix plan
 

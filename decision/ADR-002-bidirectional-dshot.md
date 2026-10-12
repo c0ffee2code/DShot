@@ -41,6 +41,7 @@ row's evidence is in the dated sections below.
 | eRPM value from a CRC-valid eRPM frame | Verified; mechanical RPM is not - the motor pole count is an unverified constant |
 | Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing); corruption after a stall under the production command loop not re-tested |
 | RX FIFO management | 8 words deep (joined), drained on every command-loop tick before the commands are sent, capped per call (ADR-005); two bidirectional motors verified 100% CRC-valid at both speeds, deliberate consumer stalls not re-tested |
+| `update()`'s own frame-to-reply-window spacing for one bidirectional motor | Checked 2026-10-11 after the hot-path tightening below raised the concern: one bidirectional motor, DSHOT300, max-rate pacing, 8s - 114/114 CRC-valid, no collision observed (bug-reports/BUG-006); a longer/varied-load run would still be worth it before relying on this configuration |
 | Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4 fails and is parked, cause unknown; four bidirectional motors through the facade not verified |
 | Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one bidirectional motor verified through the facade, several not yet |
 | DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
@@ -2170,6 +2171,16 @@ TX's own fixed, repeating command waveform instead - bidirectional mode most lik
 in this manually-built setup. The exact cause, relative to what `BidirectionalDShot`'s own
 construction does differently, was not isolated. Left broken for a future session - see the
 script's own header comment for the full account.
+
+**Update (2026-10-11): tool deleted, not fixed.** The broken tool's use case (measuring a new
+ESC unit's `expected_ratio`) never came up again, and the project is committed to one ESC family
+(AM32), so it was dropped rather than debugged - see the backlog's W30 entry for the full call.
+`dshot_bidir_rx` and `analyze_capture()` (its sole remaining caller) were deleted outright from
+`driver/dshot_pio.py` and `driver/gcr_decode.py`. The raw-sample reconstruction math underneath
+`analyze_capture()` - `find_edges`/`reconstruct_frame`/`sample_cycle` - had a second, independent
+caller (`scripts/simulate_frame_receiver.py`, mentioned above) and was relocated there instead of
+deleted; `estimate_bit_period_fixed` had no remaining caller once `analyze_capture()` was gone and
+was deleted along with it.
 
 ### The receiver's FIFO is joined to 8 words (2026-09-20)
 

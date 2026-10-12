@@ -6,8 +6,8 @@ before it runs on hardware. For each CRC-valid reply in a stored capture session
 it rebuilds the pin's waveform from the raw 128 samples, runs the program's
 instruction list on a small PIO model (1 instruction per cycle, delay slots,
 the 2-cycle input synchroniser) with the receiver clock set as the driver sets
-it, and compares the frame the model pushes with the one
-gcr_decode.reconstruct_frame() builds from the same samples.
+it, and compares the frame the model pushes with the one this file's own
+reconstruct_frame() builds from the same samples.
 
 PROGRAM below is hand-transcribed from dshot_bidir_rx_frame: change one and the
 other has to follow. Run from the project root:
@@ -26,12 +26,105 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "driver"))
 
-import gcr_decode
+from gcr_decode import FRAME_LENGTH_BITS, decode, check_crc
 from dshot_profiles import BIDIR_PROFILES, DSHOT_SPEEDS, FRAME_CYCLES_PER_BIT
 
 RECORD_FMT = "<I4H16I"
 FRAME_BITS = 21
 SYNC_DELAY = 2  # cycles the pin's level takes to reach the state machine
+
+# Raw-sample reconstruction math, moved here 2026-10-11 from driver/gcr_decode.py
+# once its only other caller (tools/calibrate_bidir_rx.py, via analyze_capture())
+# was removed along with the sample receiver it measured. This script is now
+# the sole user: it needs the same reconstruction the old sample receiver (and
+# analyze_capture()) did, to build a "ground truth" frame from real raw samples
+# to compare the PIO-instruction-level PROGRAM model against.
+
+# Exact per-sample cycle position for the sample receiver's nested 4-outer x
+# 32-inner sample loop: pass p in 0..3, inner index i in 0..31, global
+# sample index = p*32+i. Within a pass, samples are 2 cycles apart; each
+# pass after the first costs 66 cycles total, and the first sample of a
+# pass lands 1 cycle after that pass's set(y,31). Unchanged across
+# DSHOT_SPEED/rx_clock_hz - only the clock frequency that converts cycles
+# to seconds changes.
+PASS_LENGTH_SAMPLES = 32
+CYCLES_PER_PASS = 66
+CYCLES_PER_SAMPLE_WITHIN_PASS = 2
+
+# Which bit a value with exactly one bit set has, for the 16-bit halves
+# find_edges() scans.
+BIT_POSITION = {1 << bit: bit for bit in range(16)}
+
+
+def sample_cycle(global_index):
+    p, i = divmod(global_index, PASS_LENGTH_SAMPLES)
+    return p * CYCLES_PER_PASS + 1 + i * CYCLES_PER_SAMPLE_WITHIN_PASS
+
+
+def find_edges(words):
+    """
+    Returns the indices, in ascending order, of the samples whose value differs
+    from the previous sample's (samples numbered 0-127 in time order, the top
+    bit of the first word being sample 0).
+
+    Each word is scanned in two 16-bit halves so no intermediate value passes 30
+    bits - a holdover from this math's on-device origin, where a larger integer
+    is a heap object; harmless but unnecessary here on the PC. Within a half,
+    XOR with the half shifted by one marks the transitions, and clearing the
+    lowest set bit visits them, newest sample first - hence the sort.
+    """
+    edges = []
+    previous = 0  # the last sample of the previous half
+    base = 0
+    for word in words:
+        for half in (word >> 16, word & 0xFFFF):
+            changed = half ^ ((half >> 1) | (previous << 15))
+            if base == 0:
+                changed &= 0x7FFF  # sample 0 has nothing before it
+            while changed:
+                lowest = changed & -changed
+                edges.append(base + 15 - BIT_POSITION[lowest])
+                changed ^= lowest
+            previous = half & 1
+            base += 16
+    edges.sort()
+    return edges
+
+
+def reconstruct_frame(words, edges, period):
+    """
+    Rebuild the frame by run-length decoding, as an integer of
+    FRAME_LENGTH_BITS bits with the marker bit at the top.
+
+    Each run between two edges lasts (cycle of its end - cycle of its start) and
+    holds the value of the sample it starts at, which is the one just after the
+    previous edge (sample 0 for the first run). The idle tail after the last
+    edge is not a run: it carries no bits. If the runs come to fewer than
+    FRAME_LENGTH_BITS, the missing trailing bits are idle-value (1) ones that
+    merged into the tail - this padding is load-bearing, not a fallback - and
+    if they come to more, only the first FRAME_LENGTH_BITS count.
+    """
+    frame = 0
+    count = 0
+    start_cycle = 1  # sample_cycle(0)
+    value_index = 0
+    for edge in edges:
+        # sample_cycle(edge), written out because this runs for every edge
+        end_cycle = (edge >> 5) * CYCLES_PER_PASS + 1 + (edge & 31) * CYCLES_PER_SAMPLE_WITHIN_PASS
+        n = round((end_cycle - start_cycle) / period)
+        if n < 1:
+            n = 1
+        if (words[value_index >> 5] >> (31 - (value_index & 31))) & 1:
+            frame = (frame << n) | ((1 << n) - 1)
+        else:
+            frame <<= n
+        count += n
+        if count >= FRAME_LENGTH_BITS:
+            return frame >> (count - FRAME_LENGTH_BITS)
+        start_cycle = end_cycle
+        value_index = edge
+    missing = FRAME_LENGTH_BITS - count
+    return (frame << missing) | ((1 << missing) - 1)
 
 # (session directory, DShot speed). Sessions were captured at that speed's rx_speed.
 SESSIONS = [
@@ -65,7 +158,7 @@ PROGRAM = [
 def waveform(words):
     """Returns level(t): the pin at capture-clock cycle t, the marker edge at t=0."""
     samples = [(w >> i) & 1 for w in words for i in range(31, -1, -1)]
-    cycles = [gcr_decode.sample_cycle(i) for i in range(len(samples))]
+    cycles = [sample_cycle(i) for i in range(len(samples))]
 
     def level(t):
         if t < 0:
@@ -144,12 +237,12 @@ def replay(session, dshot_speed, mistune, rng):
     scale = ratio / FRAME_CYCLES_PER_BIT * (1 + mistune)
     valid = identical = 0
     for words in load(session):
-        edges = gcr_decode.find_edges(words)
+        edges = find_edges(words)
         if len(edges) < 2:
             continue
-        reference = gcr_decode.reconstruct_frame(words, edges, ratio)
-        number = gcr_decode.decode(reference)
-        if number is None or gcr_decode.check_crc(number)[0] is None:
+        reference = reconstruct_frame(words, edges, ratio)
+        number = decode(reference)
+        if number is None or check_crc(number)[0] is None:
             continue
         valid += 1
         frame = run(waveform(words), scale, rng.random() * scale)

@@ -2,9 +2,10 @@
 #
 # arming.bin logging was retired 2026-10-06 (BUG-002: real per-tick overhead,
 # ~90us/call even idle, on the exact loop being measured - see BUG-002.md's
-# "measure_arming" findings). This still works on the ~900 sessions already
-# archived from before that date; a session captured after it has no
-# arming.bin, and this script has nothing to read for it.
+# "Telemetry overhead and the timed window" section). This still works on
+# the ~900 sessions already archived from before that date; a session
+# captured after it has no arming.bin, and this script has nothing to read
+# for it.
 #
 # BUG-002 diagnostic (2026-10-04): find_stall_position.py's "word==0 means this
 # motor is in trouble" check is only valid for a single-bidirectional-motor
@@ -21,7 +22,7 @@
 #     (gcr_decode.AM32_NOT_RUNNING_FRAME), or "never" if none arrived before
 #     the boot ended
 #   - the largest gap between two not-running replies within the boot, if
-#     >=GOOD_GAP_FLOOR_MS (BUG-002.md's "~300ms good-boot gap" candidate)
+#     >=GOOD_GAP_FLOOR_MS (150ms - long enough to not be ordinary reply jitter)
 #   - whether the boot ends in a blackout (vs. being the run's last, unfinished
 #     boot) and that blackout's duration
 #

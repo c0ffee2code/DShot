@@ -252,7 +252,7 @@ The dual-core architecture completely eliminated arming failures. Previously, ar
 
 ## References
 
-- [RP2040 Datasheet - Dual Core](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
+- [RP2040 Datasheet - Dual Core](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf) (this project's hardware moved to RP2350 after this ADR was written - see the [RP2350 Datasheet](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf) for the current chip)
 - [MicroPython _thread module](https://docs.micropython.org/en/latest/library/_thread.html)
 - [ARM Cortex-M0+ Memory Ordering](https://developer.arm.com/documentation/dui0662/latest/)
 - DShot Protocol Specification: `specification/DSHOT.md`

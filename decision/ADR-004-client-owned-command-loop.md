@@ -168,7 +168,7 @@ The original test hardware and pass criteria are those of ADR-001 — in particu
 | `test_motor_group.py` | Both motors arm reliably via an application-owned Core 1 loop |
 | Signal cut on disarm | Motors stop and the ESC beeps its lost-signal tone |
 | Stop latency from a spun-up motor | Confirms `disarm()`'s zeros land: the motor should wind down at once, not after the ESC's signal-loss timeout (up to 500ms on AM32) |
-| Signal line after `disarm()` | A unidirectional line reads low and a bidirectional line reads high (released and pulled up), measured on the Pico with nothing attached (2026-09-21, `tests/device/test_pio_lifecycle.py`) |
+| Signal line after `disarm()` | A unidirectional line reads low; a bidirectional line, at the time this was measured (2026-09-21, `tests/device/test_pio_lifecycle.py`), read high (released and pulled up) - that changed 2026-09-25: a bidirectional line is now also driven low, like the unidirectional case, because a released-high line left some ESC firmware unable to time out of its own post-disarm reboot cleanly (see ADR-002's "Implementation Update (2026-09-25)" and the test's own current assertion) |
 | `arm()` → `disarm()` → `arm()` | The state machines and the receiver work again each time: 15 re-arms on one group, each capturing afresh with the published sequence starting over (same test, no ESC). Re-arming an actual ESC after a disarm is exercised by every scenario run, not separately |
 | `update()` ×100 while disarmed | Returns immediately; confirms the TX FIFO hang guard |
 | `disarm()` on a never-armed group | Returns immediately and does not block on an inactive state machine |

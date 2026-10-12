@@ -29,12 +29,15 @@ estimate_bit_period_fixed (the shared fixed-ratio path) stay here; only
 the driver dropped the former.
 
 Decodes the densely, uniformly-oversampled raw captures produced by
-dshot_bidir_rx (see decision/ADR-002-bidirectional-dshot.md's "RX redesign:
-unslotted dense oversampling" section for the full history - including a
-first, disproven frame-length hypothesis this module used to assume).
+dshot_bidir_rx, the sample receiver PIO program this project used before
+adopting the frame receiver as the sole production receiver (removed from
+the driver 2026-10-11 along with its one caller, tools/calibrate_bidir_rx.py
+- see decision/ADR-002-bidirectional-dshot.md's "RX redesign: unslotted
+dense oversampling" section for the full history, including a first,
+disproven frame-length hypothesis this module used to assume).
 
-dshot_bidir_rx makes NO assumption about the real GCR bit period at the PIO
-level - it just samples the pin every 2 PIO cycles, continuously, for 128
+dshot_bidir_rx made NO assumption about the real GCR bit period at the PIO
+level - it just sampled the pin every 2 PIO cycles, continuously, for 128
 samples, covering the marker bit, the 20 real GCR data bits, and idle tail,
 all in one flat un-slotted stream. What real bit period those cycles work
 out to varies by DShot speed and rx_speed (see driver/dshot_profiles.py's
