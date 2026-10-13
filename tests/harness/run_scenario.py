@@ -48,7 +48,7 @@ from motor_group import MotorGroup
 from core1_runner import Core1Runner, fast_stop
 from scenario import load_scenario
 from bidir_capture_sink import BidirCaptureSink
-from decode_tally import DecodeTally, is_sampled
+from decode_tally import DecodeTally, SpinWatch, is_sampled
 from array import array
 import gc
 import utime
@@ -75,16 +75,15 @@ REPLY_FAILSAFE_GRACE_MS = 2000
 # bug report's "bigger waiting time?" note).
 ARM_TIMEOUT_MARGIN_MS = 16000
 
-# Grace window, after ARMED, before a bidirectional motor commanded to nonzero
-# throttle that has never once decoded a real (non-"not running") eRPM is
-# treated as stuck rather than still starting up. With the reply-gated ARMED
-# transition (bug-reports/BUG-003), reaching ARMED already means the ESC was
-# replying steadily - this catches the remaining case, where it replies but
-# the motor still never turns (per the user: "if it continuously returns this
-# eRPM constant - no point to run the test scenario, motors won't spin").
-# Matches REPLY_FAILSAFE_GRACE_MS - every healthy spin-up on this bench starts
-# well inside it.
-STUCK_AT_REST_GRACE_MS = 2000
+# How long a bidirectional motor commanded to spin (throttle >= 48) may go
+# without one real eRPM decode before the run is stopped (decode_tally.SpinWatch).
+# With the reply-gated ARMED transition (bug-reports/BUG-003), reaching ARMED
+# already means the ESC was replying steadily - this catches the remaining
+# case, where it replies but the motor never turns, or stops turning (BUG-002's
+# signature; BUG-008). Every healthy spin-up on this bench starts well inside
+# it. A continuous streak, not an "ever spun" flag: a single glitch frame does
+# not defeat it for the rest of the run.
+NOT_RUNNING_LIMIT_MS = 2000
 
 RECORD_ZERO_WORDS = (0,)
 
@@ -111,27 +110,26 @@ def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
         )
 
 
-def check_stuck_at_rest_failsafe(bidir_indices, real_spin_seen, throttles, elapsed_ms):
+def check_stuck_at_rest_failsafe(bidir_indices, spin_watches, throttles, elapsed_ms):
     """
-    A bidirectional motor commanded to nonzero throttle that has never once
-    decoded a real eRPM is BUG-002's own signature: CRC-valid replies, no
-    error state, and no spin, ever. Past the grace window this stops the run
-    instead of waiting out its full duration for a result already decided.
+    A bidirectional motor commanded to spin that has decoded no real eRPM for
+    NOT_RUNNING_LIMIT_MS is BUG-002's own signature: CRC-valid replies, no
+    error state, and no spin. This stops the run instead of waiting out its
+    full duration for a result already decided.
 
-    A motor deliberately held at 0 throttle (an idle bidirectional motor used
-    as a second-line control) legitimately replies the same sentinel forever
-    and must not trip this - only checked for motors with nonzero commanded
-    throttle right now.
+    A motor deliberately held below throttle 48 (an idle bidirectional motor
+    used as a second-line control) legitimately replies the same sentinel
+    forever and cannot trip this: SpinWatch only counts while commanded.
     """
-    if elapsed_ms < STUCK_AT_REST_GRACE_MS:
-        return
     for index in bidir_indices:
-        if throttles[index] > 0 and not real_spin_seen[index]:
+        spin_watches[index].note_throttle(throttles[index], elapsed_ms)
+        if spin_watches[index].tripped(throttles[index], elapsed_ms):
             raise RuntimeError(
-                "stuck-at-rest failsafe tripped: motor " + str(index) + " has been commanded a "
-                "nonzero throttle for " + str(elapsed_ms) + "ms since ARMED and every decoded "
-                "reply is still AM32's not-running sentinel (917 eRPM) - it is not going to start "
-                "on its own this run (see bug-reports/BUG-002-bidirectional-motor-intermittently-does-not-spin.md)"
+                "not-running failsafe tripped: motor " + str(index) + " has been commanded "
+                "throttle " + str(throttles[index]) + " for " +
+                str(spin_watches[index].stuck_ms(throttles[index], elapsed_ms)) +
+                "ms with no real eRPM decoded - it is not going to start on its own this run "
+                "(see bug-reports/BUG-002-bidirectional-motor-intermittently-does-not-spin.md)"
             )
 
 
@@ -260,7 +258,7 @@ def run_scenario():
     arm_times = [None, None]  # ticks_us of arm() and of ARMED, filled in by arm_group()
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
-    real_spin_seen = [False, False, False, False]  # per motor: ever decoded a non-"not running" eRPM
+    spin_watches = [SpinWatch(NOT_RUNNING_LIMIT_MS) for _ in range(4)]  # per motor, see SpinWatch
     failures = []
     # Set for real once the running loop starts (below); 0 here covers a run
     # that fails before reaching it, so finally's status-printing loop is a
@@ -341,7 +339,7 @@ def run_scenario():
                         result = group.decode_telemetry(index, capture_words)
                         tallies[index].add(result)
                         if result is not None and result["crc_ok"] and not result["not_running"]:
-                            real_spin_seen[index] = True
+                            spin_watches[index].note_spin(elapsed_ms)
                 if record_us is None or utime.ticks_diff(ticks_us, record_us) > 0:
                     record_us = ticks_us
                 age_us = utime.ticks_diff(utime.ticks_us(), ticks_us)
@@ -360,7 +358,7 @@ def run_scenario():
                 last_record_us = record_us
 
             check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
-            check_stuck_at_rest_failsafe(bidir_indices, real_spin_seen, throttles, elapsed_ms)
+            check_stuck_at_rest_failsafe(bidir_indices, spin_watches, throttles, elapsed_ms)
             check_expect(scenario.expect, largest_gap_us, total_records, elapsed_ms)
 
             if scenario.gc_every_ms and utime.ticks_diff(utime.ticks_ms(), last_gc_ms) >= scenario.gc_every_ms:

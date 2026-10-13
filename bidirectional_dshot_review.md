@@ -1106,6 +1106,7 @@ but not a squash).
 | W32 | Sleep reliability on this MicroPython/RP2350 port: can Core 1 wake up late, and does Core 0 activity stall it | — | M | PARTIALLY CLOSED (2026-10-11) - arming-correlation scope superseded by BUG-002 (moot, not built); GC-pauses-both-cores answered (ADR-002/ADR-005); `sleep_us` busy-wait-vs-early-return question still OPEN |
 | W33 | Driver hot-path tightening: fewer per-tick allocations/lookups in update()/drain_rx()/send_throttle_command() | — | M | DONE (2026-10-10) - detail moved to ADR-002's "Further hot-path tightening" section |
 | W34 | Buffer the harness's periodic status numbers in memory; format/write only before or after the timed window, never during | — | S | DONE (2026-10-09; bench-confirmed 2026-10-10, see its own caveat note below - that confirmation predates BUG-002's fix) |
+| W35 | Long arming batch: ~300 attempts of `two_channel_arming_600.json`, to support the published 99% within 3.0 s promise (rule of three: 10/10 and 20/20 clean so far on the new code are not enough) | — | S | TODO - waiting for the user to schedule a long unattended bench session (~75 min); do not start on your own |
 
 ### Work items
 

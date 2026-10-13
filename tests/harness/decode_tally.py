@@ -105,3 +105,45 @@ class DecodeTally:
         return ("decoded=" + str(self.sampled) + " crc_ok=" + str(self.crc_ok) +
                 " crc_fail=" + str(self.crc_fail) + " invalid=" + str(self.invalid) +
                 " median_erpm=" + str(round(self.median_erpm())))
+
+
+class SpinWatch:
+    """
+    Per-motor "commanded to spin but no real eRPM" timer, for one motor.
+
+    A motor commanded at or above min_throttle must decode a real eRPM (CRC-valid,
+    not AM32's not-running sentinel) at least once every limit_ms. The clock
+    restarts whenever a real eRPM is decoded or the commanded throttle drops
+    below min_throttle, so a motor deliberately idle never trips, and neither
+    does one that stops and is restarted. It is a continuous streak, not a
+    latch: one stray CRC-valid frame (BUG-009's data12=2) restarts the clock
+    once and the motor still trips limit_ms later if it is truly stuck, where
+    a "ever seen a real reply" flag would have been defeated for the rest of
+    the run (BUG-008).
+
+    Times are milliseconds since the run started; the caller supplies them.
+    """
+
+    def __init__(self, limit_ms, min_throttle=48):
+        self.limit_ms = limit_ms
+        self.min_throttle = min_throttle
+        self.since_ms = 0
+
+    def note_throttle(self, throttle, now_ms):
+        """Call every pass with the motor's currently commanded throttle."""
+        if throttle < self.min_throttle:
+            self.since_ms = now_ms
+
+    def note_spin(self, now_ms):
+        """Call when a sampled decode is CRC-valid and not 'not running'."""
+        self.since_ms = now_ms
+
+    def stuck_ms(self, throttle, now_ms):
+        """Milliseconds commanded to spin without a real eRPM; 0 when not commanded."""
+        if throttle < self.min_throttle:
+            return 0
+        return now_ms - self.since_ms
+
+    def tripped(self, throttle, now_ms):
+        return self.stuck_ms(throttle, now_ms) > self.limit_ms
+

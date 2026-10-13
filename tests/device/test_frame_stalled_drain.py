@@ -35,7 +35,7 @@
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
-from core1_runner import Core1Runner
+from core1_runner import Core1Runner, fast_stop
 import gcr_decode
 import utime
 
@@ -124,8 +124,8 @@ def main():
         print("  OK   every drained capture, at both burst sizes, was marker_ok and CRC-valid")
 
     finally:
-        runner.stop()
-        motors.disarm()
+        if not fast_stop(motors, runner):
+            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
         print("Motors stopped and disarmed.")
 
     print()

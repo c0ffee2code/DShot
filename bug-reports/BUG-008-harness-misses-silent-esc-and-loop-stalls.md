@@ -1,6 +1,6 @@
 # BUG-008: Harness health checks cannot see a silent ESC, a Core 1 stall, or "commanded but not running"
 
-**Status:** OPEN - fix proposed, not implemented
+**Status:** PARTLY FIXED 2026-10-13 (items 2 and 3 done in code and unit tests, bench run pending; items 1 and 5 still open - see "Update 2026-10-13")
 **Severity:** Medium (diagnostics). BUG-002-type failures pass the harness's own checks and are
 found only by reading logs afterwards.
 **Component:** `tests/harness/run_scenario.py`, `tests/harness/scenarios/*.json`, `tests/harness/scenario.py`
@@ -25,6 +25,21 @@ found only by reading logs afterwards.
    whose replies are all `not_running` (`0xFFF`) while its commanded throttle is ≥48 is BUG-002's
    exact signature. It deserves its own failure message, and it should fail as soon as it happens
    rather than at the end.
+
+## Update 2026-10-13
+
+- **Item 3 (not-running check): done.** `decode_tally.SpinWatch` replaces the permanent
+  `real_spin_seen` latch. A bidirectional motor commanded at throttle 48 or above must decode one
+  real eRPM every `NOT_RUNNING_LIMIT_MS` (2000 ms; the existing, bench-justified spin-up grace, not
+  the 3 s first suggested below). It is a continuous streak, so a single glitch frame (BUG-009)
+  restarts the clock once and cannot defeat the check for the rest of the run.
+- **Item 2 (loop gap): done in a different form.** The per-tick loop-gap measurement this item
+  assumed was retired with the rest of the per-tick instrumentation (BUG-002, 2026-10-06), so there
+  is no `max_loop_gap_us` to judge. The check that exists is `expect.max_gap_ms`, the largest gap
+  between records; `scenario.py` now requires it for every scenario with a bidirectional motor
+  (the two unidirectional scenarios produce no records and are exempt).
+- **Items 1 and 5 remain open:** the per-motor, echo-aware silent-ESC failsafe, and the
+  reboot-after-`ARMED` flag.
 
 ## Fix plan
 

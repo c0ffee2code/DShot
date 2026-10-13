@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "harness"))
 
 import fakes  # noqa: E402,F401
-from decode_tally import DecodeTally, MIN_SAMPLES, ERPM_KEPT, is_sampled  # noqa: E402
+from decode_tally import DecodeTally, SpinWatch, MIN_SAMPLES, ERPM_KEPT, is_sampled  # noqa: E402
 
 
 def good(erpm=21000.0):
@@ -133,6 +133,56 @@ class CheckTest(unittest.TestCase):
         text = self.filled(3, bad=1, invalid=2).summary()
         for part in ("decoded=6", "crc_ok=3", "crc_fail=1", "invalid=2"):
             self.assertIn(part, text)
+
+
+class SpinWatchTest(unittest.TestCase):
+    """A commanded motor must keep decoding a real eRPM; a glitch frame must
+    not defeat the check for the rest of the run (BUG-008, BUG-009)."""
+
+    def test_a_motor_that_never_spins_trips_after_the_limit(self):
+        watch = SpinWatch(2000)
+        for now in range(0, 2001, 100):
+            watch.note_throttle(60, now)
+            self.assertFalse(watch.tripped(60, now))
+        watch.note_throttle(60, 2100)
+        self.assertTrue(watch.tripped(60, 2100))
+
+    def test_real_eRPM_keeps_it_from_tripping(self):
+        watch = SpinWatch(2000)
+        for now in range(0, 20000, 100):
+            watch.note_throttle(60, now)
+            if now % 1000 == 0:
+                watch.note_spin(now)
+            self.assertFalse(watch.tripped(60, now))
+
+    def test_one_glitch_frame_restarts_the_clock_but_does_not_end_the_check(self):
+        watch = SpinWatch(2000)
+        watch.note_spin(500)          # the glitch: CRC-valid, not 'not running'
+        self.assertFalse(watch.tripped(60, 2400))
+        self.assertTrue(watch.tripped(60, 2600))
+
+    def test_an_idle_motor_never_trips(self):
+        watch = SpinWatch(2000)
+        for now in range(0, 60000, 500):
+            watch.note_throttle(0, now)
+            self.assertFalse(watch.tripped(0, now))
+        self.assertEqual(watch.stuck_ms(0, 60000), 0)
+
+    def test_the_clock_starts_when_the_motor_is_first_commanded(self):
+        watch = SpinWatch(2000)
+        for now in range(0, 10000, 100):
+            watch.note_throttle(0, now)
+        watch.note_throttle(60, 10000)
+        self.assertFalse(watch.tripped(60, 11900))
+        self.assertTrue(watch.tripped(60, 12100))
+
+    def test_a_motor_commanded_back_to_zero_and_up_again_gets_a_fresh_clock(self):
+        watch = SpinWatch(2000)
+        watch.note_throttle(60, 0)
+        watch.note_throttle(0, 1500)
+        watch.note_throttle(60, 1600)
+        self.assertFalse(watch.tripped(60, 3000))
+        self.assertTrue(watch.tripped(60, 3700))
 
 
 if __name__ == "__main__":

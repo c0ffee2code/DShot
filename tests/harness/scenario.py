@@ -245,6 +245,12 @@ def build_scenario(data):
 
     expect = _require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
+    # Every scenario with telemetry states how long the harness may go without
+    # a new record. Without it a stalled command loop (a gap of 0.5 s or more
+    # makes an armed AM32 reset itself, which looks exactly like BUG-002) is
+    # measured and printed but never judged (BUG-008).
+    if bidir_indices and "max_gap_ms" not in expect:
+        raise ValueError("expect.max_gap_ms is required when a motor is bidirectional")
     for name in ("min_crc_valid_pct", "min_median_erpm"):
         for key in expect.get(name, {}):
             if int(key) not in bidir_indices:

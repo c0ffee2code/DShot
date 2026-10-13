@@ -31,7 +31,7 @@ def valid_scenario():
         "poll_ms": 10,
         "decode_every": 20,
         "gc_every_ms": 0,
-        "expect": {},
+        "expect": {"max_gap_ms": 150},
         "motors": [
             {"pin": 6, "sm_id": 0, "bidirectional": True, "rx_sm_id": 1,
              "profile": [{"type": "hold", "throttle": 100, "duration_ms": 1000}]},
@@ -157,6 +157,9 @@ class ScenarioValidationTest(unittest.TestCase):
         scenario = build_scenario(data)
         self.assertEqual(scenario.bidir_indices, [0, 1])
 
+    def test_a_bidirectional_scenario_must_state_max_gap_ms(self):
+        self.rejected(lambda d: d.update(expect={}), "expect.max_gap_ms is required")
+
     def test_every_motor_needs_a_profile(self):
         self.rejected(lambda d: d["motors"][1].pop("profile"), "profile is required")
 
@@ -167,14 +170,15 @@ class ScenarioValidationTest(unittest.TestCase):
         self.rejected(lambda d: d["motors"][1]["profile"][0].update(duration_ms=500), "!= scenario duration_ms")
 
     def test_a_crc_threshold_needs_a_bidirectional_motor(self):
-        self.rejected(lambda d: d.update(expect={"min_crc_valid_pct": {"1": 99.0}}), "not declared bidirectional")
+        self.rejected(lambda d: d.update(expect={"max_gap_ms": 150, "min_crc_valid_pct": {"1": 99.0}}), "not declared bidirectional")
 
     def test_a_median_erpm_threshold_needs_a_bidirectional_motor(self):
-        self.rejected(lambda d: d.update(expect={"min_median_erpm": {"1": 10000}}), "not declared bidirectional")
+        self.rejected(lambda d: d.update(expect={"max_gap_ms": 150, "min_median_erpm": {"1": 10000}}), "not declared bidirectional")
 
     def test_thresholds_for_a_bidirectional_motor_are_accepted(self):
         data = valid_scenario()
-        data["expect"] = {"min_crc_valid_pct": {"0": 99.0}, "min_median_erpm": {"0": 10000}}
+        data["expect"] = {"max_gap_ms": 150, "min_crc_valid_pct": {"0": 99.0},
+                          "min_median_erpm": {"0": 10000}}
         self.assertEqual(build_scenario(data).expect["min_median_erpm"], {"0": 10000})
 
     def test_decode_every_is_required_but_can_be_turned_off(self):
