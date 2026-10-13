@@ -1,6 +1,6 @@
 # BUG-008: Harness health checks cannot see a silent ESC, a Core 1 stall, or "commanded but not running"
 
-**Status:** PARTLY FIXED 2026-10-13 (items 2 and 3 done in code and unit tests, bench run pending; items 1 and 5 still open - see "Update 2026-10-13")
+**Status:** PARTLY FIXED 2026-10-13 (items 2 and 3 done; healthy path bench-verified on two scenarios, failing path unit-tested only; items 1 and 5 still open - see "Update 2026-10-13")
 **Severity:** Medium (diagnostics). BUG-002-type failures pass the harness's own checks and are
 found only by reading logs afterwards.
 **Component:** `tests/harness/run_scenario.py`, `tests/harness/scenarios/*.json`, `tests/harness/scenario.py`
@@ -65,6 +65,8 @@ found only by reading logs afterwards.
    BUG-003's gate cannot catch once `ARMED` has passed.
 
 ## Confirmed instance, 2026-10-10 (BUG-009): a single glitch frame defeats the current check
+
+*As of 2026-10-13 the permanent latch described here has been replaced (see "Update 2026-10-13" above); this section records the instance that motivated it.*
 
 `run_scenario.py`'s `check_stuck_at_rest_failsafe` (the check that exists today, ahead of this
 file's fix plan) sets `real_spin_seen[index] = True` the first time a decoded capture has `crc_ok`

@@ -1,6 +1,6 @@
 # BUG-007: `Core1Runner.stop()` can return while Core 1 is still inside `update()`
 
-**Status:** FIXED 2026-10-13 (bench-verified, see the update below)
+**Status:** FIXED 2026-10-13. Healthy path bench-verified (3/3 re-arm cycles, 20/20 arming runs, a spinning scenario and the stalled-drain test, all with `stop()` returning True). The timeout path - the actual bug - is unit-tested only; it was never forced on hardware, and this report's own device check with a forced `gc.collect()` on Core 1 was not written.
 **Severity:** Medium. It reopens the `disarm()`/`update()` race that CLAUDE.md tells callers to
 avoid by stopping the loop first.
 **Component:** `tests/harness/core1_runner.py` (example application code that projects copy),

@@ -3,7 +3,8 @@
 #
 # The lifecycle checks are about what the group transmits and when: nothing
 # while disarmed, literal zeros for the whole arming window, the set throttles
-# once armed, zeros again on disarm, then silence. On real hardware a group that
+# once armed, then silence from disarm() on (it transmits nothing; the ESC's
+# own timeout stops the motor - see ADR-004). On real hardware a group that
 # kept writing to a deactivated state machine would block its caller forever;
 # that is the reason for most of the "inert" checks here.
 

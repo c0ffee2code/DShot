@@ -6,6 +6,9 @@ AM32 became the project's sole ESC target) no longer applies. AM32 itself implem
 throttle value 1 through `send_throttle_command()`, not a dedicated command API - BUG-005's
 exact path). What's still missing is a driver-side command API - there is none today - and
 `BUG-005`'s throttle 1-47 clamp should land first, since it addresses the same value range.
+*Update 2026-10-13:* that clamp has landed: `MotorGroup.set_throttle()` raises for 1-47, so the
+facade can no longer send a command by accident, and a future command API cannot go through
+`set_throttle()`. The low-level `send_throttle_command()` still accepts 1-47.
 **Date:** 2026-02-01
 **Context:** Implementing DShot special commands beyond throttle control
 

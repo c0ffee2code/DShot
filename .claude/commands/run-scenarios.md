@@ -2,7 +2,7 @@ Run `python scripts/run_scenarios.py --scenario <path> [--scenario <path> ...] -
 
 Runs one or more scenarios repeatedly on the bench, tallying each attempt as
 clean (every configured motor reached ARMED within CLEAN_ARM_THRESHOLD_MS of
-arm() - the stable-arming KPI's duration bound, target >=99%), reboot (armed,
+arm() - the stable-arming KPI's duration bound, 3.0 s, target >=99%), reboot (armed,
 but only after one or more ESC reboots pushed it past that duration), refused
 (arming timed out), or error (an unexpected crash) - reports the tally, not
 just the last run's result, including the running clean-rate KPI percentage.
@@ -29,3 +29,6 @@ python scripts/run_scenarios.py \
   --scenario tests/harness/scenarios/two_channel_divergent_300.json \
   --rounds 10 --pull
 ```
+
+For arming reliability alone, use `tests/harness/scenarios/two_channel_arming_600.json`: same two
+bidirectional motors, throttle 0 throughout, nothing spins, about 15 s per run.

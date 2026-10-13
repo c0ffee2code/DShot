@@ -24,7 +24,7 @@ add code paths or timing accommodations to keep it working.
 |------|--------|---------|
 | **Improve arming sequence** | Done | Evidence-gated arming on a 2000ms floor, not a timer alone (BUG-002/BUG-003, AM32.md#16); ADR-001's own 2026-08-23 bring-up finding used a 500ms arm window, well under AM32's own >1.6s gate by itself, so it never isolated command pacing as a cause - see README's "Verified Parameters" for what pacing has actually been bench-confirmed since |
 | **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
-| **DShot commands** | TODO | No driver-side command API yet (BUG-005's 1-47 clamp is the prerequisite). AM32 itself implements commands (AM32.md#7) and this bench has already heard a `BEEP1` while armed (sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
+| **DShot commands** | TODO | No driver-side command API yet (BUG-005's prerequisite is done: `MotorGroup` rejects 1-47, so a command API needs its own entry point, not `set_throttle()`). AM32 itself implements commands (AM32.md#7) and this bench has already heard a `BEEP1` while armed (sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver (`dshot_bidir_rx_frame`) bench-validated on AM32 and adopted as the sole production receiver (2026-09-26) |
 
 ## Operational Envelope (what this driver guarantees)
@@ -38,11 +38,15 @@ add code paths or timing accommodations to keep it working.
 
 An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that
 arms later after an ESC reboot. Callers should treat it as a failure to handle, not wait
-indefinitely. Bench evidence so far: clean arms take 2.08-2.59 s (698 sessions), arms that
-needed an ESC reboot take 4.06 s or more. The bound is measured by `scripts/run_scenarios.py`
-(`CLEAN_ARM_THRESHOLD_MS`); keep that constant, README.md and this table in agreement.
-Not guaranteed: DShot commands, other ESC firmware, behaviour of the motor after arming
-(BUG-009 is open).
+indefinitely. Where the bound sits: across the 698 sessions archived on the bench (mostly earlier
+code), clean arms took 2.08-2.59 s and arms that needed an ESC reboot took 4.06 s or more, so 3.0 s
+falls in the empty gap between the two. That archive justifies the bound, not the 99% rate.
+Evidence for the rate on current code: 41 of 41 arming-only bench runs on 2026-10-13, across the
+last four revisions of this code (10, 10, 20 and 1 runs). It is not yet enough to support 99%
+(about 300 clean attempts are needed); the long batch is waiting to be scheduled. The bound is
+measured by `scripts/run_scenarios.py` (`CLEAN_ARM_THRESHOLD_MS`); keep that constant, README.md
+and this table in agreement. Not guaranteed: DShot commands, other ESC firmware, behaviour of the
+motor after arming (BUG-009 is open).
 
 ## Development Environment
 
@@ -121,7 +125,7 @@ committed once confirmed.
 
 - **`tests/harness/`** - the bench regression suite: example application code plus the JSON scenarios that verify the library on real hardware. `run_scenario.py` runs a scenario the way an application uses the library: it builds the motors (bidirectional ones use the frame receiver, the only one `BidirectionalDShot` has; since it fills its own PIO block, `scenario.py` rejects a scenario JSON that puts a unidirectional motor on the same block), wraps them in `MotorGroup`, runs `update()` on Core 1 through `core1_runner.py` (a Core 1 loop projects copy and adapt), and on Core 0 follows each motor's throttle profile and samples `raw_telemetry()`. Every 20th new capture is decoded on the device (`decode_tally.py` tallies real replies, CRC failures and non-replies) and judged against the scenario's `expect` thresholds, so a run prints its own verdict; the raw captures go to the PicoBell Adalogger's SD card (`bidir_capture_sink.py`, `capture_sink.py`, the ported `sdcard.py`/`pcf8523.py`). `scenario.py`/`throttle_profile.py` load and validate a scenario fail-fast before anything is armed, and `scenarios/*.json` is the scenario library (each file declares all 4 motors' wiring and a throttle profile per motor). Run one with `python scripts/run_test.py --scenario tests/harness/scenarios/<file>.json` (uploads via `scripts/deploy.py`, then runs and streams output), pull the session with `scripts/pull_captures.py` (which deletes each pulled session from the SD card) and analyse it with `scripts/analyze_bidir_capture_log.py`, which decodes everything logged, checks the same thresholds and cross-checks the device's sampled tally. `scripts/arming_stats.py` reads the arming logs of a batch of sessions and prints, per configuration, how often each ESC accepted our frames. `scripts/run_scenarios.py` runs one or more scenarios repeatedly (interleaved round by round when given several), tallying each attempt as armed/refused/error from `run_test.py`'s own printed output rather than a hand-rolled shell loop's string-matching - see its own docstring for why that distinction matters.
 - **`tests/unit/`** - PC-run unit tests of the pieces that need no hardware (mailbox, decoder, command packet, `MotorGroup` against fake state machines, scenario loading): `python -m unittest discover -s tests/unit`. `fakes.py` stands in for `machine`, `rp2` and `utime`.
-- **`tests/device/`** - on-Pico checks that don't fit the scenario harness. `test_capture_slot_stress.py` needs the Pico's two real cores but no ESC or motor power. `test_bidir_restart_cycles.py` is the exception to "no ESC or motor" - it needs both, to arm/spin/disarm a bidirectional motor three times in one session and prove `start()` reclaims the pin correctly after `stop()`, which no scenario run does (`run_test.py` resets the Pico before every scenario, so a scenario only ever calls `start()` once). Run either with `python scripts/run_test.py <file>.py`.
+- **`tests/device/`** - on-Pico checks that don't fit the scenario harness. `test_capture_slot_stress.py` needs the Pico's two real cores but no ESC or motor power; `test_stop_clears_queues.py` and `test_pio_lifecycle.py` need the Pico only (the first proves on real PIO that `stop()` leaves the send queue empty and that repeated start/stop does not exhaust the program store). `test_bidir_restart_cycles.py` needs an ESC and motors, to arm/spin/disarm a bidirectional motor three times in one session and prove `start()` reclaims the pin correctly after `stop()`, which no scenario run does (`run_test.py` resets the Pico before every scenario, so a scenario only ever calls `start()` once). `test_frame_stalled_drain.py` and `test_frame_arming_echo.py` also need an ESC and a motor and probe the frame receiver under a stalled drain and during arming. Run any of them with `python scripts/run_test.py <file>.py` (the bare file name, not a path).
 
 `tools/` holds on-Pico scripts that aren't tests - no pass/fail assertion, just data collection for a person to read (`measure_arming_tick_timing_once.py`, `measure_rough_start.py`). Also run with `python scripts/run_test.py <file>.py`.
 

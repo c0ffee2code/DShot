@@ -43,7 +43,7 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 │                  MOTOR GROUP FACADE (core-agnostic)         │
 │                                                             │
 │  arm()      - activate state machines, open arming window   │
-│  disarm()   - transmit zeros, deactivate state machines     │
+│  disarm()   - deactivate and reset state machines, line low │
 │  update()   - a frame per motor, drain replies, advance arm │
 │  is_armed() - application polls for arming completion       │
 │  raw_telemetry(i) - latest reply capture, once armed        │
@@ -140,7 +140,7 @@ Reversed:
 - **The library composes.** It no longer conflicts with the application's own use of Core 1, timers, or async frameworks.
 - **Works in arrangements the old design could not**, notably a single-core cooperative loop.
 - **Smaller, more testable facade.** No thread lifecycle, no heartbeat, no startup handshake, no magic sleeps.
-- **Stronger stop.** `disarm()` delivers the zeros itself and then cuts the signal, rather than depending on a live loop for either.
+- **Deterministic stop.** `disarm()` cuts the signal and resets every motor itself, rather than depending on a live loop. (Originally it also transmitted zeros first, for an immediate stop; revised 2026-10-13, see the note under the lifecycle table: the ESC's own timeout now stops the motor, and an application that wants it sooner sends throttle 0 first.)
 - **Two safety bugs removed** — the `start()` activation race and the blocking `is_healthy()` call inside `arm()`.
 
 ### Negative
@@ -173,7 +173,7 @@ The original test hardware and pass criteria are those of ADR-001 — in particu
 | `test_dshot_single_motor.py` | Low-level driver plus the new `stop()` |
 | `test_motor_group.py` | Both motors arm reliably via an application-owned Core 1 loop |
 | Signal cut on disarm | Motors stop and the ESC beeps its lost-signal tone |
-| Stop latency from a spun-up motor | Confirms `disarm()`'s zeros land: the motor should wind down at once, not after the ESC's signal-loss timeout (up to 500ms on AM32) |
+| Stop latency from a spun-up motor | Originally: confirms `disarm()`'s zeros land and the motor winds down at once. Since 2026-10-13 `disarm()` transmits nothing: with the harness's `fast_stop()` (throttle 0 first) the motors were observed to stop at once; a bare `disarm()` leaves the motor at its last throttle until the ESC's signal-loss timeout (up to 500ms on AM32), which has not been measured on the bench |
 | Signal line after `disarm()` | A unidirectional line reads low; a bidirectional line, at the time this was measured (2026-09-21, `tests/device/test_pio_lifecycle.py`), read high (released and pulled up) - that changed 2026-09-25: a bidirectional line is now also driven low, like the unidirectional case, because a released-high line left some ESC firmware unable to time out of its own post-disarm reboot cleanly (see ADR-002's "Implementation Update (2026-09-25)" and the test's own current assertion) |
 | `arm()` → `disarm()` → `arm()` | The state machines and the receiver work again each time: 15 re-arms on one group, each capturing afresh with the published sequence starting over (same test, no ESC). Re-arming an actual ESC after a disarm is exercised by every scenario run, not separately |
 | `update()` ×100 while disarmed | Returns immediately; confirms the TX FIFO hang guard |

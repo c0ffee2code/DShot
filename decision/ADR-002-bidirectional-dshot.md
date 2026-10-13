@@ -2218,6 +2218,11 @@ doesn't even avoid touching pin ownership once a re-arm is needed). `stop()` was
 `disarm()`-only sequencing so every caller, including the low-level single-motor usage example,
 gets the fix automatically.
 
+*Update 2026-10-13:* `disarm()` no longer transmits zeros or calls `drain()` before `stop()`, so
+the 300µs wait above now follows the deactivation directly. `stop()` then re-initialises both state
+machines (empty TX and RX FIFOs, no stored capture) before driving the line low, and `start()` does
+the same re-initialisation. See ADR-004's revision note for why `disarm()` stopped transmitting.
+
 Verified on hardware: `telemetry_settled_300/600` and `two_channel_divergent_300/600` (single
 and multiple bidirectional motors, the latter the scenario that first showed the bug) all
 recover audibly with no reset; three repeated arm/spin/disarm cycles in one session, run twice,

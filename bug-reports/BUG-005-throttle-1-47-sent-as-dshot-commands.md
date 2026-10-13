@@ -1,6 +1,13 @@
 # BUG-005: Throttle values 1-47 are transmitted, and AM32 executes them as DShot commands
 
-**Status:** OPEN - fix proposed, not implemented
+**Status:** FIXED 2026-10-13 (unit-tested; no bench run was needed or made - no scenario sends 1-47).
+Implemented differently from the plan below in one respect: `MotorGroup` **raises**
+`MotorGroupException` for 1-47 instead of mapping it to 0 (the owner's choice). The risk of that
+choice: an exception escaping an application's control loop stops that loop with the motor still
+holding its last throttle until the ESC's signal-loss timeout, so callers must either never
+produce 1-47 or catch it. Values below 0 and above 2047 are still clamped, as before.
+Plan items 2-4 (low-level docstring warning, profile and scenario-load rejection) are done as
+written.
 **Severity:** High (latent) - no current scenario hits it, but any throttle ramp from 0 does.
 Consequences include ESC EEPROM writes.
 **Component:** `driver/motor_group.py` (`clamp_throttle()`, `set_throttle()`),

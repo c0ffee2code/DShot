@@ -7,7 +7,9 @@ separate from telemetry) is untouched.
 code change made that day (W33 performance work, `@micropython.native`, BUG-002's `arm_group()`
 fix). None of that day's own code changes are the cause.
 
-## Before touching this: BUG-005 is a landmine for any fix attempted here
+## Before touching this: BUG-005 (now fixed) is why a ramp from 0 cannot be written
+
+*Update 2026-10-13:* `MotorGroup.set_throttle()` now raises for 1-47 and scenario profiles that reach it fail to load, so a ramp from 0 can no longer walk through the command range by accident. A smooth-start experiment must jump from 0 to 48 or above. The text below is the original warning.
 
 **Read `bug-reports/BUG-005-throttle-1-47-sent-as-dshot-commands.md` first.** It is OPEN,
 independent of this investigation, and directly relevant: DShot values 1-47 are commands, not
@@ -155,5 +157,6 @@ within milliseconds of arming anyway.
 - BUG-002 - the arming-reliability investigation this spun off from, now resolved. A different
   problem; its `arm_group()` fix is unrelated to this one.
 - BUG-005 - landmine for any fix attempted here (ramping from 0), see above.
-- BUG-008 - tracks the harness safety-net gaps; this file's `data12=2` finding is now a confirmed
-  instance there (`check_stuck_at_rest_failsafe` can be permanently defeated by it).
+- BUG-008 - tracks the harness safety-net gaps; this file's `data12=2` finding was a confirmed
+  instance there. Since 2026-10-13 the permanent latch it defeated is replaced by a continuous
+  "no real eRPM for 2 s while commanded" check (`decode_tally.SpinWatch`).

@@ -816,6 +816,10 @@ The first engineering target should instead be **deterministic TX/RX transaction
 
 ---
 
+> **Note (2026-10-13):** the design constraint stated below lists two supported ESC firmware
+> families (BLHeli_S and AM32). BLHeli_S support was dropped on 2026-09-26; AM32 is the only
+> supported ESC. CLAUDE.md is authoritative. The text below is left as written.
+
 # Maintainer assessment (2026-08-25)
 
 Every factual claim in the review was checked against the code and ADR-002 before this
@@ -1107,6 +1111,9 @@ but not a squash).
 | W33 | Driver hot-path tightening: fewer per-tick allocations/lookups in update()/drain_rx()/send_throttle_command() | — | M | DONE (2026-10-10) - detail moved to ADR-002's "Further hot-path tightening" section |
 | W34 | Buffer the harness's periodic status numbers in memory; format/write only before or after the timed window, never during | — | S | DONE (2026-10-09; bench-confirmed 2026-10-10, see its own caveat note below - that confirmation predates BUG-002's fix) |
 | W35 | Long arming batch: ~300 attempts of `two_channel_arming_600.json`, to support the published 99% within 3.0 s promise (rule of three: 10/10 and 20/20 clean so far on the new code are not enough) | — | S | TODO - waiting for the user to schedule a long unattended bench session (~75 min); do not start on your own |
+| W36 | Clean teardown: `stop()`/`start()` re-initialise state machines (no stale queued frame), `disarm()` transmits nothing, `fast_stop()` for harness sessions, `Core1Runner.stop()` waits and reports | — | M | DONE (2026-10-13) - healthy path bench-verified (queue check 7/7, 3/3 re-arm cycles, 20/20 arming runs, a spinning scenario); the stop-timeout path is unit-tested only |
+| W37 | Harness not-running check (`SpinWatch`) and mandatory `max_gap_ms` | — | S | DONE (2026-10-13) - healthy path bench-verified on two scenarios; failing path unit-tested only; BUG-008's per-motor silent-ESC check and reboot-after-ARMED flag remain open |
+| W38 | Published arming promise (>=99% within 3.0 s) in README/CLAUDE.md; batch runner bound 3000 ms | — | S | DONE (2026-10-13) - the promise is stated; its evidence is 41/41 arming-only runs, which supports far less than 99% - see W35 |
 
 ### Work items
 

@@ -68,7 +68,7 @@ requirements that drive it.
                    │ set_throttle()
                    ▼
 ┌─────────────────────────────────────┐
-│    MotorGroup Facade        │
+│         MotorGroup Facade           │
 │  Throttle state, arming sequence,   │
 │  PIO lifecycle. Core-agnostic.      │
 └──────────────────┬──────────────────┘
@@ -186,6 +186,8 @@ An attempt that has not reached `ARMED` within 3.0 s counts as a failure, even i
 after an ESC reboot. Not guaranteed: DShot commands, other ESC firmware, motor behaviour after
 arming.
 
+**Status of the measurement:** in progress.
+
 ## Verified Parameters
 
 Timing requirements are ESC-firmware-dependent, not just protocol-dependent. The library's
@@ -195,9 +197,9 @@ measured requirements.
 | Parameter | AM32 (Skystar KM55A2) |
 |-----------|------------------------|
 | Protocol | DShot300 and DShot600, both bench-verified (the command-interval and arming-duration rows below don't depend on which) |
-| Minimum throttle | 60 confirmed spinning (DShot300, ADR-002; BUG-009 tracks an open rough-start question at low throttle) - 1-47 are special commands, not throttle (see `specification/DSHOT.md`, BUG-005) |
+| Minimum throttle | 60 confirmed spinning (DShot300, ADR-002; BUG-009 tracks an open rough-start question at low throttle) - 1-47 are special commands, not throttle: `MotorGroup.set_throttle()` rejects them (see `specification/DSHOT.md`, BUG-005) |
 | Command interval | Two mechanisms both bench-confirmed reliable post-BUG-002: `Core1Runner`'s deadline-anchored pacing at 1045us (20/20 clean, then 13/13 in later spot checks, see BUG-002.md) and max-rate/no-pacing (`UPDATE_INTERVAL_US=0`, the library default). An earlier (2026-08-23) bring-up failure at "1kHz/500ms" was never a clean test of pacing specifically - its 500ms arm window is well under AM32's own >1.6s gate (`specification/AM32.md`#16) by itself, so that result doesn't isolate what role pacing played, if any |
-| Arming duration | 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below. With bidirectional motors it is a floor: `ARMED` also waits until every ESC has replied "not running" for 2s without a reboot-length gap (`READY_SPAN_MS`, bug-reports/BUG-003) - usually ~2.1s, several seconds if an ESC reboots while arming |
+| Arming duration | The published promise is >=99% within 3.0 s (see "Operational Envelope"). Window: 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below. With bidirectional motors it is a floor: `ARMED` also waits until every ESC has replied "not running" for 2s without a reboot-length gap (`READY_SPAN_MS`, bug-reports/BUG-003) - usually ~2.1s, several seconds if an ESC reboots while arming |
 
 Earlier revisions of this table claimed 500ms (down to 300ms) armed cleanly, "confirmed via
 genuine telemetry replies". That reasoning was wrong: per AM32's source (`specification/AM32.md`#8
@@ -210,8 +212,8 @@ zero throttle after it starts listening, plus a 600ms startup tune after a cold 
 2000ms default with margin. Likewise, the ESC's beep pattern was previously read as decoding
 commands "regardless of whether its arm state machine has ever been satisfied" - per source, AM32
 only executes DShot commands (including `BEEP1`) while armed, so a `BEEP1` heard on this bench
-(sent as throttle value 1 through `send_throttle_command()`, not a dedicated command API -
-BUG-005's exact path) that audibly beeped actually confirms the ESC **was** armed at that moment,
+(sent as throttle value 1 through the low-level `send_throttle_command()`, not a dedicated command
+API - BUG-005's exact path; `MotorGroup` has refused that value since 2026-10-13) that audibly beeped actually confirms the ESC **was** armed at that moment,
 not that arm state is irrelevant to command
 execution. The ESC's own "3 short beeps, then 2 deeper beeps" arm confirmation tone, and current
 draw at the power supply (near-zero until genuinely armed and driving), remain the reliable signals
@@ -230,8 +232,8 @@ that the motor is actually armed and spinning.
 │   ├── harness/                     # bench regression suite: scenario runner + JSON scenarios,
 │   │                                # plus core1_runner.py, an example Core 1 loop to copy
 │   ├── unit/                        # PC unit tests (python -m unittest discover -s tests/unit)
-│   └── device/                      # on-Pico checks: two-core mailbox stress (no ESC needed),
-│   │                                # and a multi-cycle arm/disarm restart check (needs one)
+│   └── device/                      # on-Pico checks: queue-clearing and two-core mailbox stress
+│                                    # (no ESC needed); arm/disarm restart and stalled-drain (need one)
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
 ├── tools/                           # on-Pico diagnostics, not tests - no pass/fail, just data
 ├── specification/
@@ -264,7 +266,7 @@ a reference flight-controller host drives it.
 
 | Feature | Status | Dependencies |
 |---------|--------|--------------|
-| **DShot commands** | TODO | No driver-side command API yet (BUG-005's 1-47 clamp is the prerequisite). AM32 itself implements commands (`specification/AM32.md`#7), and this bench has already heard a `BEEP1` while armed (see above - sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
+| **DShot commands** | TODO | No driver-side command API yet (BUG-005's prerequisite is done: `MotorGroup` rejects 1-47, so a command API needs its own entry point, not `set_throttle()`). AM32 itself implements commands (`specification/AM32.md`#7), and this bench has already heard a `BEEP1` while armed (see above - sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, in production use |
 | **Extended telemetry (EDT)** | TODO | Current AM32 source already implements it (`specification/AM32.md`#10) - whether this bench's own flashed build does is unconfirmed (see ADR-002's MCU-identification note). This driver's own decoder doesn't yet discriminate an EDT frame from an eRPM frame either way |
 

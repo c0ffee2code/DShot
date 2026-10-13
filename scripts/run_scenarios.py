@@ -105,7 +105,10 @@ SCHEDULE_BEHIND_RE = re.compile(r"fell behind (\d+) time\(s\)")
 # >=4057ms, a clean ~1.4s gap with zero occupancy either side. Recheck this
 # constant if a session is ever seen landing between the clusters, or if
 # MotorGroup's own arm_duration_ms/READY_SPAN_MS defaults change (this number
-# is derived from those, not independent of them).
+# is derived from those, not independent of them). Set to 3000 on 2026-10-13 when
+# the 3.0 s promise was published in README/CLAUDE.md (it was 3300 before);
+# 3000 still sits inside the clean/reboot gap above, so no archived session
+# changes category.
 CLEAN_ARM_THRESHOLD_MS = 3000
 
 # One retry has cleared every deploy failure seen so far (a transient USB
