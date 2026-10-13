@@ -106,7 +106,7 @@ SCHEDULE_BEHIND_RE = re.compile(r"fell behind (\d+) time\(s\)")
 # constant if a session is ever seen landing between the clusters, or if
 # MotorGroup's own arm_duration_ms/READY_SPAN_MS defaults change (this number
 # is derived from those, not independent of them).
-CLEAN_ARM_THRESHOLD_MS = 3300
+CLEAN_ARM_THRESHOLD_MS = 3000
 
 # One retry has cleared every deploy failure seen so far (a transient USB
 # re-enumeration race after the previous run's reset) - not a tunable meant

@@ -120,6 +120,11 @@ class StateMachine:
     def init(self, program=None, freq=None, **kwargs):
         self.init_calls.append((program, freq, kwargs))
         CallLog.record(("sm", self.id, "init"))
+        # Models pico-sdk's pio_sm_init(), which MicroPython's init() calls:
+        # both FIFOs are emptied. Confirmed on the device by
+        # tests/device/test_stop_clears_queues.py, not by this fake.
+        self.pending = []
+        self.rx = []
         if program is not None:
             self.program = program
         if freq is not None:

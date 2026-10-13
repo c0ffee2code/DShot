@@ -1,5 +1,7 @@
 # BUG-006: `disarm()` queues bidirectional frames back to back into the ESC's reply window
 
+**Update 2026-10-13:** the `disarm()` half of this bug no longer exists - `disarm()` transmits nothing now (ADR-004's revision note), so there are no disarm frames to collide. Only the `update()` exposure below remains.
+
 **Status:** `disarm()`'s own collision FIXED (`DISARM_ROUND_GAP_US`, below). `update()`'s "same
 exposure in principle" (see below) was flagged as possibly live for a single-bidirectional-motor
 group at max-rate pacing, unmeasured since the hot-path tightening that followed this bug - bench

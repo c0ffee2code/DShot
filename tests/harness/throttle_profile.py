@@ -19,6 +19,17 @@
 # is also loaded PC-side (see DSHOT_SPEED_NAMES in scenario.py for the same
 # pattern). Update both places together if it ever changes.
 MAX_THROTTLE = 2047
+# Mirrors MotorGroup.MIN_THROTTLE: DShot values 1-47 are commands, which
+# MotorGroup refuses, so a profile that would produce one is a load error.
+MIN_THROTTLE = 48
+
+
+def check_not_command(value, what):
+    if 0 < value < MIN_THROTTLE:
+        raise ValueError(
+            what + " " + str(value) + " is in DShot's command range 1.." +
+            str(MIN_THROTTLE - 1) + "; use 0 or " + str(MIN_THROTTLE) + " and above"
+        )
 
 
 def compile_segments(segments, cursor, throttle):
@@ -38,6 +49,7 @@ def compile_segments(segments, cursor, throttle):
                 raise ValueError(
                     "hold throttle must be 0.." + str(MAX_THROTTLE) + ", got " + str(value)
                 )
+            check_not_command(value, "hold throttle")
             duration_ms = segment["duration_ms"]
             waypoints.append((cursor, value))
             throttle = value
@@ -75,7 +87,9 @@ def compile_segments(segments, cursor, throttle):
                 sign = 1 if delta > 0 else -1
                 from_value = throttle
                 for k in range(1, num_steps + 1):
-                    waypoints.append((cursor + k * interval_ms, from_value + sign * step * k))
+                    value = from_value + sign * step * k
+                    check_not_command(value, "ramp step")
+                    waypoints.append((cursor + k * interval_ms, value))
 
             throttle = to
             cursor += duration_ms

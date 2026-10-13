@@ -40,7 +40,7 @@
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
-from core1_runner import Core1Runner
+from core1_runner import Core1Runner, fast_stop
 from bidir_capture_sink import BidirCaptureSink
 import struct
 import utime
@@ -160,8 +160,8 @@ def main():
 
         outcome = "completed"
     finally:
-        runner.stop()
-        group.disarm()
+        if not fast_stop(group, runner):
+            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
         sink.finalize_meta(outcome, {
             "total_records": str(total_records),
             "captures_missed": str(missed),

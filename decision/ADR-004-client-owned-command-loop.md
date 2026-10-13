@@ -99,7 +99,13 @@ The previous API had four overlapping methods — `start()`, `stop()`, `disarm()
 | Method | Does |
 |---|---|
 | `arm()` | zero throttles, `sm.active(1)`, open the arming window |
-| `disarm()` | transmit zero-throttle frames, drain them, `sm.active(0)` |
+| `disarm()` | `sm.active(0)`, re-initialise, pin driven low - nothing transmitted |
+
+**Revised 2026-10-13: `disarm()` no longer transmits zeros.** The original design below had `disarm()` command zero throttle, wait for it to leave the shift register, then deactivate, so the motor stopped in about a millisecond instead of waiting out the ESC's signal-loss timeout (AM32: 500ms while armed). The project accepts that timeout as the stop: cutting the signal makes AM32 switch every phase off and reset (specification/AM32.md#15), and the zeros did not change the reboot, only how soon the motor stopped. What the zeros cost was the only blocking call in the facade, a paced multi-round transmit that existed to keep a bidirectional motor's frames out of its ESC's reply, and a hazard when another core was still inside `update()`. An application that needs a fast stop sets throttle 0 while its loop runs, then calls `disarm()`.
+
+What `disarm()` guarantees instead is a clean next start. Each motor's `stop()` deactivates its state machines and re-initialises them, so the TX FIFO is empty (no queued throttle can be the first frame of the next arm) and a bidirectional motor's RX FIFO and stored capture are dropped. The pin is then a plain output driven low rather than frozen at whatever level a cut frame left it. `start()` re-initialises once more and takes the pin back for PIO.
+
+The text below is the original design, kept for the reasoning behind the state-machine lifecycle.
 
 `disarm()` *is* the emergency stop, and it is stronger than the old one: it both commands the stop **and** cuts the signal, whereas the old version relied on a loop still running to deliver its zeros.
 
@@ -107,7 +113,7 @@ Both halves are needed, and the order matters. Cutting the signal alone is not a
 
 Draining before deactivating also parks the signal line low, because an idle state machine stalls on the `side(0)` instruction at the top of the PIO program. Deactivating mid-frame would instead freeze the pin at whatever level that frame was driving.
 
-State machines are deactivated, not destroyed. Constructing them per arm cycle would reload the PIO program into the 32-instruction store each time, requiring `PIO.remove_program()` bookkeeping to avoid exhausting it; `active(0)`/`active(1)` is cheap and cleanly re-armable.
+State machines are deactivated, not destroyed. Constructing them per arm cycle would reload the PIO program into the 32-instruction store each time, requiring `PIO.remove_program()` bookkeeping to avoid exhausting it; `active(0)`/`active(1)` is cheap and cleanly re-armable. (2026-10-13: they are now also re-initialised with the same program object on every start and stop, as `BidirectionalDShot.start()` already did; this does not construct new state machines.)
 
 `DShotPIO` gains the `stop()` that `start()` never had.
 

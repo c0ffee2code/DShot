@@ -1,6 +1,6 @@
 # BUG-007: `Core1Runner.stop()` can return while Core 1 is still inside `update()`
 
-**Status:** OPEN - fix proposed, not implemented
+**Status:** FIXED 2026-10-13 (bench-verified, see the update below)
 **Severity:** Medium. It reopens the `disarm()`/`update()` race that CLAUDE.md tells callers to
 avoid by stopping the loop first.
 **Component:** `tests/harness/core1_runner.py` (example application code that projects copy),
@@ -8,6 +8,8 @@ avoid by stopping the loop first.
 **Found:** 2026-09-27, code review
 
 ## Summary
+
+**Update 2026-10-13:** the stale-frame half is closed in the driver: every `stop()` and `start()` re-initialises the state machines, so a word queued behind `disarm()` is discarded at the next start for both motor types (unit-tested; on-device check: `tests/device/test_stop_clears_queues.py`). The `Core1Runner.stop()` early return is fixed too: `stop()` waits up to 200 ms for the loop to exit, returns True/False, and sets `error` on a timeout; the scenario runner marks the run failed and the device tests raise on False. Unit-tested with a loop that takes longer than the old 4 ms grace.
 
 `stop()` clears `running`, then polls `stopped` for `(interval_us + STOP_GRACE_US) // POLL_US`
 iterations (`Core1Runner.stop()`'s poll loop). That is **4 ms** at the library's `UPDATE_INTERVAL_US = 0`.

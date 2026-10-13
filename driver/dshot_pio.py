@@ -203,8 +203,8 @@ class DShotPIO:
         self.state_machine_id = state_machine_id
         self.pin = pin
 
-        # Kept so BidirectionalDShot.start() can re-init this state machine
-        # after a stop() that gave the pin to SIO (see BidirectionalDShot.stop())
+        # Kept so init_state_machines() can re-init this state machine on
+        # every start() and stop() (stop() gives the pin to SIO)
         self.dshot_speed = dshot_speed
         self.program = program
 
@@ -220,6 +220,18 @@ class DShotPIO:
         # it is built once here instead of on every send_zero() call - see
         # send_zero()'s own docstring for why that call exists.
         self.zero_packet = 0x000F if self.bidirectional else 0x0000
+
+    def init_state_machines(self):
+        """
+        Put every state machine of this motor into its fresh, never-run state.
+
+        Loads the program again, which also empties the TX FIFO and jumps to
+        the program's first instruction, so nothing queued by an earlier run
+        can be sent and no half-sent frame resumes. BidirectionalDShot extends
+        this to its receive side.
+        """
+        self.sm.init(self.program, freq=self.dshot_speed,
+                     sideset_base=self.pin, set_base=self.pin)
 
     def start(self):
         self.sm.active(1)
@@ -252,24 +264,25 @@ class DShotPIO:
 
     def stop(self):
         """
-        Deactivate the state machine.
+        Deactivate the state machine and leave this motor fully reset.
 
-        The signal line stops carrying DShot transitions, so the ESC times out
-        and cannot spin.
+        The signal line stops carrying DShot transitions, so the ESC's own
+        signal-loss timeout stops the motor (AM32: 500ms armed, see
+        specification/AM32.md#15) - nothing is transmitted on the way out. A
+        caller that needs the motor stopped sooner sends throttle 0 before
+        calling this.
 
-        Stopping mid-frame truncates that frame - it fails CRC and the ESC
-        drops it - and leaves the pin at whatever level the frame was driving.
-        Call drain() first when that matters.
+        Afterwards the state machine is re-initialised - the TX FIFO is empty,
+        so no frame queued before the stop can go out at the next start() - and
+        the pin is a plain output driven low. A frame cut mid-bit would
+        otherwise leave the line at whatever level it was driving.
 
-        Call start() to reactivate - the PIO program stays loaded.
+        Call start() to run again; it re-initialises once more and takes the
+        pin back for PIO.
         """
         self.sm.active(0)
-
-        # Clears the shift state and jumps to the start of the program, so a
-        # frame interrupted by active(0) cannot resume mid-bit on restart.
-        # This does NOT drain the TX FIFO: whatever is still queued goes out on
-        # the next start(), which is why drain() exists as a separate call.
-        self.sm.restart()
+        self.init_state_machines()
+        self.pin.init(Pin.OUT, value=0)
 
     # measured win - see ADR-002's "Further hot-path tightening" section
     @micropython.native
@@ -279,6 +292,10 @@ class DShotPIO:
 
         Args:
             throttle: Throttle value (0 to MAX_THROTTLE)
+
+        Values 1-47 are DShot commands, not throttle: AM32 executes them
+        (beep, direction, EEPROM save). This level sends them as given;
+        MotorGroup.set_throttle() is the guard that refuses them.
 
         Note: DShot protocol includes a telemetry request bit, but this implementation
         always sets it to 0. AM32 sends a GCR telemetry reply after every frame once
@@ -343,6 +360,12 @@ class UnidirectionalDShot(DShotPIO):
 
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         super().__init__(state_machine_id, pin, dshot_speed, dshot)
+
+    def start(self):
+        # Re-initialise first: stop() handed the pin to SIO, and loading the
+        # program is what takes it back for PIO (see stop()).
+        self.init_state_machines()
+        super().start()
 
 
 class BidirectionalDShot(DShotPIO):
@@ -466,6 +489,20 @@ class BidirectionalDShot(DShotPIO):
         self.mailbox = CaptureMailbox(self.rx_sm, self.RX_DRAIN_LIMIT, utime.ticks_us)
         self.drain_rx = self.mailbox.drain
 
+    def init_state_machines(self):
+        """
+        Fresh TX and RX state machines, with an empty RX FIFO and no stored
+        capture left over from a previous run.
+
+        Leftover words would misalign the first new capture, and a stale
+        published capture must not survive into the new run.
+        """
+        super().init_state_machines()
+        self.rx_sm.init(dshot_bidir_rx_frame, freq=self.rx_clock_hz, **self.rx_init_kwargs)
+        while self.rx_sm.rx_fifo():
+            self.rx_sm.get()
+        self.mailbox.reset()
+
     def start(self):
         # Reclaim the pin from stop()'s SIO hand-off (see stop()'s own
         # comment) before touching either state machine. Re-applying the
@@ -474,19 +511,11 @@ class BidirectionalDShot(DShotPIO):
         # pull configuration is independent of which peripheral owns it, so
         # this is safe to redo even on a pin that never left PIO.
         self.pin.init(Pin.IN, Pin.PULL_UP)
-        self.sm.init(self.program, freq=self.dshot_speed,
-                     sideset_base=self.pin, set_base=self.pin)
-        self.rx_sm.init(dshot_bidir_rx_frame, freq=self.rx_clock_hz, **self.rx_init_kwargs)
 
-        # Start each run from a clean slate. RX listens before TX can release
-        # the pin and raise its first irq(rel(1)) (see dshot_bidir_rx_frame's
-        # irq(clear, rel(0)) comment for the other half of this). Leftover
-        # words from a previous run are flushed because they would misalign
-        # the first new capture, and a stale published capture must not
-        # survive into the new run.
-        while self.rx_sm.rx_fifo():
-            self.rx_sm.get()
-        self.mailbox.reset()
+        # RX listens before TX can release the pin and raise its first
+        # irq(rel(1)) (see dshot_bidir_rx_frame's irq(clear, rel(0)) comment
+        # for the other half of this), so it is activated first.
+        self.init_state_machines()
         self.rx_sm.active(1)
         super().start()
 
@@ -544,7 +573,8 @@ class BidirectionalDShot(DShotPIO):
 
     def stop(self):
         """
-        Deactivate both state machines, then hand the pin to SIO, driven low.
+        Deactivate both state machines, reset them, then hand the pin to SIO,
+        driven low.
 
         AM32 ESCs reboot into their bootloader after a signal-loss timeout,
         and a bootloader that finds the line permanently high never escapes -
@@ -554,9 +584,13 @@ class BidirectionalDShot(DShotPIO):
         jumps straight back to the application - the same path a
         unidirectional motor's frozen-low line already takes for free. Call
         start() to reclaim the pin for PIO and resume.
+
+        Like UnidirectionalDShot.stop(), nothing is transmitted on the way out
+        and the state machines are left freshly initialised, so no queued
+        frame or captured reply survives into the next start().
         """
-        super().stop()
+        self.sm.active(0)
         self.rx_sm.active(0)
-        self.rx_sm.restart()
         utime.sleep_us(self.STOP_REPLY_MARGIN_US)
+        self.init_state_machines()
         self.pin.init(Pin.OUT, value=0)

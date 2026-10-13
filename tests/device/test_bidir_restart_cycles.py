@@ -31,7 +31,7 @@
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
-from core1_runner import Core1Runner
+from core1_runner import Core1Runner, fast_stop
 import utime
 
 CYCLES = 3
@@ -78,10 +78,11 @@ def run_one_cycle(group, runner, cycle):
         utime.sleep_ms(20)
 
     # Documented shutdown order (see CLAUDE.md's disarm() bullet and the
-    # usage example): stop the command loop before disarm() touches any
-    # state machine, so a reclaim failure can't be confused with this race.
-    runner.stop()
-    group.disarm()
+    # usage example): throttle 0 while the loop runs, then stop the loop
+    # before disarm() touches any state machine, so a reclaim failure can't
+    # be confused with this race.
+    if not fast_stop(group, runner):
+        raise Exception("Core 1 loop did not stop in cycle " + str(cycle))
 
     erpms.sort()
     median_erpm = erpms[len(erpms) // 2] if erpms else 0
@@ -113,8 +114,8 @@ def main():
                 print("  disarmed - waiting %dms for the ESC to time out and reboot" % GAP_MS)
                 utime.sleep_ms(GAP_MS)
     finally:
-        runner.stop()
-        group.disarm()
+        if not fast_stop(group, runner):
+            print("WARNING: Core 1 loop did not stop")
 
     print("=== Summary: %d/%d cycles passed ===" % (sum(results), CYCLES))
     if not all(results):

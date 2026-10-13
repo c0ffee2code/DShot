@@ -25,17 +25,19 @@ class Core1Runner:
         runner = Core1Runner(motors.update)
         runner.start()
         ...
-        runner.stop()
-        if runner.error:
+        if not runner.stop():
+            print("Core 1 loop did not stop:", runner.error)
+        elif runner.error:
             print("Core 1 died:", runner.error)
     """
 
     # How often stop() re-checks whether the thread has exited
     POLL_US = 200
 
-    # Allowance on top of one interval, covering the time the loop spends
-    # inside update() before it gets back to the running check
-    STOP_GRACE_US = 4000
+    # How long stop() waits for the loop to leave update() and exit. Well above
+    # the longest garbage-collection pause measured on Core 1 (14ms, ADR-002),
+    # so a healthy loop always makes it and only a stuck one does not.
+    STOP_TIMEOUT_MS = 200
 
     def __init__(self, update, interval_us=1000):
         """
@@ -139,20 +141,28 @@ class Core1Runner:
             self.error = e
             raise
 
-    def stop(self):
-        """Stop the Core 1 loop and wait for the thread to exit."""
-        if not self.running:
-            return
+    def stop(self, timeout_ms=STOP_TIMEOUT_MS):
+        """
+        Stop the Core 1 loop and wait until it has actually exited.
 
+        Returns True once the loop is out of update() and finished. Returns
+        False if it was still running after timeout_ms, and sets self.error to
+        say so: the caller then knows Core 1 may still be inside update(), and
+        that disarm() would race it. A later stop() waits again.
+        """
         self.running = False
 
-        # loop() tests running once per interval, so one interval plus the
-        # grace is the bound. Poll for the exit rather than sleeping blind,
-        # which is only long enough when interval_us is left at its default.
-        for _ in range((self.interval_us + self.STOP_GRACE_US) // self.POLL_US):
+        # Poll for the exit rather than sleeping blind: the loop leaves as soon
+        # as update() returns and it re-checks running.
+        for _ in range(timeout_ms * 1000 // self.POLL_US):
             if self.stopped:
-                return
+                return True
             utime.sleep_us(self.POLL_US)
+
+        if self.stopped:
+            return True
+        self.error = RuntimeError("Core 1 loop did not exit within " + str(timeout_ms) + "ms")
+        return False
 
     def loop(self):
         """The Core 1 loop itself. Started by start(); do not call directly."""
@@ -202,3 +212,37 @@ class Core1Runner:
             self.running = False
         finally:
             self.stopped = True
+
+
+# How long fast_stop() lets the loop send throttle 0 before stopping it. At
+# the loop's usual rate that is dozens of frames; an ESC acts on the first
+# valid one.
+FAST_STOP_SETTLE_MS = 20
+
+
+def fast_stop(group, runner):
+    """
+    End a session with the motors stopped at once, then reset everything.
+
+    MotorGroup.disarm() transmits nothing - it cuts the signal and leaves the
+    ESC's own timeout (AM32: up to 500ms at the last throttle) to stop the
+    motor. A session that wants the motor stopped immediately says so first:
+    command throttle 0 and let the still-running loop send it, then stop the
+    loop, then disarm. The order matters - throttle 0 only goes out while the
+    loop runs, and the loop must be stopped before disarm() touches the state
+    machines.
+
+    If the loop has already died (runner.error), nothing can send the zeros;
+    the ESC's timeout stops the motors, as for any lost signal.
+
+    Returns whether the loop really exited (Core1Runner.stop()'s result).
+    disarm() runs either way - cutting the signal comes first - but on False
+    it ran while Core 1 may still have been inside update(), and the caller
+    should report that rather than carry on as if the shutdown was clean.
+    """
+    if runner.running and runner.error is None:
+        group.set_all_throttles([0] * group.motor_count)
+        utime.sleep_ms(FAST_STOP_SETTLE_MS)
+    exited = runner.stop()
+    group.disarm()
+    return exited

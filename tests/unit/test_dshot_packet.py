@@ -142,11 +142,60 @@ class MotorConstructionTest(unittest.TestCase):
         self.assertLess(tx_init, tx_on)
         self.assertLess(rx_init, rx_on)
 
-    def test_unidirectional_stop_does_not_touch_the_pin(self):
+    def test_unidirectional_stop_resets_the_state_machine_then_drives_the_pin_low(self):
+        motor = uni()
+        motor.start()
+        CallLog.reset()
+        motor.stop()
+        events = CallLog.events
+        off = events.index(("sm", motor.state_machine_id, "active", False))
+        init = events.index(("sm", motor.state_machine_id, "init"))
+        pin_low = events.index(("pin", motor.pin.id, "init", (Pin.OUT,), {"value": 0}))
+        self.assertLess(off, init)
+        self.assertLess(init, pin_low)
+
+    def test_stop_leaves_nothing_queued_to_go_out_at_the_next_start(self):
+        for motor in (uni(), bidir()):
+            with self.subTest(type(motor).__name__):
+                motor.start()
+                motor.send_throttle_command(900)
+                motor.send_throttle_command(900)
+                self.assertTrue(motor.sm.pending)
+                motor.stop()
+                self.assertEqual(motor.sm.pending, [])
+                motor.start()
+                self.assertEqual(motor.sm.pending, [])
+
+    def test_stop_transmits_nothing(self):
+        for motor in (uni(), bidir()):
+            with self.subTest(type(motor).__name__):
+                motor.start()
+                motor.send_throttle_command(900)
+                sent = list(motor.sm.sent)
+                motor.stop()
+                self.assertEqual(motor.sm.sent, sent)
+
+    def test_unidirectional_start_after_stop_reclaims_the_pin_before_activating(self):
         motor = uni()
         motor.start()
         motor.stop()
-        self.assertEqual(motor.pin.init_calls, [])
+        CallLog.reset()
+        motor.start()
+        events = CallLog.events
+        init = events.index(("sm", motor.state_machine_id, "init"))
+        on = events.index(("sm", motor.state_machine_id, "active", True))
+        self.assertLess(init, on)
+
+    def test_bidirectional_stop_discards_a_stored_capture_and_receive_words(self):
+        motor = bidir()
+        motor.start()
+        motor.rx_sm.feed([0x1234])
+        motor.drain_rx(True)
+        self.assertIsNotNone(motor.latest_capture())
+        motor.rx_sm.feed([1, 2])
+        motor.stop()
+        self.assertEqual(motor.rx_sm.rx_fifo(), 0)
+        self.assertIsNone(motor.latest_capture())
 
     def test_unidirectional_motor_has_no_telemetry(self):
         motor = uni()

@@ -104,19 +104,10 @@ class MotorGroup:
 
     # Highest throttle a motor will transmit; set_throttle() clamps to it
     MAX_THROTTLE = DShotPIO.MAX_THROTTLE
-
-    # Zero-throttle frames disarm() transmits before cutting the signal. One
-    # commands the stop; the rest are margin against a frame lost to noise.
-    DISARM_FRAMES = 4
-
-    # Pause between disarm()'s zero-frame rounds, so a bidirectional motor's
-    # own next frame does not start while its ESC is still driving the
-    # previous one's reply - a real bus contention, not just a corrupted
-    # capture (specification/AM32.md#13: the ESC drives the reply line for
-    # 23 + buffer_padding timer periods, ~48us at DSHOT600, ~78us at
-    # DSHOT300, on top of the frame itself). disarm() is not hot-path, so one
-    # constant that comfortably covers both speeds costs nothing.
-    DISARM_ROUND_GAP_US = 200
+    # DShot values 1-47 are commands (beep, direction, EEPROM save, ...), not
+    # throttle. Commands are out of scope for now, so set_throttle() accepts
+    # 0 (stop) or MIN_THROTTLE and above only.
+    MIN_THROTTLE = 48
 
     # Motors a group can drive: one ESC's worth
     MIN_MOTORS = 1
@@ -247,34 +238,31 @@ class MotorGroup:
 
     def disarm(self):
         """
-        Stop all motors and disarm the ESCs.
+        Stop all motors and return them to a fresh, never-run state.
 
-        Commands zero throttle, waits for those frames to reach the ESCs, then
-        deactivates the PIO state machines so the signal line stops carrying
-        DShot transitions and the ESC cannot spin.
+        Nothing is transmitted: each motor's state machines are deactivated
+        and re-initialised (empty queues, pin driven low), so the signal line
+        stops carrying DShot transitions and the ESC's own signal-loss timeout
+        stops the motor and resets it (AM32: 500ms armed, specification/AM32.md
+        #15). Until then the motor holds its last throttle. An application
+        that needs the motor stopped sooner sets throttle 0 and lets update()
+        send it before calling disarm().
 
-        This is the emergency stop. It transmits the zeros itself rather than
-        leaving them for update(), so it works even when the application's
-        command loop is dead - and it stops the motors in about a millisecond
-        instead of waiting out the ESC's signal-loss timeout, which is over a
-        hundred times longer.
-
-        Blocks for a bit over a millisecond: the zero frames themselves, plus
-        DISARM_ROUND_GAP_US between each round so a bidirectional motor's own
-        frames do not run into its ESC's reply (see that constant).
+        Does not block for more than a few hundred microseconds per
+        bidirectional motor (a fixed wait for an in-flight ESC reply).
 
         Its own state check keeps a concurrent update() from corrupting the
-        group's state, but nothing serialises this method's FIFO/state-machine
+        group's state, but nothing serialises this method's state-machine
         calls against an update() still running on another core - stop that
-        loop first (see the class docstring's usage example) rather than
-        relying on disarm() to tolerate a still-running caller.
+        loop first (see the class docstring's usage example). A word such an
+        update() queues after the reset is discarded by the next start().
 
         Idempotent. Call arm() to bring the group back up.
         """
         # Cleared first, so a concurrent update() bails before we start cutting
         # the signal. The prior value also tells us whether the state machines
-        # are live - putting to an inactive one fills the TX FIFO and then
-        # blocks the caller forever.
+        # are live: a group that never armed, or was already disarmed, has
+        # nothing to reset.
         was_live = self.state != DISARMED
         self.state = DISARMED
 
@@ -282,36 +270,14 @@ class MotorGroup:
             self.throttles[i] = 0
 
         if was_live:
-            # One round at a time, paced: sending all DISARM_FRAMES rounds
-            # back to back (as a full TX_FIFO_DEPTH burst) let only the first
-            # round's frame land cleanly on a bidirectional motor - the rest
-            # arrived while its own ESC was still driving that frame's reply
-            # (B3). The gap is skipped after the last round; drain() below
-            # already waits out whatever is still in flight.
-            for round_index in range(self.DISARM_FRAMES):
-                for motor in self.motors:
-                    motor.send_throttle_command(0)
-                if round_index < self.DISARM_FRAMES - 1:
-                    utime.sleep_us(self.DISARM_ROUND_GAP_US)
-
-            # Cutting the signal before the zeros are on the wire would leave
-            # the motors spinning at their last commanded throttle
-            for motor in self.motors:
-                motor.drain()
-
-            # Only meaningful on a state machine that was actually live: a
-            # bidirectional motor's stop() always pays a fixed settle delay to
-            # let an in-flight ESC reply finish, which cannot be in flight on
-            # a motor that never transmitted (never armed) or was already
-            # stopped by an earlier disarm() call.
             for motor in self.motors:
                 motor.stop()
 
         # Re-assert. An update() already past its state check when we started
-        # may have promoted the group to ARMED behind us; by now it has long
-        # returned, because transmitting the zeros above took far longer than
-        # a single update() call. Leaving ARMED set over inactive state
-        # machines is what makes the next update() block forever.
+        # may have promoted the group to ARMED behind us. Leaving ARMED set
+        # over inactive state machines is what makes the next update() block
+        # forever. This narrows the race rather than closing it - stopping the
+        # loop first is what closes it (see the docstring above).
         self.state = DISARMED
 
     # measured win - see ADR-002's "Further hot-path tightening" section
@@ -497,11 +463,20 @@ class MotorGroup:
         return motor.decode_capture(words)
 
     def clamp_throttle(self, value):
-        """Limit a throttle to the range a motor will transmit, 0 to MAX_THROTTLE."""
+        """
+        Limit a throttle to what a motor will transmit: 0, or MIN_THROTTLE to
+        MAX_THROTTLE. Out-of-range values are clamped; 1..MIN_THROTTLE-1 is
+        DShot's command range, which this driver does not offer, and is
+        rejected rather than clamped (BUG-005).
+        """
         if value < 0:
             return 0
         if value > self.MAX_THROTTLE:
             return self.MAX_THROTTLE
+        if 0 < value < self.MIN_THROTTLE:
+            raise MotorGroupException(
+                "Throttle 1-47 is the DShot command range, not supported"
+            )
         return value
 
     def set_throttle(self, motor_index, value):
@@ -510,7 +485,8 @@ class MotorGroup:
 
         Args:
             motor_index: Motor index (0-based)
-            value: Throttle value (0-2047), clamped to range
+            value: 0 (stop) or MIN_THROTTLE-MAX_THROTTLE (48-2047). Values
+                outside 0-2047 are clamped; 1-47 raises MotorGroupException.
 
         Accepted while disarmed, but nothing is transmitted until the group is
         armed, and arm() resets all throttles to zero.
@@ -541,8 +517,11 @@ class MotorGroup:
                 " values, got " + str(len(values))
             )
 
-        for i, value in enumerate(values):
-            self.throttles[i] = self.clamp_throttle(value)
+        # Validate everything before writing anything, so a rejected value
+        # does not leave the group half-updated.
+        clamped = [self.clamp_throttle(value) for value in values]
+        for i, value in enumerate(clamped):
+            self.throttles[i] = value
 
     def get_all_throttles(self):
         """

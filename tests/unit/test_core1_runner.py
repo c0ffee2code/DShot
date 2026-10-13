@@ -22,7 +22,7 @@ sys.path.insert(0, str(HARNESS))
 
 import fakes  # noqa: E402,F401
 from fakes import Clock  # noqa: E402
-from core1_runner import Core1Runner  # noqa: E402
+from core1_runner import Core1Runner, fast_stop  # noqa: E402
 
 INTERVAL_US = 1000
 
@@ -164,6 +164,138 @@ class SchedulingTestCase(unittest.TestCase):
         runner = Core1Runner(None, interval_us=0)
         timestamps = self.run_calls(runner, 5, work_us=0)
         self.assertEqual(len(timestamps), 5)
+
+
+class StopTest(unittest.TestCase):
+    """stop() waits for the loop to really exit, and says so when it does not."""
+
+    def setUp(self):
+        Clock.reset()
+
+    def runner(self):
+        return Core1Runner(lambda: None, INTERVAL_US)
+
+    def test_a_loop_that_exits_in_time_returns_true(self):
+        runner = self.runner()
+        runner.running = True
+        runner.stopped = False
+        # The loop exits on its own once it sees running cleared
+        import utime
+        real = utime.sleep_us
+
+        def exit_after_two_polls(n, calls=[0]):
+            calls[0] += 1
+            if calls[0] == 2:
+                runner.stopped = True
+            real(n)
+        utime.sleep_us = exit_after_two_polls
+        try:
+            self.assertTrue(runner.stop())
+        finally:
+            utime.sleep_us = real
+        self.assertIsNone(runner.error)
+
+    def test_a_loop_stuck_in_update_returns_false_and_sets_error(self):
+        runner = self.runner()
+        runner.running = True
+        runner.stopped = False        # never exits
+        self.assertFalse(runner.stop(timeout_ms=50))
+        self.assertIsInstance(runner.error, RuntimeError)
+        self.assertGreaterEqual(Clock.microseconds, 50_000)
+
+    def test_waits_longer_than_the_old_four_millisecond_grace(self):
+        runner = self.runner()
+        runner.running = True
+        runner.stopped = False
+        import utime
+        real = utime.sleep_us
+
+        def exit_after_14ms(n):
+            real(n)
+            if Clock.microseconds >= 14_000:
+                runner.stopped = True
+        utime.sleep_us = exit_after_14ms
+        try:
+            self.assertTrue(runner.stop())
+        finally:
+            utime.sleep_us = real
+
+    def test_a_second_stop_after_a_timeout_waits_again(self):
+        runner = self.runner()
+        runner.running = True
+        runner.stopped = False
+        self.assertFalse(runner.stop(timeout_ms=10))
+        runner.stopped = True         # the loop finally got out
+        self.assertTrue(runner.stop(timeout_ms=10))
+
+    def test_a_runner_that_never_started_stops_at_once(self):
+        self.assertTrue(self.runner().stop())
+        self.assertEqual(Clock.microseconds, 0)
+
+
+class FastStopTest(unittest.TestCase):
+    """fast_stop(): throttle 0 while the loop runs, then stop it, then disarm."""
+
+    class FakeRunner:
+        def __init__(self, running=True, error=None):
+            self.running = running
+            self.error = error
+            self.log = []
+
+        def stop(self):
+            self.log.append("runner.stop")
+            self.running = False
+            return self.stop_result
+
+        stop_result = True
+
+    class FakeGroup:
+        motor_count = 2
+
+        def __init__(self, log):
+            self.log = log
+
+        def set_all_throttles(self, values):
+            self.log.append(("set_all_throttles", list(values)))
+
+        def disarm(self):
+            self.log.append("disarm")
+
+    def setUp(self):
+        Clock.reset()
+
+    def test_zeros_are_commanded_before_the_loop_stops_and_disarm_comes_last(self):
+        runner = self.FakeRunner()
+        group = self.FakeGroup(runner.log)
+        fast_stop(group, runner)
+        self.assertEqual(runner.log,
+                         [("set_all_throttles", [0, 0]), "runner.stop", "disarm"])
+
+    def test_the_loop_gets_time_to_send_the_zeros(self):
+        runner = self.FakeRunner()
+        fast_stop(self.FakeGroup(runner.log), runner)
+        self.assertGreaterEqual(Clock.microseconds, 20_000)
+
+    def test_a_dead_loop_is_not_waited_for(self):
+        runner = self.FakeRunner(running=True, error=RuntimeError("core 1 died"))
+        fast_stop(self.FakeGroup(runner.log), runner)
+        self.assertEqual(runner.log, ["runner.stop", "disarm"])
+        self.assertEqual(Clock.microseconds, 0)
+
+    def test_it_reports_a_loop_that_did_not_exit_but_still_disarms(self):
+        runner = self.FakeRunner()
+        runner.stop_result = False
+        self.assertFalse(fast_stop(self.FakeGroup(runner.log), runner))
+        self.assertEqual(runner.log[-1], "disarm")
+
+    def test_it_reports_a_clean_exit(self):
+        runner = self.FakeRunner()
+        self.assertTrue(fast_stop(self.FakeGroup(runner.log), runner))
+
+    def test_a_runner_that_never_started_still_disarms(self):
+        runner = self.FakeRunner(running=False)
+        fast_stop(self.FakeGroup(runner.log), runner)
+        self.assertEqual(runner.log, ["runner.stop", "disarm"])
 
 
 if __name__ == "__main__":

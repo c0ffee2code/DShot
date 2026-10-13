@@ -27,6 +27,23 @@ add code paths or timing accommodations to keep it working.
 | **DShot commands** | TODO | No driver-side command API yet (BUG-005's 1-47 clamp is the prerequisite). AM32 itself implements commands (AM32.md#7) and this bench has already heard a `BEEP1` while armed (sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver (`dshot_bidir_rx_frame`) bench-validated on AM32 and adopted as the sole production receiver (2026-09-26) |
 
+## Operational Envelope (what this driver guarantees)
+
+| Guarantee | Value |
+|-----------|-------|
+| Arming success rate | **≥ 99%** of `arm()` attempts reach `ARMED` |
+| Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
+| Throttle range | `0` (stop) or `48`-`2047`. `1`-`47` are DShot commands; `MotorGroup` rejects them (BUG-005) |
+| ESC firmware | AM32 only |
+
+An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that
+arms later after an ESC reboot. Callers should treat it as a failure to handle, not wait
+indefinitely. Bench evidence so far: clean arms take 2.08-2.59 s (698 sessions), arms that
+needed an ESC reboot take 4.06 s or more. The bound is measured by `scripts/run_scenarios.py`
+(`CLEAN_ARM_THRESHOLD_MS`); keep that constant, README.md and this table in agreement.
+Not guaranteed: DShot commands, other ESC firmware, behaviour of the motor after arming
+(BUG-009 is open).
+
 ## Development Environment
 
 - **Target Platform**: Raspberry Pi Pico 2 (RP2350)
@@ -34,6 +51,20 @@ add code paths or timing accommodations to keep it working.
 - **Dependencies**: Built-in `machine` and `rp2` modules (no external packages)
 
 Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremote.
+
+## Communicating with the user
+
+Explain work as goal → step → why, in plain language.
+
+- Say what you will do and how it moves the user's current goal *before* naming files,
+  scripts, bug numbers, backlog IDs or metrics. Describe any such name in prose on first
+  mention; the user does not hold these labels in their head between sessions.
+- Do not resurface an older plan's "next item" unless you can say how it serves the goal the
+  user is pursuing now.
+- Keep "you need to decide" items in their own block, apart from information, with each
+  option's consequence in the user's terms.
+- Say whether a number comes from the user's memory, your memory, or the repo - and check the
+  repo first.
 
 ## Code Style
 
@@ -82,7 +113,7 @@ committed once confirmed.
 
 4. **`update()` is inert while disarmed**: a safety requirement, not an optimisation. Writing to deactivated state machines would fill the TX FIFO and block the calling core forever.
 
-5. **`disarm()` transmits its own zeros**, then drains them, then deactivates — in that order. It is the one method in the facade that blocks (a few hundred microseconds). Deactivating alone is not a stop: the motor keeps spinning at its last throttle until the ESC's own signal-loss timeout expires — AM32's is 500ms armed, 2s disarmed (see specification/AM32.md). Do not "optimise" the transmit away. Its `self.state` check makes it safe to call from a different core than `update()` without corrupting the group's own state, but nothing serialises its FIFO/state-machine calls against a concurrent `update()` still running on that other core — stop the loop first (see the usage example) rather than relying on `disarm()` to tolerate a still-running caller. A bidirectional motor's deactivated line is also left **actively driven low**, not merely released to its pull-up: a released, floating-high line leaves some ESC firmware (AM32 included) unable to time out of its own post-disarm reboot cleanly, and a driven-low line recovers it the same way a unidirectional motor's frozen-low line already does. `start()` reclaims the pin for PIO again.
+5. **`disarm()` transmits nothing and returns every motor to a fresh, never-run state** (decided 2026-10-13). It deactivates each motor's state machines, re-initialises them (TX FIFO empty, no queued frame survives to the next `start()`; a bidirectional motor also flushes its RX FIFO and stored capture), and leaves the pin a plain output **driven low**. The ESC's own signal-loss timeout then stops the motor and resets it — AM32's is 500ms armed, 2s disarmed (see specification/AM32.md#15) — so a motor keeps its last throttle for up to 500ms after `disarm()`. An application that needs a faster stop sets throttle 0 and lets `update()` send it before calling `disarm()`; the library does not stream zeros on the way out. `disarm()` pays one fixed ~300us wait per bidirectional motor so an in-flight ESC reply is not cut off by the pin hand-off. Its `self.state` check keeps a concurrent `update()` from corrupting the group's own state, but nothing serialises its state-machine calls against an `update()` still running on another core — stop the loop first (see the usage example). Driving the line low rather than releasing it matters: a released, floating-high line leaves some ESC firmware (AM32 included) unable to time out of its own post-disarm reboot cleanly. `start()` re-initialises again and reclaims the pin for PIO.
 
 6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
 
@@ -136,8 +167,9 @@ while not motors.is_armed():
 motors.set_throttle(0, 100)     # Motor 0
 motors.set_throttle(1, 150)     # Motor 1
 
-runner.stop()                   # stop the loop first - see below
-motors.disarm()                 # commands zero, then cuts the signal
+if not runner.stop():           # stop the loop first, and check it really exited
+    print("Core 1 still in update():", runner.error)
+motors.disarm()                 # cuts the signal and resets; the ESC stops the motor itself
 ```
 
 **Low-level (single motor):**

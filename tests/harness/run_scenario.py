@@ -45,7 +45,7 @@
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot
 from motor_group import MotorGroup
-from core1_runner import Core1Runner
+from core1_runner import Core1Runner, fast_stop
 from scenario import load_scenario
 from bidir_capture_sink import BidirCaptureSink
 from decode_tally import DecodeTally, is_sampled
@@ -399,16 +399,23 @@ def run_scenario():
 
     finally:
         print("Stopping...")
-        # Stop the loop before disarming: while it's still running, Core 1 can
-        # call update() concurrently with disarm()'s own send/drain/stop calls
-        # on the same state machines, from the other core, with nothing
-        # serialising the two beyond a single state check disarm() makes at its
-        # start. Halting the loop first removes that race entirely, rather than
-        # relying on disarm() to tolerate it.
-        if runner is not None:
-            runner.stop()
-        if group is not None:
-            group.disarm()
+        # fast_stop(): throttle 0 goes out while the loop still runs (disarm()
+        # transmits nothing, so without this a motor keeps its last throttle
+        # until the ESC's own timeout), then the loop is stopped before
+        # disarm() touches the state machines, so the two cannot race.
+        loop_exited = True
+        if runner is not None and group is not None:
+            loop_exited = fast_stop(group, runner)
+        else:
+            if runner is not None:
+                loop_exited = runner.stop()
+            if group is not None:
+                group.disarm()
+        if not loop_exited:
+            # disarm() ran while Core 1 may still have been inside update():
+            # mark the run so it cannot pass as clean (BUG-007).
+            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
+            outcome = "failed: Core 1 loop did not stop"
         print("Motors stopped and disarmed.")
 
         # Formatted and printed only now - runner.stop() above already

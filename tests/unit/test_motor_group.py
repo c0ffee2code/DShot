@@ -320,20 +320,30 @@ class UpdateOrderTest(GroupTestCase):
 
 
 class DisarmTest(GroupTestCase):
-    def test_disarm_transmits_zeros_then_deactivates(self):
+    def test_disarm_transmits_nothing_and_deactivates_everything(self):
         group = self.make([uni(0, 6), uni(1, 7)])
         self.arm_fully(group)
         group.set_throttle(0, 900)
         group.update()
-        for motor in group.motors:
-            del motor.sm.sent[:]
+        sent = [list(motor.sm.sent) for motor in group.motors]
         group.disarm()
-        for motor in group.motors:
-            self.assertEqual(len(motor.sm.sent), group.DISARM_FRAMES)
-            self.assertTrue(all(sent_zero(w) for w in motor.sm.sent))
+        for motor, before in zip(group.motors, sent):
+            self.assertEqual(motor.sm.sent, before)
             self.assertFalse(motor.sm.is_active)
+            self.assertEqual(motor.sm.pending, [])
         self.assertEqual(group.state, DISARMED)
         self.assertEqual(group.get_all_throttles(), [0, 0])
+
+    def test_a_word_queued_behind_disarm_is_not_sent_at_the_next_arm(self):
+        group = self.make([uni(0, 6)])
+        self.arm_fully(group)
+        group.set_throttle(0, 900)
+        group.update()
+        group.disarm()
+        # Another core's update() put one more word after the reset
+        group.motors[0].sm.put(0x0E100000)
+        group.arm(ARM_MS)
+        self.assertEqual(group.motors[0].sm.pending, [])
 
     def test_disarm_is_idempotent_and_sends_nothing_the_second_time(self):
         group = self.make([uni(0, 6)])
@@ -390,16 +400,33 @@ class ThrottleTest(GroupTestCase):
         group.set_throttle(0, 99999)
         self.assertEqual(group.get_all_throttles(), [group.MAX_THROTTLE])
 
+    def test_set_throttle_rejects_the_dshot_command_range(self):
+        group = self.make([uni(0, 6)])
+        for value in (1, 12, 36, 47):
+            with self.assertRaises(MotorGroupException):
+                group.set_throttle(0, value)
+        self.assertEqual(group.get_all_throttles(), [0])
+        for value in (0, 48, 2047):
+            group.set_throttle(0, value)
+            self.assertEqual(group.get_all_throttles(), [value])
+
+    def test_set_all_throttles_rejects_the_command_range_without_a_partial_write(self):
+        group = self.make([uni(0, 6), uni(1, 7)])
+        group.set_all_throttles([100, 200])
+        with self.assertRaises(MotorGroupException):
+            group.set_all_throttles([300, 10])
+        self.assertEqual(group.get_all_throttles(), [100, 200])
+
     def test_set_throttle_rejects_a_bad_index(self):
         group = self.make([uni(0, 6)])
         for index in (-1, 1):
             with self.assertRaises(MotorGroupException):
-                group.set_throttle(index, 10)
+                group.set_throttle(index, 60)
 
     def test_set_all_throttles_needs_one_value_per_motor(self):
         group = self.make([uni(0, 6), uni(1, 7)])
-        group.set_all_throttles([10, 3000])
-        self.assertEqual(group.get_all_throttles(), [10, group.MAX_THROTTLE])
+        group.set_all_throttles([60, 3000])
+        self.assertEqual(group.get_all_throttles(), [60, group.MAX_THROTTLE])
         with self.assertRaises(MotorGroupException):
             group.set_all_throttles([1])
 

@@ -246,6 +246,24 @@ class ThrottleProfileTest(unittest.TestCase):
             ThrottleProfile(segments)
         self.assertIn(message, str(caught.exception))
 
+    def test_a_hold_in_the_command_range_is_rejected(self):
+        for value in (1, 47):
+            with self.assertRaises(ValueError):
+                ThrottleProfile([{"type": "hold", "throttle": value, "duration_ms": 100}])
+        ThrottleProfile([{"type": "hold", "throttle": 48, "duration_ms": 100}])
+
+    def test_a_ramp_target_in_the_command_range_is_rejected(self):
+        with self.assertRaises(ValueError):
+            ThrottleProfile([{"type": "ramp", "to": 20, "step": 10, "duration_ms": 100}])
+
+    def test_a_ramp_from_zero_may_not_pass_through_the_command_range(self):
+        with self.assertRaises(ValueError):
+            ThrottleProfile([{"type": "ramp", "to": 200, "step": 10, "duration_ms": 200}])
+        # Stepping 0 -> 48 -> 200 skips the range entirely.
+        ThrottleProfile([{"type": "hold", "throttle": 0, "duration_ms": 100},
+                         {"type": "ramp", "to": 48, "step": 48, "duration_ms": 100},
+                         {"type": "ramp", "to": 200, "step": 8, "duration_ms": 190}])
+
     def test_unknown_segment_type(self):
         self.rejected([{"type": "wobble"}], "unknown segment type")
 
@@ -260,11 +278,11 @@ class ThrottleProfileTest(unittest.TestCase):
 
     def test_repeat_must_fit_its_duration_exactly(self):
         self.rejected([{"type": "repeat", "duration_ms": 350, "segments": [
-            {"type": "hold", "throttle": 1, "duration_ms": 100}]}], "not an exact multiple")
+            {"type": "hold", "throttle": 60, "duration_ms": 100}]}], "not an exact multiple")
 
     def test_repeat_of_nothing_is_rejected(self):
         self.rejected([{"type": "repeat", "duration_ms": 100, "segments": [
-            {"type": "hold", "throttle": 1, "duration_ms": 0}]}], "zero duration")
+            {"type": "hold", "throttle": 60, "duration_ms": 0}]}], "zero duration")
 
     def test_hold_throttle_out_of_range_is_rejected(self):
         self.rejected([{"type": "hold", "throttle": 2048, "duration_ms": 100}], "0..2047")

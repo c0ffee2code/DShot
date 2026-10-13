@@ -148,10 +148,13 @@ motors.set_throttle(1, 150)  # Motor 2
 motors.set_all_throttles([100, 150])
 
 # Stop the loop first: while it's running, Core 1 can call update() at the same
-# time disarm() sends/drains/stops on the same state machines from this core,
-# and nothing serialises the two. Then disarm() commands zero throttle and
-# cuts the signal - the only call in the API that blocks, for ~0.3ms.
-runner.stop()
+# time disarm() resets the same state machines from this core, and nothing
+# serialises the two. disarm() transmits nothing: it cuts the signal and resets
+# every motor, and the ESC's own timeout stops the motor (AM32: up to 500ms at
+# the last throttle). To stop sooner, set_throttle(i, 0) and let update() send
+# it before calling disarm().
+if not runner.stop():   # waits for the loop to really exit; False = it did not
+    print("Core 1 still in update():", runner.error)
 motors.disarm()
 ```
 
@@ -167,6 +170,21 @@ while True:
     ...your work here...
     utime.sleep_us(motors.UPDATE_INTERVAL_US)
 ```
+
+## Operational Envelope
+
+What this driver guarantees, and what it does not.
+
+| Guarantee | Value |
+|-----------|-------|
+| Arming success rate | **≥ 99%** of `arm()` attempts reach `ARMED` |
+| Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
+| Throttle range | `0` (stop) or `48`-`2047`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) |
+| ESC firmware | AM32 only |
+
+An attempt that has not reached `ARMED` within 3.0 s counts as a failure, even if it arms later
+after an ESC reboot. Not guaranteed: DShot commands, other ESC firmware, motor behaviour after
+arming.
 
 ## Verified Parameters
 
