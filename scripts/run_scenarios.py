@@ -57,6 +57,19 @@ safe to retry:
                  unexpected crash. Always reported with its full output,
                  never silently dropped into another bucket.
 
+Output is line-oriented key=value, one fact per field, so a long batch can be
+filtered with grep or loaded into a table without parsing prose:
+  RUN n= of= scenario= verdict=pass|fail|excluded outcome= armed_ms= margin_ms=
+      session= pass_so_far= fail_so_far= schedule_behind=
+  RESULT scenario= attempts= pass= fail= pass_pct= fail_late= fail_refused=
+      error= deploy_failed=
+  ARMING_TIME scenario= successful= min_ms= median_ms= max_ms= limit_ms=
+      marginal_band_ms= marginal=        (arms that passed only)
+  SCHEDULE scenario= attempts= behind_total= behind_max=
+pass = armed inside the bound; fail = armed late (an ESC reboot) or never armed;
+error and deploy_failed are excluded from the verdict. A field whose value is
+not known is left out of its line.
+
 The series summary also reports how often Core1Runner's deadline schedule
 fell behind (update() cost exceeded core1_interval_us for at least one tick),
 parsed from run_scenario.py's own WARNING line - total, average per attempt,
@@ -111,6 +124,37 @@ SCHEDULE_BEHIND_RE = re.compile(r"fell behind (\d+) time\(s\)")
 # changes category.
 CLEAN_ARM_THRESHOLD_MS = 3000
 
+# A clean arm is "marginal" when it landed within this many ms of the bound:
+# still a pass, but it says the promise holds with little room. Reported next
+# to the clean count so a batch of 300 arms at ~2.0 s is not read the same way
+# as 300 arms at ~2.9 s.
+MARGINAL_BAND_MS = 500
+
+
+def arming_time_summary(armed_ms, bound_ms=None, band_ms=None):
+    """
+    How much room the arms in a batch had, from each armed run's "Armed
+    after N ms" figure (clean and late alike).
+
+    Returns None for an empty list, else a dict: n, min, median, max (ms), and
+    marginal - how many arms finished under the bound but within band_ms of
+    it. Meant for the arms that passed; a late arm (at or over the bound) is a
+    failure and is counted by the pass/fail tally instead.
+    """
+    if bound_ms is None:
+        bound_ms = CLEAN_ARM_THRESHOLD_MS
+    if band_ms is None:
+        band_ms = MARGINAL_BAND_MS
+    if not armed_ms:
+        return None
+    ordered = sorted(armed_ms)
+    mid = len(ordered) // 2
+    median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    marginal = sum(1 for t in ordered if bound_ms - band_ms <= t < bound_ms)
+    return {"n": len(ordered), "min": ordered[0], "median": median,
+            "max": ordered[-1], "marginal": marginal}
+
+
 # One retry has cleared every deploy failure seen so far (a transient USB
 # re-enumeration race after the previous run's reset) - not a tunable meant
 # to paper over a real, repeated hardware problem.
@@ -118,6 +162,37 @@ DEPLOY_RETRIES = 1
 
 # Comfortably past run_test.py's own 600s internal watchdog.
 ATTEMPT_TIMEOUT_S = 650
+
+
+def fields(label, **pairs):
+    """
+    One machine-readable line: LABEL key=value key=value ... Keys keep the
+    order given, values never contain spaces, and a value that is not known
+    (None) is left out rather than printed as a placeholder, so a line can be
+    split on whitespace and then on "=" with no further parsing, and a batch
+    of hundreds of runs can be filtered with grep or loaded into a table.
+    """
+    parts = [label]
+    for key, value in pairs.items():
+        if value is not None:
+            parts.append("%s=%s" % (key, value))
+    return " ".join(parts)
+
+
+def run_record(index, total, scenario_name, verdict, outcome, armed_ms, session,
+               passes_so_far, fails_so_far, behind):
+    """
+    One line per attempt. verdict is pass / fail / excluded (see main());
+    outcome is the finer classification (clean, reboot, refused, error,
+    deploy_failed). margin_ms is the room left under the bound, for a pass.
+    """
+    margin_ms = None
+    if verdict == "pass" and armed_ms is not None:
+        margin_ms = CLEAN_ARM_THRESHOLD_MS - armed_ms
+    return fields("RUN", n=index, of=total, scenario=scenario_name, verdict=verdict,
+                  outcome=outcome, armed_ms=armed_ms, margin_ms=margin_ms,
+                  session=session, pass_so_far=passes_so_far, fail_so_far=fails_so_far,
+                  schedule_behind=behind)
 
 
 def run_once(scenario_path):
@@ -211,7 +286,7 @@ def main():
 
     tally = {str(s): {"clean": 0, "reboot": 0, "refused": 0, "error": 0, "deploy_failed": 0,
                        "schedule_behind_total": 0, "schedule_behind_max": 0,
-                       "schedule_behind_attempts": 0}
+                       "schedule_behind_attempts": 0, "armed_ms": []}
              for s in scenarios}
     sessions = []
     total = len(scenarios) * args.rounds
@@ -234,6 +309,12 @@ def main():
                 # A deploy failure never reached the device, so there is no
                 # Core1Runner to have fallen behind - excluded from both the
                 # count and its own denominator, same as from the KPI.
+                armed_ms = None
+                armed_match = ARMED_AFTER_RE.search(output)
+                if armed_match and outcome in ("clean", "reboot"):
+                    armed_ms = int(armed_match.group(1))
+                    if outcome == "clean":
+                        counts["armed_ms"].append(armed_ms)
                 behind_count = None
                 if outcome != "deploy_failed":
                     behind_match = SCHEDULE_BEHIND_RE.search(output)
@@ -241,17 +322,18 @@ def main():
                     counts["schedule_behind_total"] += behind_count
                     counts["schedule_behind_max"] = max(counts["schedule_behind_max"], behind_count)
                     counts["schedule_behind_attempts"] += 1
-                # Live running KPI: clean/n against clean+reboot+refused - a
-                # refusal counts as not-clean (BUG-002's own KPI definition),
-                # not excluded. error/deploy_failed are excluded: neither one
-                # is a verdict on arming itself (a crash or a USB hiccup).
-                kpi_n_so_far = counts["clean"] + counts["reboot"] + counts["refused"]
-                kpi = ("clean %d/%d (%.1f%%)" % (counts["clean"], kpi_n_so_far,
-                                                  100.0 * counts["clean"] / kpi_n_so_far)
-                       if kpi_n_so_far else "clean -/0")
-                behind_note = (", behind=%d" % behind_count) if behind_count else ""
-                print("  %s%s  [%s%s]" % (outcome, ("  " + session_name) if session_name else "",
-                                           kpi, behind_note))
+                # pass = armed inside the bound (outcome "clean"); fail = armed
+                # late after an ESC reboot, or never armed (a refusal counts as
+                # a failure, BUG-002's own KPI definition). error and
+                # deploy_failed are neither: a crash or a USB hiccup is no
+                # verdict on arming itself.
+                verdict = ("pass" if outcome == "clean"
+                           else "fail" if outcome in ("reboot", "refused")
+                           else "excluded")
+                passes = counts["clean"]
+                fails = counts["reboot"] + counts["refused"]
+                print(run_record(n, total, scenario.name, verdict, outcome, armed_ms,
+                                 session_name, passes, fails, behind_count))
                 if outcome == "error":
                     print("  --- full output, for diagnosis ---")
                     print(output)
@@ -263,21 +345,30 @@ def main():
     print("=== Series summary ===")
     for scenario in scenarios:
         counts = tally[str(scenario)]
-        armed = counts["clean"] + counts["reboot"]
-        kpi_n = armed + counts["refused"]
-        completed = armed + counts["refused"] + counts["error"]
-        clean_pct = (100.0 * counts["clean"] / kpi_n) if kpi_n else 0.0
-        print("%s: clean %d, reboot %d (KPI: %.1f%% of %d - clean+reboot+refused), refused %d, "
-              "error %d (of %d completed attempts); %d deploy failure(s)" % (
-                  scenario.name, counts["clean"], counts["reboot"], clean_pct, kpi_n,
-                  counts["refused"], counts["error"], completed, counts["deploy_failed"]))
+        passes = counts["clean"]
+        fails = counts["reboot"] + counts["refused"]
+        judged = passes + fails
+        # "pass" is a Python keyword-argument name only through ** unpacking
+        result = {"scenario": scenario.name,
+                  "attempts": judged + counts["error"] + counts["deploy_failed"],
+                  "pass": passes, "fail": fails,
+                  "pass_pct": "%.1f" % (100.0 * passes / judged) if judged else None,
+                  "fail_late": counts["reboot"], "fail_refused": counts["refused"],
+                  "error": counts["error"], "deploy_failed": counts["deploy_failed"]}
+        print(fields("RESULT", **result))
+        # Arming time of the arms that passed only: a late arm already shows
+        # in fail_late and in its own RUN line.
+        room = arming_time_summary(counts["armed_ms"])
+        if room:
+            print(fields("ARMING_TIME", scenario=scenario.name, successful=room["n"],
+                         min_ms=room["min"], median_ms=room["median"], max_ms=room["max"],
+                         limit_ms=CLEAN_ARM_THRESHOLD_MS, marginal_band_ms=MARGINAL_BAND_MS,
+                         marginal=room["marginal"]))
         behind_attempts = counts["schedule_behind_attempts"]
         if behind_attempts:
-            avg = counts["schedule_behind_total"] / behind_attempts
-            print("  schedule fell behind: %d total across %d attempt(s) (avg %.1f/attempt, "
-                  "max %d) - see Core1Runner.schedule_behind_count" % (
-                      counts["schedule_behind_total"], behind_attempts, avg,
-                      counts["schedule_behind_max"]))
+            print(fields("SCHEDULE", scenario=scenario.name, attempts=behind_attempts,
+                         behind_total=counts["schedule_behind_total"],
+                         behind_max=counts["schedule_behind_max"]))
 
     if args.pull and sessions:
         print()

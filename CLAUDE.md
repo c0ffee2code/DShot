@@ -38,15 +38,35 @@ add code paths or timing accommodations to keep it working.
 
 An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that
 arms later after an ESC reboot. Callers should treat it as a failure to handle, not wait
-indefinitely. Where the bound sits: across the 698 sessions archived on the bench (mostly earlier
-code), clean arms took 2.08-2.59 s and arms that needed an ESC reboot took 4.06 s or more, so 3.0 s
-falls in the empty gap between the two. That archive justifies the bound, not the 99% rate.
-Evidence for the rate on current code: 41 of 41 arming-only bench runs on 2026-10-13, across the
-last four revisions of this code (10, 10, 20 and 1 runs). It is not yet enough to support 99%
-(about 300 clean attempts are needed); the long batch is waiting to be scheduled. The bound is
-measured by `scripts/run_scenarios.py` (`CLEAN_ARM_THRESHOLD_MS`); keep that constant, README.md
-and this table in agreement. Not guaranteed: DShot commands, other ESC firmware, behaviour of the
-motor after arming (BUG-009 is open).
+indefinitely.
+
+**Where the bound sits.** Across the 698 sessions archived on the bench (mostly earlier code),
+clean arms took 2.08-2.59 s and arms that needed an ESC reboot took 4.06 s or more, so 3.0 s falls
+in the empty gap between the two. That archive justifies the bound, not the 99% rate.
+
+**Evidence for the rate (2026-10-13 and 2026-10-14), arming-only scenario, two bidirectional motors,
+DSHOT600, max-rate pacing:**
+- 104 of 104 runs passed on exactly the code now on master (1 on 2026-10-13, then 3 and 100 on
+  2026-10-14). Arming time: min 2026 ms, median 2027 ms, max 2516 ms; 99 of the 100 runs landed
+  within 2 ms of each other, and the one 2516 ms arm (484 ms of room) is inside the archive's
+  historical clean range. Across those 100 sessions the post-ARMED telemetry was 138,720 of 138,720
+  records CRC-valid, with no failure streak.
+- 30 more of 30 passed on the same driver with an earlier harness (2026-10-13); 10 earlier runs
+  used the previous teardown code and are not counted.
+- That is not yet enough to support 99%: 100 clean runs support about 97%, and about 300 clean
+  runs on the same code are needed, so roughly 195 more. The long batch is waiting for the owner to
+  schedule it.
+- The captures begin at ARMED (the arming phase is not logged, by design), so an outlier such as the
+  2516 ms arm cannot be explained from them.
+
+**Scope of that evidence.** One scenario on one bench: an ESC that was already powered (each run
+resets the Pico, not the ESC), DSHOT600, two bidirectional motors, over two days. Not covered: a
+cold ESC power-on, DSHOT300, a single motor, other days or conditions.
+
+The bound is measured by `scripts/run_scenarios.py` (`CLEAN_ARM_THRESHOLD_MS`); keep that constant,
+README.md and this table in agreement. The batch runner also flags arms within 500 ms of the bound as
+"marginal"; that is a reporting aid, not part of the promise and not a failure. Not guaranteed:
+DShot commands, other ESC firmware, behaviour of the motor after arming (BUG-009 is open).
 
 ## Development Environment
 
@@ -123,7 +143,7 @@ committed once confirmed.
 
 **`tests/`** has three parts, each with its own way of running:
 
-- **`tests/harness/`** - the bench regression suite: example application code plus the JSON scenarios that verify the library on real hardware. `run_scenario.py` runs a scenario the way an application uses the library: it builds the motors (bidirectional ones use the frame receiver, the only one `BidirectionalDShot` has; since it fills its own PIO block, `scenario.py` rejects a scenario JSON that puts a unidirectional motor on the same block), wraps them in `MotorGroup`, runs `update()` on Core 1 through `core1_runner.py` (a Core 1 loop projects copy and adapt), and on Core 0 follows each motor's throttle profile and samples `raw_telemetry()`. Every 20th new capture is decoded on the device (`decode_tally.py` tallies real replies, CRC failures and non-replies) and judged against the scenario's `expect` thresholds, so a run prints its own verdict; the raw captures go to the PicoBell Adalogger's SD card (`bidir_capture_sink.py`, `capture_sink.py`, the ported `sdcard.py`/`pcf8523.py`). `scenario.py`/`throttle_profile.py` load and validate a scenario fail-fast before anything is armed, and `scenarios/*.json` is the scenario library (each file declares all 4 motors' wiring and a throttle profile per motor). Run one with `python scripts/run_test.py --scenario tests/harness/scenarios/<file>.json` (uploads via `scripts/deploy.py`, then runs and streams output), pull the session with `scripts/pull_captures.py` (which deletes each pulled session from the SD card) and analyse it with `scripts/analyze_bidir_capture_log.py`, which decodes everything logged, checks the same thresholds and cross-checks the device's sampled tally. `scripts/arming_stats.py` reads the arming logs of a batch of sessions and prints, per configuration, how often each ESC accepted our frames. `scripts/run_scenarios.py` runs one or more scenarios repeatedly (interleaved round by round when given several), tallying each attempt as armed/refused/error from `run_test.py`'s own printed output rather than a hand-rolled shell loop's string-matching - see its own docstring for why that distinction matters.
+- **`tests/harness/`** - the bench regression suite: example application code plus the JSON scenarios that verify the library on real hardware. `run_scenario.py` runs a scenario the way an application uses the library: it builds the motors (bidirectional ones use the frame receiver, the only one `BidirectionalDShot` has; since it fills its own PIO block, `scenario.py` rejects a scenario JSON that puts a unidirectional motor on the same block), wraps them in `MotorGroup`, runs `update()` on Core 1 through `core1_runner.py` (a Core 1 loop projects copy and adapt), and on Core 0 follows each motor's throttle profile and samples `raw_telemetry()`. Every Nth new capture (the scenario's `decode_every`) is decoded on the device (`decode_tally.py` tallies real replies, CRC failures and non-replies) and judged against the scenario's `expect` thresholds, so a run prints its own verdict; the raw captures go to the PicoBell Adalogger's SD card (`bidir_capture_sink.py`, `capture_sink.py`, the ported `sdcard.py`/`pcf8523.py`). `scenario.py`/`throttle_profile.py` load and validate a scenario fail-fast before anything is armed, and `scenarios/*.json` is the scenario library (each file declares all 4 motors' wiring and a throttle profile per motor). Run one with `python scripts/run_test.py --scenario tests/harness/scenarios/<file>.json` (uploads via `scripts/deploy.py`, then runs and streams output), pull the session with `scripts/pull_captures.py` (which deletes each pulled session from the SD card) and analyse it with `scripts/analyze_bidir_capture_log.py`, which decodes everything logged, checks the same thresholds and cross-checks the device's sampled tally. `scripts/arming_stats.py` reads the arming logs of a batch of sessions and prints, per configuration, how often each ESC accepted our frames. `scripts/run_scenarios.py` runs one or more scenarios repeatedly (interleaved round by round when given several), classifying each attempt from `run_test.py`'s own printed output rather than a hand-rolled shell loop's string-matching - see its own docstring for why that distinction matters. It prints one `RUN` line per attempt and `RESULT`, `ARMING_TIME` and `SCHEDULE` summary lines, all `key=value` (`verdict=pass|fail|excluded`, `armed_ms=`, `margin_ms=`, min/median/max over the passes), so a long batch can be grepped; add `--pull` so the sessions can be analysed afterwards with `scripts/analyze_bidir_capture_log.py` (a batch without it leaves them on the SD card).
 - **`tests/unit/`** - PC-run unit tests of the pieces that need no hardware (mailbox, decoder, command packet, `MotorGroup` against fake state machines, scenario loading): `python -m unittest discover -s tests/unit`. `fakes.py` stands in for `machine`, `rp2` and `utime`.
 - **`tests/device/`** - on-Pico checks that don't fit the scenario harness. `test_capture_slot_stress.py` needs the Pico's two real cores but no ESC or motor power; `test_stop_clears_queues.py` and `test_pio_lifecycle.py` need the Pico only (the first proves on real PIO that `stop()` leaves the send queue empty and that repeated start/stop does not exhaust the program store). `test_bidir_restart_cycles.py` needs an ESC and motors, to arm/spin/disarm a bidirectional motor three times in one session and prove `start()` reclaims the pin correctly after `stop()`, which no scenario run does (`run_test.py` resets the Pico before every scenario, so a scenario only ever calls `start()` once). `test_frame_stalled_drain.py` and `test_frame_arming_echo.py` also need an ESC and a motor and probe the frame receiver under a stalled drain and during arming. Run any of them with `python scripts/run_test.py <file>.py` (the bare file name, not a path).
 
