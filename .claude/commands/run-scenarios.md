@@ -27,13 +27,15 @@ since the batch started."
 Example, interleaving two configurations for 10 rounds:
 ```
 python scripts/run_scenarios.py \
-  --scenario tests/harness/scenarios/two_channel_divergent_600.json \
-  --scenario tests/harness/scenarios/two_channel_divergent_300.json \
+  --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_600.json \
+  --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_300.json \
   --rounds 10 --pull
 ```
 
-For arming reliability alone, use `tests/harness/scenarios/two_channel_arming_600.json`: same two
-bidirectional motors, throttle 0 throughout, nothing spins, about 15 s per run.
+There is no arming-only scenario any more (`two_channel_arming_600.json`, removed 2026-10-17; it is in git
+history). Every scenario run prints `Armed after Nms` and the batch runner judges it against the 3.0 s bound,
+so arming reliability is read from any batch; for two bidirectional motors use `two_channel_divergent_600.json`,
+which spins them.
 
 A batch run without `--pull` leaves every session on the board's SD card. When the batch is
 evidence (an arming-reliability run, not a smoke test), add `--pull` so the sessions are pulled

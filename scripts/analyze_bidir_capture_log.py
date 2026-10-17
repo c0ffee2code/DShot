@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tests" / "harness"))
+sys.path.insert(0, str(ROOT / "tests" / "bench"))
 sys.path.insert(0, str(ROOT / "driver"))
 
 from dshot_bidir_decode import analyze_frame
@@ -30,7 +30,7 @@ from decode_tally import DecodeTally, is_sampled
 from scenario import load_scenario
 
 # ticks_us, throttle0..3, then one word per motor (the frame receiver's
-# already-reconstructed frame) - must match tests/harness/bidir_capture_sink.py's
+# already-reconstructed frame) - must match tests/bench/session_recorder/bidir_capture_sink.py's
 # BidirCaptureSink.RECORD_FMT
 _RECORD_FMT = "<I4H4I"
 _RECORD_SIZE = struct.calcsize(_RECORD_FMT)
@@ -129,6 +129,8 @@ def analyze_records(records, bidir_indices, decode_every):
                     state["longest_fail_streak"] = state["fail_streak"]
 
     return per_motor, overall_largest_gap_us
+
+
 
 
 def compare_with_device(meta, per_motor):
@@ -231,13 +233,22 @@ def main():
         state = per_motor[index]
         completed = state["completed_groups"]
         pct = (state["crc_valid"] / completed * 100) if completed else 0.0
+        hardware = scenario.motors[index].hardware
         print(f"Motor {index}: CRC-valid {state['crc_valid']}/{completed} ({pct:.1f}%)  "
               f"longest_fail_streak={state['longest_fail_streak']}  "
               f"largest_gap={state['largest_gap_us'] / 1000:.1f}ms")
+        if hardware is not None:
+            print(f"           {hardware.name}, {hardware.kv} KV, {hardware.magnets} magnets "
+                  f"({hardware.pole_pairs} pole pairs)")
         if state["erpm_count"]:
             avg = state["erpm_sum"] / state["erpm_count"]
             print(f"           eRPM: min={state['erpm_min']:.0f} median={median(state['erpms']):.0f} "
                   f"max={state['erpm_max']:.0f} avg={avg:.0f}")
+            if hardware is not None:
+                print(f"           shaft RPM (eRPM / {hardware.pole_pairs}): "
+                      f"min={hardware.shaft_rpm(state['erpm_min']):.0f} "
+                      f"median={hardware.shaft_rpm(median(state['erpms'])):.0f} "
+                      f"max={hardware.shaft_rpm(state['erpm_max']):.0f}")
         else:
             print("           eRPM: no valid decodes to report")
 
@@ -247,8 +258,7 @@ def main():
     print()
     print(f"Device verdict: {meta.get('verdict', 'not recorded')}")
     if "max_loop_gap_us" in meta:
-        print(f"Command loop: longest gap between update() calls {int(meta['max_loop_gap_us']) / 1000:.1f}ms; "
-              f"forced GCs {meta.get('gc_runs', '0')} (longest {int(meta.get('gc_max_us', 0)) / 1000:.1f}ms)")
+        print(f"Command loop: longest gap between update() calls {int(meta['max_loop_gap_us']) / 1000:.1f}ms")
     for index in bidir_indices:
         if f"motor{index}_decode_sampled" in meta:
             tally = per_motor[index]["sample"]

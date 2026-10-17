@@ -1,0 +1,6 @@
+{
+  "_comment": "One DShot mode for run_optical_rpm_mode.py (uploaded as scenario.json); scripts/run_optical_rpm_modes.py runs all four and compares the optical RPM.",
+  "dshot_speed": "DSHOT300",
+  "bidirectional": false,
+  "throttle": 100
+}

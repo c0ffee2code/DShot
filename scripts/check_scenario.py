@@ -4,9 +4,9 @@ hardware involved. Prints each motor's compiled throttle waypoints so a
 ramp/repeat expansion can be eyeballed before ever touching hardware.
 
 Run from project root:
-  python scripts/check_scenario.py tests/harness/scenarios/two_channel_divergent_300.json
+  python scripts/check_scenario.py tests/bench/dshot_protocol/scenarios/two_channel_divergent_300.json
 
-Reuses tests/harness/scenario.py and throttle_profile.py unmodified - they
+Reuses tests/bench/scenario.py and throttle_profile.py unmodified - they
 avoid MicroPython-only APIs, so the exact same validation this script runs
 also runs, verbatim, on-device before a scenario is ever armed.
 """
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tests" / "harness"))
+sys.path.insert(0, str(ROOT / "tests" / "bench"))
 
 from scenario import load_scenario
 

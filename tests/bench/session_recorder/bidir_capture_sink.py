@@ -1,0 +1,104 @@
+# EXAMPLE APPLICATION CODE - not part of the DShot library.
+#
+# Writes raw scenario capture records (as produced by
+# tests/bench/dshot_protocol/run_scenario.py from MotorGroup.raw_telemetry()) to a
+# timestamped session folder on the PicoBell Adalogger's SD card. The SD/RTC
+# mount and session-folder lifecycle are in capture_sink.py; this adds the
+# scenario record format and copies the scenario's own JSON into the session
+# folder for full provenance, the same move Flight-Benchy's recorder.py makes
+# with config.json/specification.json.
+
+import struct
+
+from capture_sink import CaptureSinkBase
+from dshot_profiles import frame_rx_speed
+
+COPY_CHUNK_SIZE = 512
+
+
+class BidirCaptureSink(CaptureSinkBase):
+    # ticks_us, throttle0..3, then one word per motor (motor0..motor3) - the
+    # frame receiver's already-reconstructed 21-bit frame. A motor that had
+    # no new capture for this record, and a non-bidirectional motor, has an
+    # all-zero word.
+    RECORD_FMT = "<I4H4I"
+
+    def init_session(self, scenario, scenario_path):
+        """Create a timestamped run directory and open the capture log.
+
+        Copies `scenario_path`'s contents verbatim into the session folder
+        as scenario.json - full provenance for the PC-side analyzer.
+        """
+        bidir_indices = ",".join(str(i) for i in scenario.bidir_indices)
+        rx_clock_hz = frame_rx_speed(scenario.dshot_speed) if scenario.bidir_indices else 0
+
+        meta = {
+            "dshot_speed": str(scenario.dshot_speed),
+            "rx_clock_hz": str(rx_clock_hz),
+            "record_fmt": self.RECORD_FMT,
+            "bidir_motor_indices": bidir_indices,
+            "outcome": "running",
+        }
+        # What each spinning motor physically is, so a session's eRPM can be read
+        # back as shaft RPM without the scenario file at hand.
+        for index, motor in enumerate(scenario.motors):
+            hardware = motor.hardware
+            if hardware is not None:
+                prefix = "motor" + str(index) + "_"
+                meta[prefix + "name"] = hardware.name
+                meta[prefix + "kv"] = str(hardware.kv)
+                meta[prefix + "magnets"] = str(hardware.magnets)
+        self.create_session_dir(meta)
+
+        with open(scenario_path, "rb") as src, open(self.run_dir + "/scenario.json", "wb") as dst:
+            while True:
+                chunk = src.read(COPY_CHUNK_SIZE)
+                if not chunk:
+                    break
+                dst.write(chunk)
+
+        self.open_capture()
+
+    def finalize(self, outcome, total_records, missed, largest_gap_us, published, tallies, verdict,
+                 extra=None):
+        """Record how the run ended and its final device-side stats in meta.txt.
+
+        `missed` is the number of captures the group published that the run
+        never saw, and `published` maps each bidirectional motor's index to the
+        sequence number of its last capture, so the analyzer can relate the
+        records in capture.bin to what the ESC actually sent. `tallies` maps
+        each bidirectional motor's index to the DecodeTally of the captures the
+        run decoded on the device, which the analyzer repeats and compares.
+        `verdict` is "pass", or "fail: ..." naming the expectations missed. The
+        outcome stays "completed" for a run that finished but missed an
+        expectation: its capture is whole, and worth analysing.
+        """
+        fields = {
+            "total_records": str(total_records),
+            "captures_missed": str(missed),
+            "largest_gap_us": str(largest_gap_us),
+        }
+        for index in published:
+            fields["motor" + str(index) + "_captures_published"] = str(published[index])
+        for index in tallies:
+            tally = tallies[index]
+            prefix = "motor" + str(index) + "_decode_"
+            fields[prefix + "sampled"] = str(tally.sampled)
+            fields[prefix + "crc_ok"] = str(tally.crc_ok)
+            fields[prefix + "crc_fail"] = str(tally.crc_fail)
+            fields[prefix + "invalid"] = str(tally.invalid)
+        fields["verdict"] = verdict
+        if extra:
+            for key in extra:
+                fields[key] = str(extra[key])
+        self.finalize_meta(outcome, fields)
+
+    def write_record(self, ticks_us, throttles, words):
+        """Write one record to capture.bin: `throttles` is the 4 motors' throttle
+        values, `words` the 4 motors' captures (a 1-tuple each - see RECORD_FMT)."""
+        fields = [ticks_us]
+        fields.extend(throttles)
+        for group in words:
+            fields.extend(group)
+        struct.pack_into(self.RECORD_FMT, self.pack_buf, 0, *fields)
+        self.file.write(self.pack_buf)

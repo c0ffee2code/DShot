@@ -24,7 +24,7 @@ checking anything.
    the time) - default to this format when record_fmt is absent.
 
 2. Main scenario-capture format ("<I4H16I",
-   tests/harness/bidir_capture_sink.py, written by tests/harness/run_scenario.py):
+   tests/bench/session_recorder/bidir_capture_sink.py, written by tests/bench/dshot_protocol/run_scenario.py):
    (ticks_us, throttle0..3, motor0_w0..w3, motor1_w0..w3, motor2_w0..w3,
    motor3_w0..w3) - one record per pass in which ANY motor had a capture it
    had not shown before, carrying all 4 motors' throttle plus whichever

@@ -5,10 +5,9 @@ This is the script that actually spins motors - see deploy.py if you only want
 to upload files without running anything.
 
 Run from project root:
-  python scripts/run_test.py --scenario tests/harness/scenarios/two_channel_divergent_300.json
+  python scripts/run_test.py --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_300.json
                                                    # runs the scenario runner (the default script)
-  python scripts/run_test.py test_capture_slot_stress.py   # runs another script from tests/harness,
-                                                            # tests/device or tools
+  python scripts/run_test.py test_capture_slot_stress.py   # runs another script from tests/bench/*,
                                                    # --scenario uploads the file as scenario.json
 
 Pico must be connected on COM10. mpremote interrupts any running script on connect;
@@ -31,9 +30,9 @@ COM_PORT = deploy.COM_PORT
 
 DEFAULT_TEST_SCRIPT = "run_scenario.py"
 
-# Where a script named on the command line is looked for, in order. tests/unit is
+# Where a script named on the command line is looked for, in order. tests/pc is
 # not here: those tests run on a PC, not on the Pico.
-SCRIPT_DIRS = ["tests/harness", "tests/device", "tools"]
+SCRIPT_DIRS = ["tests/bench/dshot_protocol", "tests/bench/pio_and_cores", "tests/bench/rpm_accuracy"]
 
 # A killed-on-timeout run leaves the Pico still spinning motors, so this is
 # generous rather than tight (bidirectional_dshot_review.md's W31).
@@ -57,7 +56,11 @@ def main():
         del args[idx:idx + 2]
 
     name = args[0] if args else DEFAULT_TEST_SCRIPT
-    test_script = next((ROOT / d / name for d in SCRIPT_DIRS if (ROOT / d / name).exists()), None)
+    matches = [ROOT / d / name for d in SCRIPT_DIRS if (ROOT / d / name).exists()]
+    if len(matches) > 1:
+        print(f"AMBIGUOUS test script {name}: found in " + ", ".join(str(m.parent.relative_to(ROOT)) for m in matches))
+        sys.exit(1)
+    test_script = matches[0] if matches else None
     if test_script is None:
         print(f"MISSING test script {name}: looked in {', '.join(SCRIPT_DIRS)}")
         sys.exit(1)

@@ -3,12 +3,12 @@ run_scenarios.py - run one or more scenarios repeatedly on the bench,
 tallying outcomes.
 
 Run from project root:
-  python scripts/run_scenarios.py --scenario tests/harness/scenarios/two_channel_divergent_600.json --rounds 10
+  python scripts/run_scenarios.py --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_600.json --rounds 10
   python scripts/run_scenarios.py --scenario A.json --scenario B.json --scenario C.json --rounds 8
       # interleaves A, B, C, in that order, for 8 rounds each (24 runs total),
       # so anything that drifts over the session lands on every configuration
       # alike rather than piling onto whichever runs first.
-  --scenario also accepts a bare device script (tools/ or tests/device/, a .py
+  --scenario also accepts a bare device script (under tests/bench/, a .py
       path), run directly by name via run_test.py instead of as --scenario
       JSON - for interleaving a diagnostic tool against a real scenario under
       the exact same deploy/reset path (see run_once()'s own docstring)
@@ -202,8 +202,7 @@ def run_once(scenario_path):
     "deploy_failed", "clean", "reboot", "refused", "error".
 
     scenario_path is either a scenario JSON (passed to run_test.py via
-    --scenario) or a bare device script (tests/harness, tests/device or
-    tools/ - see run_test.py's own SCRIPT_DIRS), run directly by name so it
+    --scenario) or a bare device script (under tests/bench/ - see run_test.py's own SCRIPT_DIRS), run directly by name so it
     can be interleaved with scenario JSON files in the same batch (BUG-002,
     2026-10-10: isolating the Pico-reset-per-attempt variable by running a
     diagnostic tool and a scenario through the exact same reset path,

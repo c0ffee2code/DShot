@@ -1,10 +1,10 @@
 """
-deploy.py - upload the DShot driver + test harness to the Pico, then reset it.
+deploy.py - upload the DShot driver + bench support files to the Pico, then reset it.
 Does not run anything on the Pico - see run_test.py for that.
 
 Run from project root:
   python scripts/deploy.py                          # library files only
-  python scripts/deploy.py --scenario tests/harness/scenarios/two_channel_divergent_300.json
+  python scripts/deploy.py --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_300.json
                                                       # also uploads the scenario as scenario.json
 
 Pico must be connected on COM10.
@@ -36,14 +36,14 @@ LIBRARY_FILES = [
     ("driver/dshot_profiles.py", "dshot_profiles.py"),
     ("driver/gcr_decode.py", "gcr_decode.py"),
     ("driver/motor_group.py", "motor_group.py"),
-    ("tests/harness/core1_runner.py", "core1_runner.py"),
-    ("tests/harness/throttle_profile.py", "throttle_profile.py"),
-    ("tests/harness/scenario.py", "scenario.py"),
-    ("tests/harness/sdcard.py", "sdcard.py"),
-    ("tests/harness/pcf8523.py", "pcf8523.py"),
-    ("tests/harness/capture_sink.py", "capture_sink.py"),
-    ("tests/harness/bidir_capture_sink.py", "bidir_capture_sink.py"),
-    ("tests/harness/decode_tally.py", "decode_tally.py"),
+    ("tests/bench/core1_runner.py", "core1_runner.py"),
+    ("tests/bench/throttle_profile.py", "throttle_profile.py"),
+    ("tests/bench/scenario.py", "scenario.py"),
+    ("tests/bench/session_recorder/sdcard.py", "sdcard.py"),
+    ("tests/bench/session_recorder/pcf8523.py", "pcf8523.py"),
+    ("tests/bench/session_recorder/capture_sink.py", "capture_sink.py"),
+    ("tests/bench/session_recorder/bidir_capture_sink.py", "bidir_capture_sink.py"),
+    ("tests/bench/decode_tally.py", "decode_tally.py"),
 ]
 
 # Fixed device-side name run_scenario.py opens - mpremote's `run`
@@ -75,6 +75,10 @@ def deploy(scenario_path=None):
     - the board is only reset on full success, since resetting after a partial
     upload would leave a half-updated, freshly-reset device.
     """
+    remote_names = [rem for _, rem in LIBRARY_FILES]
+    if len(set(remote_names)) != len(remote_names):
+        print("Two library files would land on the same Pico file name - one would overwrite the other")
+        return False
     print(f"Deploying to Pico on {COM_PORT}...")
     ok = sum(upload(loc, rem) for loc, rem in LIBRARY_FILES)
     failed = len(LIBRARY_FILES) - ok

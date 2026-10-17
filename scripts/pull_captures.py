@@ -34,7 +34,7 @@ LOCAL_DIR = Path("captures")
 # not all of it.
 BATCH_SIZE = 3
 
-# PicoBell Adalogger for Pico SD pins - see tests/harness/bidir_capture_sink.py
+# PicoBell Adalogger for Pico SD pins - see tests/bench/session_recorder/bidir_capture_sink.py
 _SD_MOUNT = """\
 import os, time
 from machine import SPI, Pin

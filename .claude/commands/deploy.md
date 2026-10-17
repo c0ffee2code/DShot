@@ -1,6 +1,6 @@
 Run `python scripts/deploy.py [--scenario <path>]` and report the result.
 
-Uploads the DShot driver and harness files to the Pico (flat filesystem,
+Uploads the DShot driver, example and session-recorder files to the Pico (flat filesystem,
 matching their `from dshot_pio import ...` style imports), then resets the
 board. With `--scenario <path>`, also uploads that file as `scenario.json`.
 

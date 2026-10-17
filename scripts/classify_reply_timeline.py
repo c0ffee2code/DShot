@@ -71,7 +71,7 @@ import gcr_decode
 from dshot_profiles import frame_rx_speed
 from simulate_frame_receiver import run
 
-# Must match tests/harness/bidir_capture_sink.py's BidirCaptureSink.RECORD_FMT
+# Must match tests/bench/session_recorder/bidir_capture_sink.py's BidirCaptureSink.RECORD_FMT
 RECORD_FMT = "<I4H4I"
 RECORD_SIZE = struct.calcsize(RECORD_FMT)
 

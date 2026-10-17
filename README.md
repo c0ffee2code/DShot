@@ -19,12 +19,20 @@ trail for some of the library's conservative defaults, not as current hardware.
 | Component | Model | Specifications |
 |-----------|-------|----------------|
 | **Controller** | Raspberry Pi Pico 2 | RP2350, dual ARM Cortex-M33, 150MHz |
-| **Motors** | BetaFPV Lava Series 1104 (×2) | 7200KV, 5g weight |
+| **Motors** | BETAFPV LAVA Series 1104 (×2) | 7200KV, 5.3g, 12 rotor magnets (6 pole pairs) |
 | **ESC** | Skystar RC KM55A2 (4-in-1) | AM32 firmware |
+| **Optical RPM sensor** | Adafruit STEMMA reflective photo interrupt sensor (TCRT1000) | GPIO 14, 3.3V; 2-hole printed disk on motor 1's shaft |
+
+The 12-magnet count is not on BETAFPV's product page; it was counted by eye on the rotor and then
+confirmed by measurement: the optical RPM sensor gave eRPM / shaft RPM = 6.02-6.05 at throttle 60-100
+(`tests/bench/rpm_accuracy/test_esc_rpm_vs_optical_rpm.py`). The ESC reports **electrical** RPM, so shaft RPM = eRPM / 6 here
+(about 3,400 RPM at throttle 100, which the ESC reports as about 20,600 eRPM). Each scenario file
+carries the motor's name, KV and magnet count in a `hardware` block, and a session's `meta.txt`
+records them.
 
 ### Test Bench Configuration
 
-See `tests/harness/scenarios/*.json` for the source-of-truth wiring.
+See `tests/bench/dshot_protocol/scenarios/*.json` for the source-of-truth wiring.
 
 ```
                     ┌─────────────┐
@@ -86,7 +94,7 @@ the ESC firmware - see "Verified Parameters" below; on this bench, AM32 arms rel
 `Core1Runner`'s deadline-anchored pacing at 1045us (20/20, then 13/13 clean in later spot checks)
 and with `MotorGroup.UPDATE_INTERVAL_US`'s own default, max-rate/no-pacing (0us). On this test
 bench that means a dedicated Core 1 thread, keeping Core 0 free for the display and buttons -
-see `tests/harness/core1_runner.py` for a ready-made example to copy into your project.
+see `tests/bench/core1_runner.py` for a ready-made example to copy into your project.
 
 ## Quick Start
 
@@ -121,7 +129,7 @@ motor.stop()  # Deactivate - the ESC times out and the motor cannot spin
 from machine import Pin
 from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
-from core1_runner import Core1Runner  # your code - see tests/harness/core1_runner.py
+from core1_runner import Core1Runner  # your code - see tests/bench/core1_runner.py
 import utime
 
 # One motor object per motor (1-4). You pick the state machine and pin for each;
@@ -229,13 +237,14 @@ that the motor is actually armed and spinning.
 │   ├── gcr_decode.py                # On-device decoder for the ESC's GCR telemetry reply
 │   └── dshot_profiles.py            # DShot speeds and the tuned receiver profile for each
 ├── tests/
-│   ├── harness/                     # bench regression suite: scenario runner + JSON scenarios,
-│   │                                # plus core1_runner.py, an example Core 1 loop to copy
-│   ├── unit/                        # PC unit tests (python -m unittest discover -s tests/unit)
-│   └── device/                      # on-Pico checks: queue-clearing and two-core mailbox stress
-│                                    # (no ESC needed); arm/disarm restart and stalled-drain (need one)
+│   ├── pc/                          # PC unit tests (python -m unittest discover -s tests/pc)
+│   └── bench/                       # tests that run on the Pico with the bench attached
+│       ├── core1_runner.py          # Core 1 update() loop + fast_stop, shared by the groups below
+│       ├── session_recorder/        # SD-card/RTC session recorder
+│       ├── dshot_protocol/          # scenario runner + JSON scenarios, single-motor ESC probes
+│       ├── pio_and_cores/           # PIO and two-core checks (Pico only, no ESC)
+│       └── rpm_accuracy/            # ESC eRPM vs physical RPM from the reflective sensor
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
-├── tools/                           # on-Pico diagnostics, not tests - no pass/fail, just data
 ├── specification/
 │   ├── DSHOT.md                      # Wire protocol (vendor/host-agnostic)
 │   ├── AM32.md                       # AM32 firmware facts
@@ -247,7 +256,7 @@ that the motor is actually armed and spinning.
 ```
 
 Nothing under `driver/` imports `_thread` or picks a core. `core1_runner.py`
-lives in `tests/harness/` because it is an application concern, not a DShot one.
+lives in `tests/bench/` because it is bench infrastructure; an application is free to copy it, but nothing in the DShot library depends on it.
 
 ## DShot Protocol
 
