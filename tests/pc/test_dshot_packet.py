@@ -190,7 +190,7 @@ class MotorConstructionTest(unittest.TestCase):
         motor = bidir()
         motor.start()
         motor.rx_sm.feed([0x1234])
-        motor.drain_rx(True)
+        motor.drain_rx()
         self.assertIsNotNone(motor.latest_capture())
         motor.rx_sm.feed([1, 2])
         motor.stop()
@@ -199,7 +199,7 @@ class MotorConstructionTest(unittest.TestCase):
 
     def test_unidirectional_motor_has_no_telemetry(self):
         motor = uni()
-        for call in (motor.rx_read, motor.latest_capture, lambda: motor.decode_capture((0, 0, 0, 0))):
+        for call in (motor.rx_read, motor.latest_capture, lambda: motor.decode_capture(0)):
             with self.assertRaises(UnsupportedOperationException):
                 call()
 

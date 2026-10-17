@@ -64,8 +64,8 @@ class BidirCaptureSink(CaptureSinkBase):
         """Record how the run ended and its final device-side stats in meta.txt.
 
         `missed` is the number of captures the group published that the run
-        never saw, and `published` maps each bidirectional motor's index to the
-        sequence number of its last capture, so the analyzer can relate the
+        never saw, and `published` maps each bidirectional motor's index to the number of
+        captures it published since ARMED (counted from the token steps), so the analyzer can relate the
         records in capture.bin to what the ESC actually sent. `tallies` maps
         each bidirectional motor's index to the DecodeTally of the captures the
         run decoded on the device, which the analyzer repeats and compares.
@@ -95,10 +95,11 @@ class BidirCaptureSink(CaptureSinkBase):
 
     def write_record(self, ticks_us, throttles, words):
         """Write one record to capture.bin: `throttles` is the 4 motors' throttle
-        values, `words` the 4 motors' captures (a 1-tuple each - see RECORD_FMT)."""
+        values, `words` the 4 motors' reply frames (one integer each, 0 for a motor
+        with no new capture - see RECORD_FMT). `ticks_us` is when the caller saw
+        the value change, not when the group published it: the poll's resolution."""
         fields = [ticks_us]
         fields.extend(throttles)
-        for group in words:
-            fields.extend(group)
+        fields.extend(words)
         struct.pack_into(self.RECORD_FMT, self.pack_buf, 0, *fields)
         self.file.write(self.pack_buf)

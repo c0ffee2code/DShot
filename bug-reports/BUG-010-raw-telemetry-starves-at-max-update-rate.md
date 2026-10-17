@@ -1,6 +1,6 @@
 # BUG-010: `raw_telemetry()` returns nothing for whole seconds when `update()` runs at its maximum rate
 
-**Status:** OPEN. Found 2026-10-17. Worked around in one test (it paces `update()` at 1 ms); the driver is unchanged.
+**Status:** FIXED and bench-verified 2026-10-17 (branch fix/capture-slot-token). The slot is now one word with a 9-bit token (see decision/ADR-005's update of that date). With an ESC: the RPM test passes at the default update rate with no empty polls, all six scenarios pass, and arming is not worse than master in 20 interleaved runs each (two slow arms of 2450 and 2608ms on the branch, cause not settled).
 **Severity:** Medium. A caller polling `raw_telemetry()` can get no capture at all for seconds at a time while the ESC is replying normally and the driver is publishing. Nothing is lost on the wire, and the motor is unaffected.
 **Component:** `driver/capture_mailbox.py` (`CaptureMailbox.latest()`), `driver/dshot_pio.py` (`BidirectionalDShot.latest_capture()`), reached through `MotorGroup.raw_telemetry()`
 **Found:** while building `tests/bench/rpm_accuracy/test_esc_rpm_vs_optical_rpm.py`

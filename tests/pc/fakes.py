@@ -203,6 +203,7 @@ def _install_micropython_module():
     # behavior change a PC test could observe (W33).
     micropython = types.ModuleType("micropython")
     micropython.native = _native
+    micropython.const = lambda value: value
     micropython.viper = _viper
     sys.modules["micropython"] = micropython
 

@@ -12,7 +12,7 @@
 #      pulled up, which left some ESC firmware unable to recover on its own after
 #      disarm - see driver/dshot_pio.py's BidirectionalDShot.stop()).
 #   3. Arming the same group again after a disarm must work as the first time did:
-#      the receiver captures again, and the published capture starts over.
+#      the receiver captures again.
 #
 # No ESC and no motor: the motors sit on unused GPIO 10 (bidirectional, state
 # machines 0 and 1) and 11 (unidirectional, state machine 4 - a different PIO
@@ -25,6 +25,7 @@ import gc
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
+from capture_mailbox import FRAME_BITS
 import utime
 
 DSHOT_SPEED = DSHOT_SPEEDS.DSHOT300
@@ -101,24 +102,21 @@ def test_pio_lifecycle():
     check(Pin(UNI_PIN).value() == 0, "the unidirectional line is parked low")
 
     print("Arming the same group %d more times..." % REARM_CYCLES)
-    first_sequence = None
     for cycle in range(REARM_CYCLES):
         arm_fully(group)
         run_for(group, RUN_MS)
         capture = group.raw_telemetry(0)
         if capture is None:
             raise Exception("FAIL cycle %d: no capture after %dms armed - the receiver is not running" % (cycle, RUN_MS))
+        token = capture >> FRAME_BITS
         if cycle == 0 or cycle == REARM_CYCLES - 1:
-            print("  cycle %d: sequence %d after %dms" % (cycle, capture[1], RUN_MS))
-        if first_sequence is None:
-            first_sequence = capture[1]
-        elif capture[1] > 2 * first_sequence:
-            raise Exception("FAIL cycle %d: sequence %d against %d in the first cycle - the published capture did not start over" % (
-                cycle, capture[1], first_sequence))
+            print("  cycle %d: token %d after %dms" % (cycle, token, RUN_MS))
         group.disarm()
         if group.raw_telemetry(0) is not None:
             raise Exception("FAIL cycle %d: a capture was handed out after disarm" % cycle)
-    check(True, "every re-arm captured again, and the sequence restarted each time")
+        if bidir.latest_capture() is not None:
+            raise Exception("FAIL cycle %d: the published capture survived disarm" % cycle)
+    check(True, "every re-arm captured again")
 
     print()
     print("=== Test Complete ===")

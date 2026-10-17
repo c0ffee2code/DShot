@@ -1,29 +1,36 @@
-# Test: cross-core consistency of BidirectionalDShot's one-slot capture
+# Test: cross-core behaviour of BidirectionalDShot's one-slot capture
 #
-# Purpose: MotorGroup.update() (Core 1) publishes each completed
-# telemetry capture into a single slot (CaptureMailbox) via drain_rx(), and the
-# application (Core 0) reads it with latest_capture(). The slot is guarded by a
-# seqlock made of plain attribute and array writes, and MicroPython on the RP2350 runs the
-# two cores truly in parallel with no global interpreter lock, so nothing but
-# the protocol itself keeps a reader from seeing half of one capture and half of
-# the next. This test hammers that protocol far harder than a real ESC can.
+# Purpose: MotorGroup.update() (Core 1) publishes each completed telemetry
+# capture into a single slot (CaptureMailbox) via drain_rx(), and the application
+# (Core 0) reads it with latest_capture(). The slot is one array element holding
+# the reply frame and a token that steps on every publish, so a read is one load:
+# it cannot return half of one capture and half of the next, and it is never
+# refused. MicroPython on the RP2350 runs the two cores truly in parallel with no
+# global interpreter lock, so this test hammers that against a writer far faster
+# than a real ESC.
 #
 # No motor and no ESC power are needed: the RX state machine is replaced by a
 # fake that supplies synthetic words, so the real drain_rx() and
 # latest_capture() run against a FIFO that never runs dry. The state machines
 # are never started and nothing is transmitted.
 #
-# Capture n consists of four different words derived from n, and captures are
-# published in order, so the k-th published capture (sequence k) must be exactly
-# capture k-1. The reader checks every capture it reads against that, which
-# catches a torn record, a stale sequence number and mixed captures alike.
+# The k-th published capture carries token ((k - 1) mod TOKEN_MAX) + 1, and its
+# frame is derived from the token alone, so the reader can check that the frame
+# it holds belongs to the token it holds. The token also gives the number of
+# captures published between two reads (the step modulo TOKEN_MAX), which is
+# summed and compared with what the writer published.
 #
-# Pass: no inconsistent record, sequence never goes backwards, and the writer
-# and reader both ran long enough to have collided many times.
+# Pass: every value read is consistent (frame matches token), no read returns
+# None once the first capture is published, and the reader ran long enough to
+# have collided with the writer many times. Reported, not judged: how many
+# captures the reader missed between reads, and whether the token count agrees
+# with the writer's (it can only fall short when the reader is paused for more
+# than TOKEN_MAX publishes).
 
 import _thread
 from machine import Pin
 from dshot_pio import BidirectionalDShot, DSHOT_SPEEDS
+from capture_mailbox import FRAME_BITS, FRAME_MASK, TOKEN_MAX
 import utime
 
 RUN_MS = 15000
@@ -36,9 +43,9 @@ SM_ID = 0
 RX_SM_ID = 1
 
 
-def word(n, j):
-    # Four distinct 32-bit words per capture, all derived from the capture number
-    return ((n * 0x01000193 + 0x811C9DC5) ^ (j * 0x11111111)) & 0xFFFFFFFF
+def frame_for(token):
+    # A distinct, non-zero 21-bit frame per token value
+    return ((token * 0x1003F + 0x5A5A5) & FRAME_MASK) | 1
 
 
 class FakeRxStateMachine:
@@ -46,21 +53,16 @@ class FakeRxStateMachine:
 
     def __init__(self):
         self.n = 0
-        self.next_words = (0, 0, 0, 0)
+        self.next_frame = 0
 
     def rx_fifo(self):
-        # The words are worked out here, outside the writer's update window, so
-        # get() below is as cheap as the real bulk read: what the reader races
-        # against is a few array stores, not this test's arithmetic
-        self.next_words = (word(self.n, 0), word(self.n, 1), word(self.n, 2), word(self.n, 3))
-        return 4
+        # The frame is worked out here, outside the writer's publish, so get()
+        # below is as cheap as the real bulk read
+        self.next_frame = frame_for(self.n % TOKEN_MAX + 1)
+        return 1
 
     def get(self, buf):
-        words = self.next_words
-        buf[0] = words[0]
-        buf[1] = words[1]
-        buf[2] = words[2]
-        buf[3] = words[3]
+        buf[0] = self.next_frame
         self.n += 1
 
 
@@ -76,7 +78,7 @@ class Writer:
         motor = self.motor
         try:
             while self.running:
-                motor.drain_rx(True)
+                motor.drain_rx()
                 self.calls += 1
         except Exception as e:
             self.error = e
@@ -88,16 +90,20 @@ def test_capture_slot_stress():
     print("=== Capture Slot Stress Test (no motor, no ESC power) ===")
 
     motor = BidirectionalDShot(SM_ID, Pin(PIN), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=RX_SM_ID)
-    motor.mailbox.source = FakeRxStateMachine()
+    fake = FakeRxStateMachine()
+    motor.mailbox.source = fake
     writer = Writer(motor)
 
     reads = 0
-    none_reads = 0
+    new_values = 0
+    none_after_start = 0
     bad_records = 0
-    backwards = 0
-    odd_seen = 0
-    last_seq = 0
+    steps_total = 0
+    biggest_step = 0
     first_bad = None
+    started = False
+    last_token = 0
+    last_value = 0
 
     writer.running = True
     writer.stopped = False
@@ -108,28 +114,30 @@ def test_capture_slot_stress():
         if writer.error is not None:
             raise writer.error
 
-        # Sampling the raw counter shows how often a read lands inside the
-        # writer's update window - the case the seqlock exists for
-        if motor.mailbox.slot_seq & 1:
-            odd_seen += 1
-
-        capture = motor.latest_capture()
-        if capture is None:
-            none_reads += 1
+        value = motor.latest_capture()
+        if value is None:
+            if started:
+                none_after_start += 1
             continue
-
-        ticks_us, seq, words = capture
+        started = True
         reads += 1
 
-        if seq < last_seq:
-            backwards += 1
-        last_seq = seq
-
-        n = seq - 1
-        if words != (word(n, 0), word(n, 1), word(n, 2), word(n, 3)):
+        token = value >> FRAME_BITS
+        if (value & FRAME_MASK) != frame_for(token):
             bad_records += 1
             if first_bad is None:
-                first_bad = (seq, words)
+                first_bad = value
+
+        if value != last_value:
+            new_values += 1
+            step = (token - last_token) % TOKEN_MAX
+            if step == 0:
+                step = TOKEN_MAX
+            steps_total += step
+            if step > biggest_step:
+                biggest_step = step
+            last_token = token
+            last_value = value
 
     writer.running = False
     for _ in range(100):
@@ -137,26 +145,27 @@ def test_capture_slot_stress():
             break
         utime.sleep_ms(10)
 
-    published = motor.mailbox.slot_seq >> 1
+    published = fake.n
     print("  writer drain_rx calls:        " + str(writer.calls))
     print("  captures published:           " + str(published))
     print("  reader reads (valid):         " + str(reads))
-    print("  reader None (gave up/empty):  " + str(none_reads))
-    print("  reads seeing writer mid-update (odd seq): " + str(odd_seen))
-    print("  sequence went backwards:      " + str(backwards))
-    print("  INCONSISTENT records:         " + str(bad_records))
+    print("  of which a new value:         " + str(new_values))
+    print("  reader None after the first:  " + str(none_after_start))
+    print("  captures counted by token steps: " + str(steps_total) + " (writer published " + str(published) + ")")
+    print("  biggest step between two new values: " + str(biggest_step))
+    print("  INCONSISTENT values (frame does not match token): " + str(bad_records))
     if first_bad is not None:
-        print("  first inconsistent record: seq=" + str(first_bad[0]) + " words=" + str(first_bad[1]))
+        print("  first inconsistent value: " + str(first_bad))
 
     if writer.error is not None:
         raise writer.error
-    if bad_records or backwards:
-        raise Exception("FAIL slot returned an inconsistent record")
+    if bad_records:
+        raise Exception("FAIL slot returned a frame that does not belong to its token")
+    if none_after_start:
+        raise Exception("FAIL " + str(none_after_start) + " reads returned nothing after the first capture - a read must never be refused")
     if reads < MIN_READS:
         raise Exception("FAIL only " + str(reads) + " reads - not enough to mean anything")
-    if odd_seen == 0:
-        raise Exception("FAIL reader never saw the writer mid-update - the race was not exercised")
-    print("  OK   no torn or out-of-order records")
+    print("  OK   no inconsistent values, no refused reads")
 
     print()
     print("=== Test Complete ===")

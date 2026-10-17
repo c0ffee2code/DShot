@@ -4,8 +4,7 @@
 # TOLERANCE_PCT, on at least MIN_SAMPLES decodes and MIN_SENSOR_PULSES sensor pulses
 # (decode_tally.py's own minimum: a median over fewer cannot support a percentage).
 # The window of a step stays open until it holds TARGET_SAMPLES decodes and sensor pulses (capped at
-# MAX_STEP_MS): raw_telemetry() was seen returning nothing for whole seconds while
-# Core 1 kept publishing, so a fixed-length window could not promise any samples.
+# MAX_STEP_MS), so a slow step cannot end the run early with too little data.
 # A step that falls short on samples fails as "not enough data", not as inaccurate.
 # Prints "PASSED" or "FAILED: n" like the other bench tests.
 #
@@ -35,6 +34,7 @@ from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
 from core1_runner import Core1Runner, fast_stop
 from decode_tally import MIN_SAMPLES
+from capture_mailbox import FRAME_MASK
 import utime
 
 SENSOR_PIN = 14
@@ -48,10 +48,6 @@ MAX_STEP_MS = 12000     # ... or when the step has lasted this long (then it fai
 SETTLE_MS = 1000        # the first part of each step is ignored while the motor speeds up
 ARM_MS = 2000
 ARM_TIMEOUT_MS = ARM_MS + 16000
-# update() paced like a flight controller's loop. At the group's own maximum rate Core 1
-# rewrites the capture slot every ~0.3ms, faster than Core 0 can copy it, and
-# raw_telemetry() then returns nothing for whole steps.
-UPDATE_INTERVAL_US = 1000
 DECODE_EVERY = 5         # decoded on Core 0 (about 10ms each), so every Nth new capture
 MAX_EDGES = 8192
 
@@ -95,6 +91,9 @@ def analyze(first, last, throttle, stats):
                                                 stats["crc_fail"], stats["not_running"], stats["no_erpm"]))
     print("  polls in the window: %d, no capture %d, same capture as last poll %d, all-zero reply %d" % (
         stats["polls"], stats["none"], stats["stale"], stats["zero"]))
+    print("  window: %s ms, closed on %s; new captures seen per second: %s" % (
+        stats["window_ms"], "its sample targets" if stats["full"] else "the time cap",
+        "--" if not stats["window_ms"] else "%.0f" % (stats["seen"] * 1000 / stats["window_ms"])))
     if len(falls) < MIN_SENSOR_PULSES or not holes:
         print("  sensor pulses in the window: %d (edges %d)" % (len(falls), last - first))
         return "throttle %d: not enough data, %d sensor pulses (need %d)" % (throttle, len(falls), MIN_SENSOR_PULSES)
@@ -136,12 +135,12 @@ def main():
         UnidirectionalDShot(10, Pin(9), DSHOT_SPEEDS.DSHOT600),
     ]
     group = MotorGroup(motors)
-    runner = Core1Runner(group.update, UPDATE_INTERVAL_US)
+    runner = Core1Runner(group.update, group.UPDATE_INTERVAL_US)
     runner.start()
 
     windows = []   # (throttle, first_edge, last_edge, stats)
     seen = 0
-    last_seq = 0
+    last_value = 0
     try:
         print("Arming for {}ms...".format(ARM_MS))
         t_arm = utime.ticks_ms()
@@ -163,6 +162,7 @@ def main():
                 throttle, SETTLE_MS, TARGET_SAMPLES, TARGET_SAMPLES, MAX_STEP_MS))
             step_start = utime.ticks_ms()
             window_first = None
+            window_opened_ms = None
             stats = {"erpms": [], "seen": 0, "sampled": 0, "crc_fail": 0, "not_running": 0, "no_erpm": 0,
              "polls": 0, "none": 0, "stale": 0, "zero": 0}
             while (utime.ticks_diff(utime.ticks_ms(), step_start) < MAX_STEP_MS
@@ -172,28 +172,28 @@ def main():
                 elapsed = utime.ticks_diff(utime.ticks_ms(), step_start)
                 if window_first is None and elapsed >= SETTLE_MS:
                     window_first = edge_count[0]
+                    window_opened_ms = elapsed
                 capture = group.raw_telemetry(0)
                 if window_first is not None:
                     stats["polls"] += 1
                     if capture is None:
                         stats["none"] += 1
                 if capture is not None:
-                    _, seq, words = capture
-                    if seq == last_seq:
+                    if capture == last_value:
                         if window_first is not None:
                             stats["stale"] += 1
                     else:
-                        last_seq = seq
-                        if not any(words) and window_first is not None:
+                        last_value = capture
+                        if not capture & FRAME_MASK and window_first is not None:
                             stats["zero"] += 1
-                        if any(words):
+                        if capture & FRAME_MASK:
                             seen += 1
                             in_window = window_first is not None
                             if in_window:
                                 stats["seen"] += 1
                             if seen % DECODE_EVERY == 0 and in_window:
                                 stats["sampled"] += 1
-                                result = group.decode_telemetry(0, words)
+                                result = group.decode_telemetry(0, capture)
                                 if result is None or not result["crc_ok"]:
                                     stats["crc_fail"] += 1
                                 elif result["not_running"]:
@@ -202,6 +202,9 @@ def main():
                                     stats["no_erpm"] += 1
                                 else:
                                     stats["erpms"].append(result["erpm"])
+            stats["window_ms"] = None if window_opened_ms is None else \
+                utime.ticks_diff(utime.ticks_ms(), step_start) - window_opened_ms
+            stats["full"] = window_full(window_first, stats)
             windows.append((throttle, window_first, edge_count[0], stats))
     finally:
         sensor.irq(handler=None)

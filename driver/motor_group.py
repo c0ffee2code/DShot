@@ -174,14 +174,6 @@ class MotorGroup:
         # One of DISARMED / ARMING / ARMED
         self.state = DISARMED
 
-        # Diagnostic: when True, replies drained while ARMING are published to
-        # each bidirectional motor's latest capture instead of being dropped.
-        # raw_telemetry() still hands nothing out before ARMED; a caller that
-        # wants the arming-phase replies reads motor.latest_capture() itself.
-        # The bench harness sets it to log what the ESC did while arming
-        # (bug-reports/BUG-002). Set it before arm().
-        self.publish_while_arming = False
-
         # The reply gate (READY_SPAN_MS) applies while this is True. Only a
         # bench test with no ESC attached turns it off, so its bidirectional
         # motors arm on the window alone; an application leaves it on.
@@ -291,10 +283,9 @@ class MotorGroup:
         whichever core or scheduling arrangement it chooses. Draining here is
         deliberate: an RX FIFO left undrained stalls the receiver, losing
         replies until it is drained again, so it must not depend on the
-        application remembering a second call. Replies drained while ARMING
+        application remembering a second call. Replies taken while ARMING
         are discarded - not yet trusted, since the ESC may still be
-        completing bidirectional detection - unless publish_while_arming is
-        set (a diagnostic; raw_telemetry() withholds them either way).
+        completing bidirectional detection.
 
         The drain comes first, before any command is queued, so a new reply's
         words never have to wait behind an undrained old one - see ADR-002
@@ -314,10 +305,9 @@ class MotorGroup:
         if state == ARMING:
             # A not-running reply extends the motor's run of replies, or starts
             # a new one after a gap long enough to be a reboot
-            publish = self.publish_while_arming
             motors = self.motors
             for i in self.bidir_indices:
-                if motors[i].drain_rx(publish):
+                if motors[i].discard_rx():
                     if not self.ready_seen[i]:
                         self.ready_first_ms[i] = now
                     else:
@@ -345,7 +335,7 @@ class MotorGroup:
                     self.state = ARMED
         else:
             for motor in self.bidir_motors:
-                motor.drain_rx(True)
+                motor.drain_rx()
 
             throttles = self.throttles
             motors = self.motors
@@ -410,9 +400,12 @@ class MotorGroup:
         """
         Latest raw telemetry capture for one bidirectional motor.
 
-        Returns (ticks_us, sequence, words) from that motor's
-        latest_capture(), or None while the group is not ARMED or nothing has
-        arrived yet. The group stores nothing itself - it only refuses to
+        Returns that motor's latest_capture() - one integer, the reply frame
+        with a token above it that steps on every publish - or None while the
+        group is not ARMED or nothing has arrived yet. A caller that keeps the
+        last value it saw knows a capture is new when the value differs; it
+        forgets that value on every arm(), because each run's tokens start
+        over at 1. The group stores nothing itself - it only refuses to
         hand out captures taken while its own arming window was still open,
         not yet trusted since the ESC may still be completing bidirectional
         detection.
@@ -443,7 +436,7 @@ class MotorGroup:
 
         return motor.latest_capture()
 
-    def decode_telemetry(self, motor_index, words):
+    def decode_telemetry(self, motor_index, value):
         """
         Decode one capture returned by raw_telemetry(); see
         BidirectionalDShot.decode_capture() for the result and its cost.
@@ -460,7 +453,7 @@ class MotorGroup:
         if not motor.bidirectional:
             raise UnsupportedOperationException("Motor " + str(motor_index) + " is unidirectional")
 
-        return motor.decode_capture(words)
+        return motor.decode_capture(value)
 
     def clamp_throttle(self, value):
         """

@@ -61,15 +61,14 @@ def run_one_cycle(group, runner, cycle):
     decoded = 0
     crc_ok = 0
     erpms = []
-    last_seq = -1
+    last_value = 0
     end = utime.ticks_add(utime.ticks_ms(), SPIN_MS)
     while utime.ticks_diff(end, utime.ticks_ms()) > 0:
         capture = group.raw_telemetry(0)
         if capture is not None:
-            _, seq, words = capture
-            if seq != last_seq:
-                last_seq = seq
-                result = group.decode_telemetry(0, words)
+            if capture != last_value:
+                last_value = capture
+                result = group.decode_telemetry(0, capture)
                 decoded += 1
                 if result["crc_ok"]:
                     crc_ok += 1

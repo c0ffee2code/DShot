@@ -13,8 +13,8 @@
 #
 # What a record is: the group keeps ONE capture per bidirectional motor (the
 # latest), so this cannot log every reply. Core 0 polls raw_telemetry() and
-# writes a record whenever a motor has a capture with a new sequence number.
-# Captures published but never seen (the sequence jumped) are counted as missed;
+# writes a record whenever a motor has a capture whose value differs from the last one seen.
+# Captures published but never seen (the token stepped by more than one) are counted as missed;
 # they are not an error, because reading the latest is the contract - the
 # scenario's `expect` thresholds say how much sampling a run must achieve.
 # Nothing is logged while the group is still arming (see arm_group()) - no
@@ -45,6 +45,7 @@
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot
 from motor_group import MotorGroup
+from capture_mailbox import FRAME_BITS, FRAME_MASK, TOKEN_MAX
 from core1_runner import Core1Runner, fast_stop
 from scenario import load_scenario
 from bidir_capture_sink import BidirCaptureSink
@@ -84,9 +85,6 @@ ARM_TIMEOUT_MARGIN_MS = 16000
 # it. A continuous streak, not an "ever spun" flag: a single glitch frame does
 # not defeat it for the rest of the run.
 NOT_RUNNING_LIMIT_MS = 2000
-
-RECORD_ZERO_WORDS = (0,)
-
 
 def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
     # Bidirectional DShot's contract is a continuous eRPM reply every
@@ -246,11 +244,11 @@ def run_scenario():
     has_bidir = bool(bidir_indices)
     total_records = 0
     total_nonzero_records = 0
-    last_seq = [0, 0, 0, 0]  # per motor: highest capture sequence seen
-    missed = 0               # captures published but never seen
+    last_value = [0, 0, 0, 0]  # per motor: the capture value last seen (0 = none yet)
+    published = [0, 0, 0, 0]   # per motor: captures published since ARMED, from the token's steps
+    missed = 0                 # captures published but never seen
     last_record_us = None
     largest_gap_us = 0
-    max_age_us = 0
     outcome = "failed"
     arm_times = [None, None]  # ticks_us of arm() and of ARMED, filled in by arm_group()
     tallies = {i: DecodeTally() for i in bidir_indices}
@@ -277,7 +275,7 @@ def run_scenario():
         last_status_ms = run_start
         # Reused every iteration below instead of allocating a fresh list each
         # pass - this loop runs for the whole scenario at poll_ms cadence
-        words = [RECORD_ZERO_WORDS] * 4
+        words = [0, 0, 0, 0]
 
         # Status snapshots are stored as raw numbers in preallocated arrays
         # while the loop runs - no string formatting, no print(), no file
@@ -315,36 +313,41 @@ def run_scenario():
             # One record per pass in which any motor has a capture it has not
             # shown before; the other motors' word slots stay zero
             for i in range(4):
-                words[i] = RECORD_ZERO_WORDS
-            record_us = None
+                words[i] = 0
+            new_capture = False
             for index in bidir_indices:
                 capture = group.raw_telemetry(index)
-                if capture is None:
+                if capture is None or capture == last_value[index]:
                     continue
-                ticks_us, seq, capture_words = capture
-                if seq == last_seq[index]:
-                    continue
-                if seq < last_seq[index]:
-                    raise RuntimeError("capture sequence went backwards on motor " + str(index))
-                missed += seq - last_seq[index] - 1
-                last_seq[index] = seq
-                words[index] = capture_words
-                if any(capture_words):
+                # The token steps by one per publish and wraps at TOKEN_MAX, so the
+                # step since the last capture seen counts the captures published in
+                # between (exact while fewer than TOKEN_MAX arrive between two polls,
+                # about 146ms at the maximum rate - a longer gap also fails the
+                # scenario's own max_gap_ms). The same token with a new frame is a
+                # whole lap.
+                step = ((capture >> FRAME_BITS) - (last_value[index] >> FRAME_BITS)) % TOKEN_MAX
+                if step == 0:
+                    step = TOKEN_MAX
+                published[index] += step
+                missed += step - 1
+                last_value[index] = capture
+                frame = capture & FRAME_MASK
+                words[index] = frame
+                new_capture = True
+                if frame:
                     seen[index] += 1
                     if is_sampled(seen[index], scenario.decode_every):
-                        result = group.decode_telemetry(index, capture_words)
+                        result = group.decode_telemetry(index, capture)
                         tallies[index].add(result)
                         if result is not None and result["crc_ok"] and not result["not_running"]:
                             spin_watches[index].note_spin(elapsed_ms)
-                if record_us is None or utime.ticks_diff(ticks_us, record_us) > 0:
-                    record_us = ticks_us
-                age_us = utime.ticks_diff(utime.ticks_us(), ticks_us)
-                if age_us > max_age_us:
-                    max_age_us = age_us
 
-            if record_us is not None:
+            if new_capture:
+                # No timestamp travels with a capture: the record is stamped when
+                # Core 0 sees the value change, at the resolution of its own poll
+                record_us = utime.ticks_us()
                 total_records += 1
-                if any(any(w) for w in words):
+                if any(words):
                     total_nonzero_records += 1
                 sink.write_record(record_us, throttles, words)
                 if last_record_us is not None:
@@ -413,7 +416,7 @@ def run_scenario():
                 elapsed_s, status_records[i], status_nonzero[i], status_missed[i],
                 rate, status_gap_us[i] / 1000))
 
-        published = {i: last_seq[i] for i in bidir_indices}
+        published_by_motor = {i: published[i] for i in bidir_indices}
         # The thresholds are judged on a run that reached its end; one that was
         # cut short (a gap or rate threshold, a Core 1 error) has no verdict
         if outcome != "completed":
@@ -446,7 +449,7 @@ def run_scenario():
         if arm_times[1] is not None:
             # Time 0 for scripts/classify_reply_timeline.py
             extra["armed_ticks_us"] = arm_times[1]
-        sink.finalize(outcome, total_records, missed, largest_gap_us, published, tallies, verdict, extra)
+        sink.finalize(outcome, total_records, missed, largest_gap_us, published_by_motor, tallies, verdict, extra)
         sink.close()
         print("SD card flushed and unmounted.")
 
@@ -459,10 +462,9 @@ def run_scenario():
         print("Outcome:", outcome)
         print("Records (captures seen for the first time):", total_records)
         print("Records with a real (non-all-zero) reply:", total_nonzero_records)
-        print("Captures published (last sequence per motor):", published)
+        print("Captures published (counted from the token steps, per motor):", published_by_motor)
         print("Captures published but never seen:", missed)
         print("Largest gap between records: {:.1f}ms".format(largest_gap_us / 1000))
-        print("Oldest capture at the moment it was read: {:.1f}ms".format(max_age_us / 1000))
         if runner is not None and runner.schedule_behind_count:
             print("WARNING: the deadline schedule fell behind {} time(s) - update() cost "
                   "exceeded core1_interval_us for at least that many ticks".format(

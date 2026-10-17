@@ -15,6 +15,7 @@ from fakes import Clock, Pin
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, UnsupportedOperationException,
                        DSHOT_SPEEDS, dshot_bidir_rx_frame)
 from dshot_profiles import frame_rx_speed
+from capture_mailbox import FRAME_BITS, FRAME_MASK
 from gcr_decode import AM32_NOT_RUNNING_FRAME
 from motor_group import (MotorGroup, MotorGroupException,
                                   DISARMED, ARMING, ARMED)
@@ -296,28 +297,32 @@ class UpdateOrderTest(GroupTestCase):
                 real()
             motor.send_zero = send_zero
             if motor.bidirectional:
-                def drain(publish, i=i, real=motor.drain_rx):
-                    log.append(("drain", i, publish))
-                    return real(publish)
+                def drain(i=i, real=motor.drain_rx):
+                    log.append(("drain", i))
+                    return real()
                 motor.drain_rx = drain
+                def discard(i=i, real=motor.discard_rx):
+                    log.append(("discard", i))
+                    return real()
+                motor.discard_rx = discard
         return self.make(motors), log
 
-    def assert_drains_come_first(self, log, publish):
-        self.assertEqual(log, [("drain", 0, publish), ("drain", 2, publish),
+    def assert_drains_come_first(self, log, kind):
+        self.assertEqual(log, [(kind, 0), (kind, 2),
                                ("send", 0), ("send", 1), ("send", 2), ("send", 3)])
 
     def test_while_arming(self):
         group, log = self.logged_group()
         group.arm(ARM_MS)
         group.update()
-        self.assert_drains_come_first(log, False)
+        self.assert_drains_come_first(log, "discard")
 
     def test_while_armed(self):
         group, log = self.logged_group()
         self.arm_fully(group)
         del log[:]
         group.update()
-        self.assert_drains_come_first(log, True)
+        self.assert_drains_come_first(log, "drain")
 
 
 class DisarmTest(GroupTestCase):
@@ -472,7 +477,7 @@ class TelemetryTest(GroupTestCase):
         # the motor's slot by another route is still not handed out before ARMED
         self.group.arm(ARM_MS)
         self.motor.rx_sm.feed(self.CAPTURE)
-        self.motor.drain_rx(True)
+        self.motor.drain_rx()
         self.assertIsNotNone(self.motor.latest_capture())
         self.assertIsNone(self.group.raw_telemetry(0))
 
@@ -483,32 +488,20 @@ class TelemetryTest(GroupTestCase):
         self.assertEqual(self.motor.rx_sm.rx_fifo(), 0, "they were taken from the receiver...")
         self.assertIsNone(self.group.raw_telemetry(0), "...but not published")
 
-    def test_publish_while_arming_keeps_arming_replies_on_the_motor_only(self):
-        self.group.publish_while_arming = True
-        self.group.arm(ARM_MS)
-        self.motor.rx_sm.feed(self.CAPTURE)
-        self.group.update()
-        self.assertEqual(self.motor.latest_capture()[1:], (1, self.CAPTURE),
-                         "published to the motor's slot...")
-        self.assertIsNone(self.group.raw_telemetry(0), "...but still withheld by the group")
-        self.run_until_armed(self.group)
-        self.assertEqual(self.group.raw_telemetry(0)[2], (AM32_NOT_RUNNING_FRAME,),
-                         "handed out once ARMED: the last reply published while arming")
-
-    def test_a_reply_after_arming_is_handed_out_with_its_sequence(self):
+    def test_a_reply_after_arming_is_handed_out_as_one_value(self):
         self.arm_fully(self.group)
         self.motor.rx_sm.feed(self.CAPTURE)
         self.group.update()
-        ticks_us, sequence, words = self.group.raw_telemetry(0)
-        self.assertEqual(sequence, 1)
-        self.assertEqual(words, self.CAPTURE)
+        value = self.group.raw_telemetry(0)
+        self.assertEqual(value & FRAME_MASK, self.CAPTURE[0])
+        self.assertGreater(value >> FRAME_BITS, 0, "carrying a token above the frame")
 
     def test_the_latest_capture_replaces_earlier_ones(self):
         self.arm_fully(self.group)
         for marker in (1, 2, 3):
             self.motor.rx_sm.feed([marker])
             self.group.update()
-        self.assertEqual(self.group.raw_telemetry(0)[1:], (3, (3,)))
+        self.assertEqual(self.group.raw_telemetry(0) & FRAME_MASK, 3)
 
     def test_disarm_takes_the_captures_away_again(self):
         self.arm_fully(self.group)
@@ -530,14 +523,20 @@ class TelemetryTest(GroupTestCase):
     def test_decode_telemetry_uses_analyze_frame(self):
         motor = BidirectionalDShot(4, Pin(8), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=5)
         group = self.make([motor])
-        result = group.decode_telemetry(0, self.CAPTURE)
+        result = group.decode_telemetry(0, self.CAPTURE[0])
         self.assertTrue(result["crc_ok"])
         self.assertAlmostEqual(result["erpm"], 48859.9, places=1)
         self.assertIsNone(result["period_cycles"], "the frame receiver measures no period per capture")
 
+    def test_decode_telemetry_ignores_the_token_above_the_frame(self):
+        motor = BidirectionalDShot(4, Pin(8), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=5)
+        group = self.make([motor])
+        with_token = (300 << FRAME_BITS) | self.CAPTURE[0]
+        self.assertEqual(group.decode_telemetry(0, with_token), group.decode_telemetry(0, self.CAPTURE[0]))
+
     def test_decode_telemetry_raises_for_a_unidirectional_motor(self):
         with self.assertRaises(UnsupportedOperationException):
-            self.group.decode_telemetry(1, self.CAPTURE)
+            self.group.decode_telemetry(1, self.CAPTURE[0])
 
     def test_decode_telemetry_rejects_a_bad_index(self):
         with self.assertRaises(MotorGroupException):

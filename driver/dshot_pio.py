@@ -9,7 +9,7 @@ from machine import Pin
 from rp2 import PIO, StateMachine, asm_pio
 
 import gcr_decode
-from capture_mailbox import CaptureMailbox
+from capture_mailbox import CaptureMailbox, FRAME_MASK
 from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES, FRAME_CYCLES_PER_BIT, frame_rx_speed
 
 # Highest value the 11-bit throttle field of a DShot packet can carry. A module
@@ -351,7 +351,7 @@ class DShotPIO:
     def latest_capture(self):
         raise UnsupportedOperationException("This motor captures no telemetry")
 
-    def decode_capture(self, words):
+    def decode_capture(self, value):
         raise UnsupportedOperationException("This motor captures no telemetry")
 
 
@@ -471,23 +471,26 @@ class BidirectionalDShot(DShotPIO):
         # Assembles replies from the RX FIFO and holds the latest one for the
         # application to read from another core.
         #
-        # drain_rx(publish) empties the RX FIFO. Call it on every command-loop
-        # tick: an undrained FIFO stalls the RX state machine, losing replies
-        # until it is drained again (see ADR-002). It takes whole (1-word)
-        # captures only, leaving fewer waiting words for the next call, so
-        # the grouping cannot slip; a completed capture replaces
-        # the single published one (read it with latest_capture()) when
-        # `publish` is true and is dropped otherwise. It takes at most
-        # RX_DRAIN_LIMIT captures per call, does no decoding (that is the
-        # application's job, on its own schedule - see decode_capture()), and
-        # must be called from one place only (MotorGroup.update()): while the
-        # loop runs it is the only writer of the published capture.
+        # drain_rx() and discard_rx() empty the RX FIFO. Call one of them on
+        # every command-loop tick: an undrained FIFO stalls the RX state
+        # machine, losing replies until it is drained again (see ADR-002). They
+        # take whole (1-word) captures only, leaving fewer waiting words for
+        # the next call, so the grouping cannot slip. drain_rx() publishes: a
+        # completed capture replaces the single published one (read it with
+        # latest_capture()). discard_rx() drops them, for the arming window,
+        # when replies are not yet trusted. Both take at most RX_DRAIN_LIMIT
+        # captures per call, count AM32's not-running replies, do no decoding
+        # (that is the application's job, on its own schedule - see
+        # decode_capture()), and must be called from one place only
+        # (MotorGroup.update()): while the loop runs it is the only writer of
+        # the published capture.
         #
         # It is the mailbox's own method, bound here, rather than a method of
         # this class that calls the mailbox: it runs on every tick, and a
         # Python-level call layer per tick measurably slowed the command loop.
-        self.mailbox = CaptureMailbox(self.rx_sm, self.RX_DRAIN_LIMIT, utime.ticks_us)
+        self.mailbox = CaptureMailbox(self.rx_sm, self.RX_DRAIN_LIMIT)
         self.drain_rx = self.mailbox.drain
+        self.discard_rx = self.mailbox.discard
 
     def init_state_machines(self):
         """
@@ -538,29 +541,29 @@ class BidirectionalDShot(DShotPIO):
 
     def latest_capture(self):
         """
-        Return the latest published capture as (ticks_us, sequence, words), or
-        None if there is none to hand out right now: nothing has been published
-        since start(), or the writer kept rewriting it for every attempt (see
-        CaptureMailbox). Callers polling for telemetry treat both the same way -
-        ask again later.
+        Return the latest published capture as one integer, or None while
+        nothing has been published since start().
 
-        ticks_us is utime.ticks_us() at publication (wraps - compare with
-        ticks_diff). sequence counts published captures since start(), so a
-        caller can tell a fresh capture from one it has already seen. words is
-        a 1-tuple holding this motor's latest raw 32-bit RX word (see
-        rx_read()). Safe to call from a different core than drain_rx().
+        The integer is the reply frame in its low 21 bits and a token above
+        them that steps on every publish (see CaptureMailbox), so a caller
+        that keeps the last value it saw knows a capture is new when the value
+        differs. It carries no timestamp: a caller that wants a time takes its
+        own when the value changes. Pass it to decode_capture() as it is.
+        One load of one array element, so safe to call from a different core
+        than drain_rx() and never retried.
         """
         return self.mailbox.latest()
 
-    def decode_capture(self, words):
+    def decode_capture(self, value):
         """
-        Decode one raw capture and return gcr_decode.analyze_frame()'s result
+        Decode one capture, as latest_capture() returned it, and return
+        gcr_decode.analyze_frame()'s result
         dict - crc_ok is the validity signal, a capture that is complete and
         correctly framed can still fail it. The receiver already did the
         reconstruction, so this is decode() plus check_crc() and a small
         dict - see ADR-002 for the measured cost.
         """
-        return gcr_decode.analyze_frame(words[0])
+        return gcr_decode.analyze_frame(value & FRAME_MASK)
 
     # One shutdown-only wait, not on any hot path: the ESC's reply to the last
     # frame TX sent is still in flight for a while after TX's own last bit -

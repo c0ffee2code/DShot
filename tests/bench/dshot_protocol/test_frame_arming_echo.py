@@ -5,7 +5,7 @@
 # the arming window - before the ESC has locked onto bidirectional DShot and
 # started sending real GCR replies - a capture can just as easily be TX's own
 # waveform as a genuine reply. MotorGroup.arm()/update() already discards
-# every capture taken during ARMING (drain_rx(False)), so this never reaches
+# every capture taken during ARMING (discard_rx()), so this never reaches
 # an application; what hasn't been checked is what these discarded captures
 # actually look like, and whether they could pass CRC by chance.
 #

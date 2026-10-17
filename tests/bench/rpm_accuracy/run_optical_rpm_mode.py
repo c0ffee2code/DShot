@@ -30,8 +30,6 @@ MAX_WINDOW_MS = 10000    # ... or after this long (then it raises if short of MI
 SETTLE_MS = 1500         # the motor speeds up before the window opens
 ARM_MS = 2000
 ARM_TIMEOUT_MS = ARM_MS + 16000
-# update() paced like a flight controller's loop, as in test_esc_rpm_vs_optical_rpm.py
-UPDATE_INTERVAL_US = 1000
 MAX_EDGES = 2048
 
 edge_us = array('I', [0] * MAX_EDGES)
@@ -81,7 +79,7 @@ def main():
 
     sensor = Pin(SENSOR_PIN, Pin.IN)
     group = build_group(speed, bidirectional)
-    runner = Core1Runner(group.update, UPDATE_INTERVAL_US)
+    runner = Core1Runner(group.update, group.UPDATE_INTERVAL_US)
     runner.start()
     window_first = None
     window_end = None
