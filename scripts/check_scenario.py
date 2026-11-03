@@ -4,7 +4,7 @@ hardware involved. Prints each motor's compiled throttle waypoints so a
 ramp/repeat expansion can be eyeballed before ever touching hardware.
 
 Run from project root:
-  python scripts/check_scenario.py tests/bench/dshot_protocol/scenarios/two_channel_divergent_300.json
+  python scripts/check_scenario.py tests/bench/dshot_protocol/scenarios/four_channel_bidirectional_600.json
 
 Reuses tests/bench/scenario.py and throttle_profile.py unmodified - they
 avoid MicroPython-only APIs, so the exact same validation this script runs

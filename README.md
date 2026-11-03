@@ -21,13 +21,13 @@ trail for some of the library's conservative defaults, not as current hardware.
 | **Controller** | Raspberry Pi Pico 2 | RP2350, dual ARM Cortex-M33, 150MHz |
 | **Motors** | BETAFPV LAVA Series 1104 (×2) | 7200KV, 5.3g, 12 rotor magnets (6 pole pairs) |
 | **ESC** | Skystar RC KM55A2 (4-in-1) | AM32 firmware |
-| **Optical RPM sensor** | Adafruit STEMMA reflective photo interrupt sensor (TCRT1000) | GPIO 14, 3.3V; 2-hole printed disk on motor 1's shaft |
+| **Optical RPM sensor** | Adafruit STEMMA reflective photo interrupt sensor (TCRT1000) | GPIO 14, 3.3V; 2-hole printed disk on motor 1's shaft. **Not mounted now** (owner, 2026-11-02): the disk and sensor tests were removed, see backlog item W41 |
 
 The 12-magnet count is not on BETAFPV's product page; it was counted by eye on the rotor and then
 confirmed by measurement: the optical RPM sensor gave eRPM / shaft RPM = 6.02-6.05 at throttle 60-100
-(`tests/bench/rpm_accuracy/test_esc_rpm_vs_optical_rpm.py`). The ESC reports **electrical** RPM, so shaft RPM = eRPM / 6 here
+(the test, removed 2026-11-02, is in git before the removal commit). The ESC reports **electrical** RPM, so shaft RPM = eRPM / 6 here
 (about 3,400 RPM at throttle 100, which the ESC reports as about 20,600 eRPM). Each scenario file
-carries the motor's name, KV and magnet count in a `hardware` block, and a session's `meta.txt`
+carries the motor's name, KV and magnet count in a `hardware` block, and a session's `device` record in `session.json`
 records them.
 
 ### Test Bench Configuration
@@ -72,7 +72,7 @@ requirements that drive it.
 │   UI, control algorithms, sensors   │
 │   OWNS THE COMMAND LOOP             │
 └──────────────────┬──────────────────┘
-                   │ update()  ── as fast as UPDATE_INTERVAL_US allows
+                   │ update()  ── every UPDATE_INTERVAL_US, at a steady period
                    │ set_throttle()
                    ▼
 ┌─────────────────────────────────────┐
@@ -89,10 +89,10 @@ requirements that drive it.
 ```
 
 ESCs disarm if commands stop arriving, so whatever context you choose must call
-`update()` continuously, without long or irregular gaps. How fast depends on
-the ESC firmware - see "Verified Parameters" below; on this bench, AM32 arms reliably both with
+`update()` at a steady period (`MotorGroup.UPDATE_INTERVAL_US`), without long or irregular gaps. How fast depends on
+the ESC firmware - see "Verified Parameters" below; on this bench, AM32 arms reliably with
 `Core1Runner`'s deadline-anchored pacing at 1045us (20/20, then 13/13 clean in later spot checks)
-and with `MotorGroup.UPDATE_INTERVAL_US`'s own default, max-rate/no-pacing (0us). On this test
+- which is `MotorGroup.UPDATE_INTERVAL_US`, the only mode since 2026-10-19 (the earlier max-rate/no-pacing default, 0us, was removed). On this test
 bench that means a dedicated Core 1 thread, keeping Core 0 free for the display and buttons -
 see `tests/bench/core1_runner.py` for a ready-made example to copy into your project.
 
@@ -173,10 +173,12 @@ Core 1 is busy or unavailable:
 
 ```python
 motors.arm()
+next_due = utime.ticks_us()
 while True:
-    motors.update()          # must happen continuously, without long gaps
-    ...your work here...
-    utime.sleep_us(motors.UPDATE_INTERVAL_US)
+    motors.update()          # must happen at a steady period, without long gaps
+    ...your work here, well under UPDATE_INTERVAL_US...
+    next_due = utime.ticks_add(next_due, motors.UPDATE_INTERVAL_US)
+    utime.sleep_us(max(0, utime.ticks_diff(next_due, utime.ticks_us())))
 ```
 
 ## Operational Envelope
@@ -187,8 +189,10 @@ What this driver guarantees, and what it does not.
 |-----------|-------|
 | Arming success rate | **≥ 99%** of `arm()` attempts reach `ARMED` |
 | Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
-| Throttle range | `0` (stop) or `48`-`2047`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) |
+| Throttle range | `0` (stop) or `48`-`250`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) and, as a temporary bench ceiling, anything above `250` (`THROTTLE_CEILING` in `driver/dshot_pio.py`) |
 | ESC firmware | AM32 only |
+| AM32 input match | Measured on the wire with a second Pico recording the signal lines, no ESC (2026-10-28, unidirectional frames, DSHOT600 and DSHOT300, `tests/bench/wingman/tools/spy_am32_table.py`): every bit reads the same under AM32's own decision rule as in our decoder (0 of 74,752 differ per run), with margins of 0.18 / 0.44 us (DSHOT600) and 0.37 / 0.88 us (DSHOT300) for the 0 and 1 bits; frame length within 2.7% of the window AM32 learns (limit 6.25%); correct CRC polarity and no command values in every frame. With one ESC attached (bidirectional, single motor, throttle 100, DSHOT600 and DSHOT300): the ESC's first reply after 104 frames (latch 101 in AM32's source), every frame answered outside its 301 ms arming silence (which starts 1020 ms after our first frame, as the source's 1.02 s gate predicts), no CRC errors in 9,309 replies per run, the start glitch `data12=2` sent by the ESC itself for 6-9 replies after the throttle step (BUG-009). Other motors, throttles and ESCs not yet covered |
+| Start quality | **Pending - not yet guaranteed.** Scope (owner, 2026-11-02): all four motors with Gemfan 2218 3-Blade props (no RPM disks, no heavier or draggier props). Target: **≥ 99%** of runs that succeed when jumped from `0` to throttle 215: all four motors spin up and hold, and the slowest spin-up is within 0.5 s (provisional limit); a drone with fewer than four motors turning does not fly. Defined in `bug-reports/BUG-009-motors-sometimes-start-rough.md` ("Current KPI"), measured from the spy's telemetry in each session's `summary.json`. Baseline 2026-11-01: all four held in 28 of 28 runs, 26 of 28 fully succeed (93%, exact one-sided 95% lower bound 79%). Second batch 2026-11-02, 32 runs: 30 of 32 fully succeed, both failures a slow GPIO 6 spin-up; the cause is not found (BUG-009 "Result 4" to "Result 6") |
 
 An attempt that has not reached `ARMED` within 3.0 s counts as a failure, even if it arms later
 after an ESC reboot. Not guaranteed: DShot commands, other ESC firmware, motor behaviour after
@@ -206,7 +210,7 @@ measured requirements.
 |-----------|------------------------|
 | Protocol | DShot300 and DShot600, both bench-verified (the command-interval and arming-duration rows below don't depend on which) |
 | Minimum throttle | 60 confirmed spinning (DShot300, ADR-002; BUG-009 tracks an open rough-start question at low throttle) - 1-47 are special commands, not throttle: `MotorGroup.set_throttle()` rejects them (see `specification/DSHOT.md`, BUG-005) |
-| Command interval | Two mechanisms both bench-confirmed reliable post-BUG-002: `Core1Runner`'s deadline-anchored pacing at 1045us (20/20 clean, then 13/13 in later spot checks, see BUG-002.md) and max-rate/no-pacing (`UPDATE_INTERVAL_US=0`, the library default). An earlier (2026-08-23) bring-up failure at "1kHz/500ms" was never a clean test of pacing specifically - its 500ms arm window is well under AM32's own >1.6s gate (`specification/AM32.md`#16) by itself, so that result doesn't isolate what role pacing played, if any |
+| Command interval | One mechanism: `Core1Runner`'s deadline-anchored pacing at `MotorGroup.UPDATE_INTERVAL_US` = 1045us (20/20 clean, then 13/13 in later spot checks, see BUG-002.md). It is the only mode: an unpaced loop (`update()` back to back, as fast as it returns) was the library default until 2026-10-19 and was removed, and a scenario can no longer set its own period. The 2026-10-13/14 arming evidence (104/104) was gathered on the old unpaced loop and has to be repeated on this one. An earlier (2026-08-23) bring-up failure at "1kHz/500ms" was never a clean test of pacing specifically - its 500ms arm window is well under AM32's own >1.6s gate (`specification/AM32.md`#16) by itself, so that result doesn't isolate what role pacing played, if any |
 | Arming duration | The published promise is >=99% within 3.0 s (see "Operational Envelope"). Window: 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below. With bidirectional motors it is a floor: `ARMED` also waits until every ESC has replied "not running" for 2s without a reboot-length gap (`READY_SPAN_MS`, bug-reports/BUG-003) - measured about 2.03s on the 100-run batch of 2026-10-14 (99 of 100 runs between 2026 and 2028ms, one at 2516ms), several seconds if an ESC reboots while arming |
 
 Earlier revisions of this table claimed 500ms (down to 300ms) armed cleanly, "confirmed via
@@ -240,10 +244,9 @@ that the motor is actually armed and spinning.
 │   ├── pc/                          # PC unit tests (python -m unittest discover -s tests/pc)
 │   └── bench/                       # tests that run on the Pico with the bench attached
 │       ├── core1_runner.py          # Core 1 update() loop + fast_stop, shared by the groups below
-│       ├── session_recorder/        # SD-card/RTC session recorder
+│       ├── session_recorder/        # SD-card session recorder
 │       ├── dshot_protocol/          # scenario runner + JSON scenarios, single-motor ESC probes
 │       ├── pio_and_cores/           # PIO and two-core checks (Pico only, no ESC)
-│       └── rpm_accuracy/            # ESC eRPM vs physical RPM from the reflective sensor
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
 ├── specification/
 │   ├── DSHOT.md                      # Wire protocol (vendor/host-agnostic)
@@ -277,6 +280,7 @@ a reference flight-controller host drives it.
 |---------|--------|--------------|
 | **DShot commands** | TODO | No driver-side command API yet (BUG-005's prerequisite is done: `MotorGroup` rejects 1-47, so a command API needs its own entry point, not `set_throttle()`). AM32 itself implements commands (`specification/AM32.md`#7), and this bench has already heard a `BEEP1` while armed (see above - sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, in production use |
+| **Smooth start** | In progress | KPI defined in BUG-009; recording test built; the first baselines ran on the old unpaced loop and must be recorded again on the paced one before any limit is set |
 | **Extended telemetry (EDT)** | TODO | Current AM32 source already implements it (`specification/AM32.md`#10) - whether this bench's own flashed build does is unconfirmed (see ADR-002's MCU-identification note). This driver's own decoder doesn't yet discriminate an EDT frame from an eRPM frame either way |
 
 See `decision/` folder for Architecture Decision Records (ADRs).

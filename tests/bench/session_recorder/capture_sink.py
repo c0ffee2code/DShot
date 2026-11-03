@@ -1,15 +1,15 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library.
 #
-# The SD card, RTC and session-folder lifecycle shared by the capture sinks
+# The SD card and session-folder lifecycle shared by the capture sinks
 # (bidir_capture_sink.py today; other sinks would add only what differs: their
 # record format, what they write as provenance, and their meta fields).
 #
 # PicoBell Adalogger for Pico pinout (learn.adafruit.com/
 # adafruit-picowbell-adalogger-for-pico/pinouts): SD card on SPI0
-# (MISO=GPIO16, CS=GPIO17, SCK=GPIO18, MOSI=GPIO19), PCF8523 RTC on I2C
-# (SDA=GPIO4, SCL=GPIO5, address 0x68). All four DShot channels in
+# (MISO=GPIO16, CS=GPIO17, SCK=GPIO18, MOSI=GPIO19). The board's PCF8523 RTC is not used: the PC names
+# every session (scripts/run_session.py, session_name.txt). All four DShot channels in
 # tests/bench/dshot_protocol/run_scenario.py sit on a contiguous GPIO6-9 block, clear of
-# both this board's I2C pins and its SD card's GPIO16-19.
+# the board's I2C pins (GPIO4-5) and its SD card's GPIO16-19.
 #
 # Mirrors the SdSink lifecycle proven on the sister test rig (Flight-Benchy,
 # src/telemetry/recorder.py: mount early/fail-fast, open a session directory
@@ -18,20 +18,27 @@
 import os
 import struct
 import time
-from machine import Pin, SPI, I2C
+from machine import Pin, SPI
 
 import sdcard
-from pcf8523 import PCF8523
 
 SD_SCK = 18
 SD_MOSI = 19
 SD_MISO = 16
 SD_CS = 17
-RTC_SDA = 4
-RTC_SCL = 5
 
 SD_MOUNT = "/sd"
 LOG_DIR = SD_MOUNT + "/dshot_captures"
+
+
+def session_name_from_pc():
+    """The session name scripts/run_test.py / run_session.py chose (uploaded as session_name.txt). Raises
+    OSError when there is none: every session is named by the PC, the Pico has no clock."""
+    with open("session_name.txt") as f:
+        name = f.read().strip()
+    if not name:
+        raise OSError("session_name.txt is empty")
+    return name
 
 
 class CaptureSinkBase:
@@ -52,33 +59,26 @@ class CaptureSinkBase:
         self.vfs = os.VfsFat(self.sd)
         os.mount(self.vfs, SD_MOUNT)
 
-        self.i2c = I2C(0, sda=Pin(RTC_SDA), scl=Pin(RTC_SCL))
-        self.rtc = PCF8523(self.i2c)
-
         self.run_dir = None
         self.file = None
         self.pack_buf = bytearray(struct.calcsize(self.RECORD_FMT))
         self.meta = {}
 
     def create_session_dir(self, meta):
-        """Create the timestamped run directory and write its first meta.txt.
+        """Create the session directory and write its first meta.txt.
 
         `meta` becomes the session's key=value metadata (see finalize_meta()
         for updating it once the run ends).
 
-        Raises OSError if the RTC hasn't been set yet (see scripts/set_rtc.py) -
-        surfaced here rather than silently falling back to a fake timestamp,
-        since a wrong session name is worse than a clear failure.
+        The folder is named by the PC (session_name.txt, see session_name_from_pc()); no name raises OSError
+        before anything is armed.
         """
         try:
             os.mkdir(LOG_DIR)
         except OSError:
             pass  # already exists
 
-        dt = self.rtc.datetime()
-        self.run_dir = "{}/{:04d}-{:02d}-{:02d}_{:02d}-{:02d}-{:02d}".format(
-            LOG_DIR, dt[0], dt[1], dt[2], dt[4], dt[5], dt[6]
-        )
+        self.run_dir = LOG_DIR + "/" + session_name_from_pc()
         os.mkdir(self.run_dir)
 
         self.meta = meta

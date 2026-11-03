@@ -1,0 +1,102 @@
+{
+  "_comment": "MATCHED PAIR with four_channel_unidirectional_600.json: the same duration (20 s), arm window, poll_ms (10), DSHOT600, motors, hardware and throttle profile (all four channels hold throttle 215 for the whole run; 0 to that value is a single step after arming); the ONLY difference is that this file's motors are bidirectional (replies are read; the expect thresholds judge them: CRC-valid share, median eRPM, longest wait between new captures; min_record_rate_hz is left out because with a 10 ms poll the pass rate is capped near 100 per second and has not been measured). Compare the two and the difference is the protocol. Channels 1 and 2 share PIO block 0 (sm0/rx1 and sm2/rx3), channels 3 and 4 share PIO block 1 (sm4/rx5 and sm6/rx7); two bidirectional motors may share a block, a unidirectional one may not (so the unidirectional file uses one state machine per channel). ",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 20000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 5000,
+  "poll_ms": 10,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "1": 99.0,
+      "2": 99.0,
+      "3": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "1": 10000,
+      "2": 10000,
+      "3": 10000
+    }
+  },
+  "motors": [
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 6,
+      "sm_id": 0,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 215,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": true
+    },
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 7,
+      "sm_id": 2,
+      "rx_sm_id": 3,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 215,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": true
+    },
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 8,
+      "sm_id": 4,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 215,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": true
+    },
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 9,
+      "sm_id": 6,
+      "rx_sm_id": 7,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 215,
+          "duration_ms": 20000
+        }
+      ],
+      "bidirectional": true
+    }
+  ],
+  "decode_every": 50
+}

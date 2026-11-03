@@ -32,6 +32,7 @@
 import struct
 import sys
 from pathlib import Path
+import session_files  # noqa: E402
 
 RECORD_FMT = "<I4H4I"
 RECORD_SIZE = struct.calcsize(RECORD_FMT)
@@ -48,13 +49,7 @@ def ticks_diff(a, b):
 
 
 def read_meta(session_dir):
-    meta = {}
-    path = session_dir / "meta.txt"
-    for line in path.read_text().splitlines():
-        if "=" in line:
-            key, _, value = line.partition("=")
-            meta[key] = value
-    return meta
+    return session_files.load_device_meta(session_dir)
 
 
 def read_records(arming_bin_path):
@@ -279,7 +274,8 @@ def by_scenario(session_dirs):
             continue
         bidir_indices = [int(x) for x in meta["bidir_motor_indices"].split(",")]
         n_bidir = len(bidir_indices)
-        interval = scenario.get("core1_interval_us")
+        period = meta.get("update_interval_us")
+        interval = int(period) if period else scenario.get("core1_interval_us") or "unrecorded (before 2026-10-19: unpaced)"
         fixed_sched = scenario.get("core1_fixed_schedule", False)
         comment = scenario.get("_comment", "")[:80]
         key = (n_bidir, interval, fixed_sched, comment)

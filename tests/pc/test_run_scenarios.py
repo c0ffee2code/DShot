@@ -54,6 +54,12 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(f["margin_ms"], str(CLEAN_ARM_THRESHOLD_MS - 2027))
         self.assertEqual((f["pass_so_far"], f["fail_so_far"]), ("3", "0"))
 
+    def test_the_start_kpi_of_the_run_is_two_more_fields(self):
+        _, f = self.parse(run_record(1, 5, "a.json", "pass", "clean", 2112, "s", 1, 0, 0, "pass", "slow", 1052.4))
+        self.assertEqual((f["start"], f["spin_up_max_ms"]), ("slow", "1052"))
+        _, g = self.parse(run_record(1, 5, "a.json", "pass", "clean", 2112, "s", 1, 0, 0, "pass"))
+        self.assertNotIn("start", g)
+
     def test_a_late_arm_is_a_fail_with_its_time_and_no_margin(self):
         _, f = self.parse(run_record(1, 5, "a.json", "fail", "reboot", 4600, "s", 0, 1, 0))
         self.assertEqual((f["verdict"], f["armed_ms"]), ("fail", "4600"))
@@ -66,6 +72,40 @@ class RecordTest(unittest.TestCase):
 
     def test_fields_keeps_order_and_skips_none(self):
         self.assertEqual(fields("X", a=1, b=None, c="z"), "X a=1 c=z")
+
+
+class BatchFailureTest(unittest.TestCase):
+    def patch_session(self, fn):
+        import run_scenarios
+        self.addCleanup(setattr, run_scenarios.run_session, "run_session", run_scenarios.run_session.run_session)
+        run_scenarios.run_session.run_session = fn
+        return run_scenarios
+
+    def test_a_run_session_that_gives_up_is_an_error_not_a_crash(self):
+        def give_up(*a, **k):
+            raise SystemExit("the spy never reported that it is recording")
+        outcome, session, output, verdict = self.patch_session(give_up).run_once("x.json")
+        self.assertEqual("error", outcome)
+        self.assertIn("spy never reported", output)
+
+    def test_the_batch_stops_after_repeated_problems(self):
+        import io
+        from contextlib import redirect_stdout
+        calls = []
+
+        def give_up(*a, **k):
+            calls.append(1)
+            raise SystemExit("boom")
+        run_scenarios = self.patch_session(give_up)
+        scenario = Path(__file__)
+        out = io.StringIO()
+        old = sys.argv
+        sys.argv = ["run_scenarios.py", "--scenario", str(scenario), "--rounds", "10", "--load", "none"]
+        self.addCleanup(setattr, sys, "argv", old)
+        with redirect_stdout(out):
+            run_scenarios.main()
+        self.assertEqual(run_scenarios.MAX_CONSECUTIVE_PROBLEMS, len(calls))
+        self.assertIn("STOPPED", out.getvalue())
 
 
 if __name__ == "__main__":

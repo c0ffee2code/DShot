@@ -3,16 +3,19 @@ run_scenarios.py - run one or more scenarios repeatedly on the bench,
 tallying outcomes.
 
 Run from project root:
-  python scripts/run_scenarios.py --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_600.json --rounds 10
+  python scripts/run_scenarios.py --scenario tests/bench/dshot_protocol/scenarios/four_channel_bidirectional_600.json --rounds 10
   python scripts/run_scenarios.py --scenario A.json --scenario B.json --scenario C.json --rounds 8
       # interleaves A, B, C, in that order, for 8 rounds each (24 runs total),
       # so anything that drifts over the session lands on every configuration
       # alike rather than piling onto whichever runs first.
   --scenario also accepts a bare device script (under tests/bench/, a .py
-      path), run directly by name via run_test.py instead of as --scenario
+      path), run directly by name via run_session.py instead of as --scenario
       JSON - for interleaving a diagnostic tool against a real scenario under
       the exact same deploy/reset path (see run_once()'s own docstring)
-  add --pull to pull every session's captures at the end (scripts/pull_captures.py)
+  every attempt is a full session (scripts/run_session.py): its own captures/<session>/ folder with the
+      spy's recording and a summary.json, pulled from the SD card as the attempt ends; the RUN line
+      names it (session=) and carries its verdict (session_verdict=). Use scripts/session_summary.py on any of
+      them to see its table.
   add --rotate to cycle the --scenario order by one position each round
       (round 1: A,B,C; round 2: B,C,A; round 3: C,A,B; ...) so no scenario is
       always first or always last - without it, whichever comes last in a
@@ -20,7 +23,7 @@ Run from project root:
       same elapsed time since the batch started, which is itself a variable
       (bug-reports/BUG-002-...md's hypothesis 4, ESC-state carryover)
 
-Classification, per attempt, is read from run_test.py's own printed output -
+Classification, per attempt, is read from run_test.py's own printed output (the run_session.py returns it) -
 not its exit code. An on-device refusal (arm_group() raises inside
 run_scenario.py) and a genuine deploy failure both make run_test.py exit
 non-zero, so exit code alone can't tell them apart, and only one of those is
@@ -60,51 +63,55 @@ safe to retry:
 Output is line-oriented key=value, one fact per field, so a long batch can be
 filtered with grep or loaded into a table without parsing prose:
   RUN n= of= scenario= verdict=pass|fail|excluded outcome= armed_ms= margin_ms=
-      session= pass_so_far= fail_so_far= schedule_behind=
+      session= pass_so_far= fail_so_far= schedule_behind= session_verdict=pass|fail|unknown
+      start=ok|slow|fail|out_of_scope|unknown spin_up_max_ms=      (the start KPI of that run, scripts/start_kpi.py)
   RESULT scenario= attempts= pass= fail= pass_pct= fail_late= fail_refused=
       error= deploy_failed=
   ARMING_TIME scenario= successful= min_ms= median_ms= max_ms= limit_ms=
       marginal_band_ms= marginal=        (arms that passed only)
   SCHEDULE scenario= attempts= behind_total= behind_max=
+  START_KPI runs= all_spun_up= all_spun_up_pct= all_spun_up_lower95_pct= start_ok= start_ok_pct= start_ok_lower95_pct= runs_over_spin_up_limit=
+      spin_up_limit_ms= out_of_scope= skipped_no_start_block= clean_runs_for_99=      (over the sessions of this batch; the run is the unit)
+  SPIN_UP gpio= starts= not_spun_up= median_ms= p90_ms= max_ms= over_limit=      (one line per motor)
 pass = armed inside the bound; fail = armed late (an ESC reboot) or never armed;
 error and deploy_failed are excluded from the verdict. A field whose value is
 not known is left out of its line.
 
 The series summary also reports how often Core1Runner's deadline schedule
-fell behind (update() cost exceeded core1_interval_us for at least one tick),
+fell behind (update() cost exceeded UPDATE_INTERVAL_US for at least one tick),
 parsed from run_scenario.py's own WARNING line - total, average per attempt,
-and the worst single attempt. Zero for every attempt in a run with
-core1_interval_us<=0 (no fixed pacing: nothing to fall behind). Excludes
+and the worst single attempt. Every run is paced (an unpaced loop was
+removed 2026-10-19), so the count is always meaningful. Excludes
 deploy-failed attempts, which never reached the device.
 """
 
 import argparse
+import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 # When stdout isn't a real terminal (piped, redirected), Python fully
 # buffers it - our own prints would otherwise appear out of order against
-# child processes' directly-inherited output (pull_captures.py's, here) -
+# child processes' directly-inherited output -
 # see deploy.py's own copy of this line for the same reason.
 sys.stdout.reconfigure(line_buffering=True)
 
 ROOT = Path(__file__).resolve().parent.parent
-PYTHON = sys.executable
-RUN_TEST = ROOT / "scripts" / "run_test.py"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_session  # noqa: E402
+import start_kpi  # noqa: E402
 
 # A run that never got past deploy has no "failed 0" - matched separately
 # from a bare "Uploaded" line so a partial deploy (some files failed) is
 # still caught, not mistaken for success because the word appeared.
 DEPLOY_OK_RE = re.compile(r"Uploaded \d+, failed 0\.")
 REFUSED_RE = re.compile(r"arming did not complete within")
-SESSION_RE = re.compile(r"Session: */sd/dshot_captures/(\S+)")
 ARMED_AFTER_RE = re.compile(r"Armed after (\d+)ms\.")
 # run_scenario.py's own WARNING line (printed from its `finally`, so it's
 # there on clean/reboot/refused alike - anything that got far enough to
 # start Core1Runner) - see Core1Runner.schedule_behind_count's own docstring
-# for what "fell behind" means: update() cost exceeded core1_interval_us for
+# for what "fell behind" means: update() cost exceeded UPDATE_INTERVAL_US for
 # at least that many ticks. Absent entirely means 0, not unknown - the line
 # only prints when the count is nonzero.
 SCHEDULE_BEHIND_RE = re.compile(r"fell behind (\d+) time\(s\)")
@@ -160,8 +167,13 @@ def arming_time_summary(armed_ms, bound_ms=None, band_ms=None):
 # to paper over a real, repeated hardware problem.
 DEPLOY_RETRIES = 1
 
-# Comfortably past run_test.py's own 600s internal watchdog.
-ATTEMPT_TIMEOUT_S = 650
+# A batch that hits this many errors or deploy failures in a row stops: the bench is not in a state worth burning
+# more attempts on, and the output of the last attempts is printed above.
+MAX_CONSECUTIVE_PROBLEMS = 3
+
+
+class StopBatch(Exception):
+    pass
 
 
 def fields(label, **pairs):
@@ -180,7 +192,7 @@ def fields(label, **pairs):
 
 
 def run_record(index, total, scenario_name, verdict, outcome, armed_ms, session,
-               passes_so_far, fails_so_far, behind):
+               passes_so_far, fails_so_far, behind, session_verdict=None, start=None, spin_up_max_ms=None):
     """
     One line per attempt. verdict is pass / fail / excluded (see main());
     outcome is the finer classification (clean, reboot, refused, error,
@@ -192,72 +204,55 @@ def run_record(index, total, scenario_name, verdict, outcome, armed_ms, session,
     return fields("RUN", n=index, of=total, scenario=scenario_name, verdict=verdict,
                   outcome=outcome, armed_ms=armed_ms, margin_ms=margin_ms,
                   session=session, pass_so_far=passes_so_far, fail_so_far=fails_so_far,
-                  schedule_behind=behind)
+                  schedule_behind=behind, session_verdict=session_verdict, start=start,
+                  spin_up_max_ms=None if spin_up_max_ms is None else round(spin_up_max_ms))
 
 
-def run_once(scenario_path):
+def run_once(scenario_path, load=None):
     """
-    Run one scenario once via run_test.py, no retry (see run_attempt()).
-    Returns (outcome, session_name, output); outcome is one of
-    "deploy_failed", "clean", "reboot", "refused", "error".
+    Run one scenario once as a full session (scripts/run_session.py: session folder, spy, summary.json),
+    no retry (see run_attempt()).
+    Returns (outcome, session_name, output, session_verdict); outcome is one of
+    "deploy_failed", "clean", "reboot", "refused", "error"; session_verdict is the verdict of the session's own
+    summary.json (pass / fail / unknown), a wider judgement than the arming outcome.
 
-    scenario_path is either a scenario JSON (passed to run_test.py via
-    --scenario) or a bare device script (under tests/bench/ - see run_test.py's own SCRIPT_DIRS), run directly by name so it
-    can be interleaved with scenario JSON files in the same batch (BUG-002,
-    2026-10-10: isolating the Pico-reset-per-attempt variable by running a
-    diagnostic tool and a scenario through the exact same reset path,
-    instead of comparing a tool run that never reset against one that
-    always does).
+    scenario_path is either a scenario JSON or a bare device script (under tests/bench/ - see run_test.py's own
+    SCRIPT_DIRS), run directly by name so it can be interleaved with scenario JSON files in the same batch
+    (BUG-002, 2026-10-10: isolating the Pico-reset-per-attempt variable by running a diagnostic tool and a scenario
+    through the exact same reset path, instead of comparing a tool run that never reset against one that always does).
     """
-    if scenario_path.suffix == ".py":
-        run_args = [str(scenario_path.name)]
-    else:
-        run_args = ["--scenario", str(scenario_path)]
     try:
-        # encoding/errors explicit, not text=True: text=True decodes with
-        # the platform's default codepage (cp1252 on Windows), which raises
-        # on bytes the Pico's own output can legitimately contain - the same
-        # reason run_test.py decodes its own subprocess output as UTF-8 with
-        # errors="replace" rather than relying on the default.
-        result = subprocess.run(
-            [PYTHON, str(RUN_TEST)] + run_args,
-            capture_output=True, encoding="utf-8", errors="replace",
-            timeout=ATTEMPT_TIMEOUT_S,
-        )
-        output = result.stdout + result.stderr
-    except subprocess.TimeoutExpired as e:
-        output = (e.stdout or "") + (e.stderr or "") + "\n[run_scenarios.py: timed out after %ds]" % ATTEMPT_TIMEOUT_S
-        return "error", None, output
-
-    session_match = SESSION_RE.search(output)
-    session_name = session_match.group(1) if session_match else None
+        session_name, output, _, summary = run_session.run_session(scenario_path, echo=False, argv=[str(scenario_path)], load=load)
+    except SystemExit as stop:          # run_session gives up with a message (the spy never started, ...)
+        return "error", None, "run_session stopped: %s" % stop.code, None
+    session_verdict = summary["verdict"]
 
     if not DEPLOY_OK_RE.search(output):
-        return "deploy_failed", session_name, output
+        return "deploy_failed", session_name, output, session_verdict
     if "Outcome: completed" in output:
         armed_after_match = ARMED_AFTER_RE.search(output)
         if armed_after_match is None:
             # "Armed after Nms." always precedes "Outcome: completed" on a
             # real run - its absence here means the output doesn't look like
             # a normal completed run, so this is unclassifiable, not clean
-            return "error", session_name, output
+            return "error", session_name, output, session_verdict
         if int(armed_after_match.group(1)) < CLEAN_ARM_THRESHOLD_MS:
-            return "clean", session_name, output
-        return "reboot", session_name, output
+            return "clean", session_name, output, session_verdict
+        return "reboot", session_name, output, session_verdict
     if REFUSED_RE.search(output):
-        return "refused", session_name, output
-    return "error", session_name, output
+        return "refused", session_name, output, session_verdict
+    return "error", session_name, output, session_verdict
 
 
-def run_attempt(scenario_path):
+def run_attempt(scenario_path, load=None):
     """run_once(), retrying a deploy failure up to DEPLOY_RETRIES times."""
-    outcome, session_name, output = run_once(scenario_path)
+    outcome, session_name, output, session_verdict = run_once(scenario_path, load)
     retries = 0
     while outcome == "deploy_failed" and retries < DEPLOY_RETRIES:
         print("  deploy failed, retrying...")
         retries += 1
-        outcome, session_name, output = run_once(scenario_path)
-    return outcome, session_name, output
+        outcome, session_name, output, session_verdict = run_once(scenario_path, load)
+    return outcome, session_name, output, session_verdict
 
 
 def main():
@@ -267,10 +262,11 @@ def main():
     )
     parser.add_argument("--scenario", action="append", required=True,
                          help="a scenario JSON path; repeat to interleave several")
+    parser.add_argument("--load", required=True,
+                         help='what is on the motor shafts, recorded in every session.json: "none", or e.g. '
+                              '"Gemfan D2.2 3-blade, 1-1.25 g each"')
     parser.add_argument("--rounds", type=int, default=1,
                          help="how many times to run through all --scenario values (default 1)")
-    parser.add_argument("--pull", action="store_true",
-                         help="pull every session's captures at the end (scripts/pull_captures.py)")
     parser.add_argument("--rotate", action="store_true",
                          help="cycle the --scenario order by one position each round, "
                               "instead of a fixed order every round")
@@ -288,6 +284,8 @@ def main():
                        "schedule_behind_attempts": 0, "armed_ms": []}
              for s in scenarios}
     sessions = []
+    summaries = []
+    in_a_row = 0
     total = len(scenarios) * args.rounds
     n = 0
 
@@ -300,7 +298,7 @@ def main():
             for scenario in order:
                 n += 1
                 print("=== Round %d/%d: %s (%d/%d) ===" % (round_index, args.rounds, scenario.name, n, total))
-                outcome, session_name, output = run_attempt(scenario)
+                outcome, session_name, output, session_verdict = run_attempt(scenario, args.load)
                 counts = tally[str(scenario)]
                 counts[outcome] += 1
                 if session_name:
@@ -331,12 +329,23 @@ def main():
                            else "excluded")
                 passes = counts["clean"]
                 fails = counts["reboot"] + counts["refused"]
+                summary_path = run_session.CAPTURES / session_name / "summary.json" if session_name else None
+                run_summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path is not None and summary_path.is_file() else None
+                if run_summary is not None:
+                    summaries.append(run_summary)
+                start, spin_up_max_ms = start_kpi.run_field(run_summary)
                 print(run_record(n, total, scenario.name, verdict, outcome, armed_ms,
-                                 session_name, passes, fails, behind_count))
-                if outcome == "error":
+                                 session_name, passes, fails, behind_count, session_verdict, start, spin_up_max_ms))
+                if outcome in ("error", "deploy_failed"):
                     print("  --- full output, for diagnosis ---")
                     print(output)
                     print("  --- end output ---")
+                in_a_row = in_a_row + 1 if outcome in ("error", "deploy_failed") else 0
+                if in_a_row >= MAX_CONSECUTIVE_PROBLEMS:
+                    print("STOPPED: %d errors or deploy failures in a row; the batch ends here." % in_a_row)
+                    raise StopBatch
+    except StopBatch:
+        pass
     except KeyboardInterrupt:
         print("\nInterrupted - printing the tally gathered so far.")
 
@@ -368,11 +377,9 @@ def main():
             print(fields("SCHEDULE", scenario=scenario.name, attempts=behind_attempts,
                          behind_total=counts["schedule_behind_total"],
                          behind_max=counts["schedule_behind_max"]))
-
-    if args.pull and sessions:
-        print()
-        print("Pulling %d session(s)..." % len(sessions))
-        subprocess.run([PYTHON, str(ROOT / "scripts" / "pull_captures.py")])
+    if any(s.get("start") for s in summaries):
+        for line in start_kpi.format_lines(start_kpi.aggregate(summaries)):
+            print(line)
 
 
 if __name__ == "__main__":

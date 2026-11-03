@@ -14,7 +14,7 @@ import unittest
 import fakes
 from fakes import Pin, CallLog
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, InvalidThrottleException,
-                       UnsupportedOperationException, DSHOT_SPEEDS, MAX_THROTTLE)
+                       UnsupportedOperationException, DSHOT_SPEEDS, MAX_THROTTLE, THROTTLE_CEILING)
 
 
 def expected_word(throttle, inverted):
@@ -47,18 +47,18 @@ class SendThrottleCommandTest(unittest.TestCase):
 
     def test_every_throttle_matches_the_formula_in_both_polarities(self):
         for inverted, motor in ((False, uni()), (True, bidir())):
-            for throttle in range(MAX_THROTTLE + 1):
+            for throttle in range(THROTTLE_CEILING + 1):
                 self.assertEqual(self.send(motor, throttle), expected_word(throttle, inverted),
                                  "throttle %d inverted %s" % (throttle, inverted))
 
     def test_the_telemetry_request_bit_is_never_set(self):
         motor = bidir()
-        for throttle in (0, 1, 999, MAX_THROTTLE):
+        for throttle in (0, 1, 99, THROTTLE_CEILING):
             self.assertEqual((self.send(motor, throttle) >> 20) & 1, 0)
 
     def test_out_of_range_throttle_is_rejected_and_sends_nothing(self):
         motor = uni()
-        for bad in (-1, MAX_THROTTLE + 1):
+        for bad in (-1, THROTTLE_CEILING + 1, MAX_THROTTLE):
             with self.assertRaises(InvalidThrottleException):
                 motor.send_throttle_command(bad)
         self.assertEqual(motor.sm.sent, [])
@@ -158,8 +158,8 @@ class MotorConstructionTest(unittest.TestCase):
         for motor in (uni(), bidir()):
             with self.subTest(type(motor).__name__):
                 motor.start()
-                motor.send_throttle_command(900)
-                motor.send_throttle_command(900)
+                motor.send_throttle_command(200)
+                motor.send_throttle_command(200)
                 self.assertTrue(motor.sm.pending)
                 motor.stop()
                 self.assertEqual(motor.sm.pending, [])
@@ -170,7 +170,7 @@ class MotorConstructionTest(unittest.TestCase):
         for motor in (uni(), bidir()):
             with self.subTest(type(motor).__name__):
                 motor.start()
-                motor.send_throttle_command(900)
+                motor.send_throttle_command(200)
                 sent = list(motor.sm.sent)
                 motor.stop()
                 self.assertEqual(motor.sm.sent, sent)

@@ -26,6 +26,7 @@ add code paths or timing accommodations to keep it working.
 | **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
 | **DShot commands** | TODO | No driver-side command API yet (BUG-005's prerequisite is done: `MotorGroup` rejects 1-47, so a command API needs its own entry point, not `set_throttle()`). AM32 itself implements commands (AM32.md#7) and this bench has already heard a `BEEP1` while armed (sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver (`dshot_bidir_rx_frame`) bench-validated on AM32 and adopted as the sole production receiver (2026-09-26) |
+| **Smooth start** | In progress | KPI re-scoped 2026-11-02 (owner): **all four motors spin up with Gemfan 2218 props**, measured by the share of runs in which all four spin up and hold and by the spin-up duration; RPM disks and heavier or draggier props are paused (channel 4 did not spin up with the disks on either of the owner's AM32 ESCs). Definition and baseline: BUG-009 ("Current KPI", "Result 3") |
 
 ## Operational Envelope (what this driver guarantees)
 
@@ -33,37 +34,21 @@ add code paths or timing accommodations to keep it working.
 |-----------|-------|
 | Arming success rate | **≥ 99%** of `arm()` attempts reach `ARMED` |
 | Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
-| Throttle range | `0` (stop) or `48`-`2047`. `1`-`47` are DShot commands; `MotorGroup` rejects them (BUG-005) |
+| Throttle range | `0` (stop) or `48`-`250`. `1`-`47` are DShot commands (BUG-005) and above `250` is a **temporary bench ceiling** (owner, 2026-10-19: nothing higher is tested yet); `MotorGroup.set_throttle()` and `send_throttle_command()` reject both. Raise `THROTTLE_CEILING` in `driver/dshot_pio.py` (mirrored in `tests/bench/throttle_profile.py`) when higher throttles are tested |
 | ESC firmware | AM32 only |
+| AM32 input match (what our frames look like to AM32) | Measured on the wire with no ESC (2026-10-28): AM32's own input threshold would read 0 of 74,752 bits per run differently from ours, the worst frame length is 2.7% off the window AM32 learns (limit 6.25%), no wrong CRC, largest gap between frames 1.1 ms (limit 500 ms). With one ESC attached (single motor, throttle 100) the input figures are the same and every frame is answered outside the ESC's arming silence. Not covered: other motors/channels, several ESCs, other throttles, cold ESC power-on. Figures, method and tools: `specification/BENCH_EVIDENCE.md`. |
+| Start quality | **Pending - not yet guaranteed.** Scope (owner, 2026-11-02): all four motors, Gemfan 2218 3-Blade props, no RPM disks, no heavier or draggier props (the RPM-disk and reflective-sensor tests were removed 2026-11-02, standing backlog item W41). Target **≥ 99%** of runs (armed, then a jump from `0` to throttle 215 on all four motors, held for the run) that **succeed: all four motors spin up and hold, and the slowest spin-up is within 0.5 s** (a drone with fewer than four motors turning does not fly, so one motor short is a failed run). A motor spins up when it reaches 80% of its own settled speed and the ESC never cuts it; the spin-up duration is the time from the first nonzero throttle frame to that speed, limit **0.5 s** (owner, 2026-11-02, provisional: set from the 28-run baseline). About 300 clean runs would support 99% (exact one-sided 95% bound, the arming evidence's convention); the check also compares each motor's settled speed with the other three, so a motor stuck at a low reading does not pass, counts runs that never reached the step apart, and covers only the ESC's own eRPM over back-to-back warm restarts (`scripts/start_kpi.py`). The four motors start together, so a run, not a motor-start, is one trial. Both are in each session's `summary.json` (`start`, per-line `spin_up_ms`), which also says whether the session counts toward the KPI; `scripts/start_kpi.py` holds the definition and prints the totals (the batch runner prints them at the end of every batch). Baseline so far, 2026-11-01, 28 runs: all four spun up and held in 28 of 28, but 26 of 28 runs fully succeed (93%, exact one-sided 95% lower bound 79%), because two GPIO 6 spin-ups took 0.9 and 1.05 s; per-motor medians 0.09-0.16 s; BUG-009 "Result 3". Second batch 2026-11-02, 32 runs: 30 of 32 fully succeed, both failures a slow GPIO 6 spin-up; the cause is not found (BUG-009 "Result 4" to "Result 6") |
 
 An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that
 arms later after an ESC reboot. Callers should treat it as a failure to handle, not wait
 indefinitely.
 
-**Where the bound sits.** Across the 698 sessions archived on the bench (mostly earlier code),
-clean arms took 2.08-2.59 s and arms that needed an ESC reboot took 4.06 s or more, so 3.0 s falls
-in the empty gap between the two. That archive justifies the bound, not the 99% rate.
-
-**Evidence for the rate (2026-10-13 and 2026-10-14), arming-only scenario (`two_channel_arming_600.json`,
-removed 2026-10-17 - it is in git history), two bidirectional motors, DSHOT600, max-rate pacing:**
-- 104 of 104 runs passed on the code of those two days (before the one-word capture slot of 2026-10-17; the long batch should run on the current code) (1 on 2026-10-13, then 3 and 100 on
-  2026-10-14). Arming time: min 2026 ms, median 2027 ms, max 2516 ms; 99 of the 100 runs landed
-  within 2 ms of each other, and the one 2516 ms arm (484 ms of room) is inside the archive's
-  historical clean range. Across those 100 sessions the post-ARMED telemetry was 138,720 of 138,720
-  records CRC-valid, with no failure streak.
-- 30 more of 30 passed on the same driver with an earlier harness (2026-10-13); 10 earlier runs
-  used the previous teardown code and are not counted.
-- That is not yet enough to support 99%: 100 clean runs support about 97%, and about 300 clean
-  runs on the same code are needed, so roughly 195 more. The long batch is waiting for the owner to
-  schedule it; with the arming-only scenario gone it would use a spinning scenario such as
-  `two_channel_divergent_600.json` (arming is judged in every scenario run), which is not the same
-  footing as the 104 runs above.
-- The captures begin at ARMED (the arming phase is not logged, by design), so an outlier such as the
-  2516 ms arm cannot be explained from them.
-
-**Scope of that evidence.** One scenario on one bench: an ESC that was already powered (each run
-resets the Pico, not the ESC), DSHOT600, two bidirectional motors, over two days. Not covered: a
-cold ESC power-on, DSHOT300, a single motor, other days or conditions.
+**Evidence.** The 3.0 s bound sits in the empty gap between clean arms (2.08-2.59 s) and arms that needed an ESC reboot
+(4.06 s or more) across 698 archived sessions; that archive justifies the bound, not the rate. The 99% rate is **not yet
+supported**: 104 of 104 passing runs support about 97%, and about 300 clean runs on the current code are needed (the
+long batch waits for the owner to schedule it; bidirectional scenario runs count). Scope of the earlier evidence: one
+scenario, one bench, an already-powered ESC, DSHOT600, two bidirectional motors. Full record:
+`specification/BENCH_EVIDENCE.md`.
 
 The bound is measured by `scripts/run_scenarios.py` (`CLEAN_ARM_THRESHOLD_MS`); keep that constant,
 README.md and this table in agreement. The batch runner also flags arms within 500 ms of the bound as
@@ -77,6 +62,8 @@ DShot commands, other ESC firmware, behaviour of the motor after arming (BUG-009
 - **Dependencies**: Built-in `machine` and `rp2` modules (no external packages)
 
 Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremote.
+
+**Pico-only runs need no permission** (owner, 2026-10-20). Code that relies on the Pico 2 but uses no real ESC and no motor - a test on unused GPIO with nothing attached, a PIO/DMA/timing experiment, a driver or harness change that can be exercised without an ESC - is written, deployed and run on the Pico without asking the owner first. Anything that can put a signal on an ESC's input or spin a motor (GPIO 6-9 with an ESC attached, any throttle above 0) still needs the owner's go. Say in the report which pins a run used.
 
 ## Communicating with the user
 
@@ -117,6 +104,36 @@ of causing the observed shift - not just correlated in time with it. A real exam
 timestamped minutes *after* the jump, because the change had been bench-verified first and
 committed once confirmed.
 
+## No hardware speculation
+
+Do not offer physical causes for a bench result - wiring, connectors, crosstalk between signal wires,
+supply sag or inrush, grounds, solder joints, mechanical coupling through the lever, a "bad" ESC or
+motor - unless a measurement in this repo supports it. The Pico sees only DShot frames and replies;
+it cannot see the power or the wiring, so a hardware cause cannot be inferred from its
+data. This rule is stricter than the section above, which covers environmental explanations of a shift
+between batches.
+
+- Report what the data shows (counts, timings, which motor on which channel and when) and what has been
+  ruled out by a test, in those words.
+- When asked "why", propose only hypotheses the repo can test in software (order of motors in a
+  group, simultaneous against staggered starts, throttle, polling pattern, PIO block assignment), and
+  say which result would confirm or reject each.
+- Hardware actions (inspect, swap, measure the supply) are the user's to choose. List them as options
+  without naming a suspected cause. The user knows the bench and holds the hardware facts; ask for
+  them instead of guessing.
+- A quantity taken from AM32's source (a timeout, a limit) may be quoted as a source fact. Saying that
+  it explains a bench result is a hypothesis and is marked as one.
+
+## Permanent scenarios need the owner's permission
+
+A scenario file that is checked into git (everything under `tests/bench/dshot_protocol/scenarios/`, the baseline pair included) is a permanent part of
+the project. **Do not add, rename, edit or delete one without the owner's explicit go** (owner, 2026-11-02: the start-quality configs had grown into
+many files that differed in every aspect, and nobody could say any more what was being tested). Say which question the file answers when asking.
+
+**Temporary scenarios are free.** For checking a hypothesis, a bug or a fix, write the scenario to a temporary folder (the session scratchpad or the OS
+temp folder), run it from there, and never commit it. Nothing is lost: every run keeps its own copy as `scenario.json` in its session folder. If a
+temporary scenario turns out worth keeping, ask first; do not move it into the repo on your own.
+
 ## Architecture
 
 ### Core Components
@@ -133,7 +150,7 @@ committed once confirmed.
 
 1. **`MotorGroup` class**: Takes 1-4 already-built `UnidirectionalDShot`/`BidirectionalDShot` motors (the application picks their state machines and pins) and owns the throttle values and lifecycle for the group. Provides `arm()` (only valid while disarmed), `disarm()`, `update()`, `is_armed()`, `set_throttle()`, `set_all_throttles()`, `raw_telemetry(index)`, `decode_telemetry(index, value)` and `arming_status()`. It rejects motors that share a state machine or a pin. `update()` also drains every bidirectional motor's RX FIFO into that motor's one-slot latest capture (`discard_rx()` while arming, when replies are not yet trusted, `drain_rx()` once armed); `raw_telemetry()` hands the latest capture out only once armed and holds no data itself: the capture is one integer, the 21-bit reply frame with a 9-bit token above it that steps on every publish (1..511, then 1 again), so a caller keeps the last value it saw and knows a capture is new when the value differs; there is no timestamp, and a read is one load that is never refused (ADR-005's 2026-10-17 update). Decoding (`decode_telemetry()`) and retry-on-CRC-failure are the application's business, on its own schedule. The harness no longer logs the arming phase or wraps `update()` with per-tick measurement (retired 2026-10-06, BUG-002: real overhead - ~90us/call even idle - on the exact loop whose timing the investigation cares about; see BUG-002.md's "Telemetry overhead and the timed window" section).
 
-2. **Core-agnostic by design**: The library does **not** spawn threads or pick a core. The application calls `update()` at least every 1ms from wherever its architecture dictates. Do not add `_thread` to anything under `driver/` — that inversion is the whole point of ADR-004.
+2. **Core-agnostic by design**: The library does **not** spawn threads or pick a core. The application calls `update()` every `UPDATE_INTERVAL_US` (1045us), at a steady period, from wherever its architecture dictates. **There is no unpaced mode** (`update()` back to back, as fast as it returns): it was the default until 2026-10-19 and was removed, and `Core1Runner` rejects an interval of 0. Do not reintroduce one, and do not add a per-test or per-scenario period. Do not add `_thread` to anything under `driver/` — that inversion is the whole point of ADR-004.
 
 3. **Non-blocking arming**: `arm()` opens the arming window and returns; `update()` completes it. The application polls `is_armed()`. This is what lets the library work in a cooperative single-core loop as well as on a dedicated core. With bidirectional motors, `ARMED` is evidence-gated, not a timer: the window is only a floor, and every bidirectional ESC must also have replied AM32's not-running frame (`gcr_decode.AM32_NOT_RUNNING_FRAME`, counted by `CaptureMailbox.drain()`) for `READY_SPAN_MS` (2s) with no gap over `READY_GAP_MS` (450ms, a reboot restarts the count). An ESC that never replies keeps the group `ARMING`, sending zeros, until the application gives up (`arming_status()` names the motor). This is BUG-002's fix: an ESC that reset during a timer-only window came back after `ARMED` under throttle and never armed (see BUG-003). `wait_for_replies = False` turns the gate off for bench tests with no ESC attached only.
 
@@ -143,71 +160,30 @@ committed once confirmed.
 
 6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
 
-**`tests/`** is split first by whether it needs hardware, then by what it checks. `tests/pc/` runs on a PC; everything under `tests/bench/` runs on the Pico with the bench attached. Each folder has one rule; a file that breaks its folder's rule goes elsewhere, not into a catch-all:
+**`tests/`** is split first by whether it needs hardware, then by what it checks. Each folder has one rule; a file that
+breaks its folder's rule goes elsewhere, not into a catch-all. How each script works, the scenario format, the session
+folder contents and the spy's tools are in `tests/README.md`.
 
-- **`tests/bench/dshot_protocol/`** - does the DShot link and the arming/telemetry behaviour hold on this ESC across motor counts and configurations (regular vs bidirectional, DSHOT300/600)? Belongs: the scenario runner and its JSON scenarios, plus the single-motor ESC probes (`test_bidir_restart_cycles.py`, `test_frame_arming_echo.py`, `test_frame_stalled_drain.py`). Does not belong: anything that measures physical RPM (that is `rpm_accuracy`), or code another group also needs (that goes to the `tests/bench/` root), or anything that does not need an ESC.
-  Detail: `run_scenario.py` runs a scenario the way an application uses the library: it builds the motors (bidirectional ones use the frame receiver, the only one `BidirectionalDShot` has; since it fills its own PIO block, `scenario.py` rejects a scenario JSON that puts a unidirectional motor on the same block), wraps them in `MotorGroup`, runs `update()` on Core 1 through `core1_runner.py` (a Core 1 loop projects copy and adapt), and on Core 0 follows each motor's throttle profile and samples `raw_telemetry()`. Every Nth new capture (the scenario's `decode_every`) is decoded on the device (`decode_tally.py` tallies real replies, CRC failures and non-replies) and judged against the scenario's `expect` thresholds, so a run prints its own verdict; the raw captures go to the PicoBell Adalogger's SD card (`bidir_capture_sink.py`, `capture_sink.py`, the ported `sdcard.py`/`pcf8523.py`). `scenario.py`/`throttle_profile.py` load and validate a scenario fail-fast before anything is armed, and `scenarios/*.json` is the scenario library (each file declares all 4 motors' wiring and a throttle profile per motor, plus a `hardware` block - name, `kv`, rotor `magnets` - for every motor that is ever commanded to spin; `scenario.py` refuses to load one without it, and `bidir_capture_sink.py` copies it into the session's `meta.txt` as `motorN_name/kv/magnets`). The ESC reports electrical RPM, so a session's eRPM only becomes shaft RPM through that magnet count: shaft RPM = eRPM / (magnets / 2), and `analyze_bidir_capture_log.py` prints both. Run one with `python scripts/run_test.py --scenario tests/bench/dshot_protocol/scenarios/<file>.json` (uploads via `scripts/deploy.py`, then runs and streams output), pull the session with `scripts/pull_captures.py` (which deletes each pulled session from the SD card) and analyse it with `scripts/analyze_bidir_capture_log.py`, which decodes everything logged, checks the same thresholds and cross-checks the device's sampled tally. `scripts/arming_stats.py` reads the arming logs of a batch of sessions and prints, per configuration, how often each ESC accepted our frames. `scripts/run_scenarios.py` runs one or more scenarios repeatedly (interleaved round by round when given several), classifying each attempt from `run_test.py`'s own printed output rather than a hand-rolled shell loop's string-matching - see its own docstring for why that distinction matters. It prints one `RUN` line per attempt and `RESULT`, `ARMING_TIME` and `SCHEDULE` summary lines, all `key=value` (`verdict=pass|fail|excluded`, `armed_ms=`, `margin_ms=`, min/median/max over the passes), so a long batch can be grepped; add `--pull` so the sessions can be analysed afterwards with `scripts/analyze_bidir_capture_log.py` (a batch without it leaves them on the SD card).
-- **`tests/pc/`** - PC-run unit tests of the pieces that need no hardware (belongs: anything that runs under plain Python with `fakes.py`; does not belong: anything that touches the Pico) (mailbox, decoder, command packet, `MotorGroup` against fake state machines, scenario loading): `python -m unittest discover -s tests/pc`. `fakes.py` stands in for `machine`, `rp2` and `utime`.
-- **`tests/bench/pio_and_cores/`** - how the driver uses the RP2350's PIO blocks and its two cores. Needs the Pico only, no ESC or motor power: `test_capture_slot_stress.py` (two real cores), `test_stop_clears_queues.py` and `test_pio_lifecycle.py` (the first proves on real PIO that `stop()` leaves the send queue empty and that repeated start/stop does not exhaust the program store). Does not belong: anything that arms an ESC.
-- **`tests/bench/rpm_accuracy/`** - does the ESC's eRPM agree with the physical shaft RPM? Two independent readings of motor 1's shaft are compared: the **ESC RPM** (the ESC's eRPM divided by the pole pairs) and the **optical RPM** (the reflective sensor on GPIO 14 counting the holes of the RPM disk on the shaft). `test_esc_rpm_vs_optical_rpm.py` spins motor 1 through throttle 60-100 and passes only if, at every step, ESC RPM (eRPM / pole pairs) is within 3% of the optical RPM on at least `decode_tally.MIN_SAMPLES` decodes and 20 sensor pulses (a step short of samples fails as "not enough data", not as inaccurate). Each step's window stays open until it holds 40 of each (cap 12 s). `python scripts/run_optical_rpm_modes.py` spins motor 1 at throttle 100 in regular and bidirectional DShot at DSHOT300 and DSHOT600 (`modes/*.json`, one Pico reset per run via `run_optical_rpm_mode.py`, two rounds with the second reversed) and passes if the fastest and slowest mode's mean optical RPM differ by under 3%: the protocol variant should not change real RPM. Only the optical RPM is compared, since regular DShot has no eRPM. One mode per reset is deliberate: a bidirectional motor fills its PIO block alone and a loaded program stays there, so switching modes inside one session runs out of PIO program memory. Does not belong: the scenario runner - the sensor stays out of `dshot_protocol` because extra Core 0 work disturbs arming timing (BUG-002); an earlier attempt to record the sensor inside the scenario runner was dropped for that reason.
+- **`tests/pc/`** - runs on a PC under plain Python with `fakes.py` (`python -m unittest discover -s tests/pc`). Nothing that touches the Pico.
+- **`tests/bench/dshot_protocol/`** - does the DShot link and the arming/telemetry behaviour hold on this ESC across motor counts and configurations? The scenario runner, its JSON scenarios, the single-motor ESC probes. Not: physical RPM, code another group also needs, anything without an ESC.
+- **`tests/bench/pio_and_cores/`** - how the driver uses the RP2350's PIO blocks and its two cores. Pico only, no ESC or motor power. Not: anything that arms an ESC.
+- **`tests/bench/wingman/`** - the second Pico (the wingman) and everything it relies on, grouped by the machine the code runs on: the **spy** records every edge of the ESC lines, the **ESC mock** answers our frames with recorded ESC replies so the reply path runs with no ESC and no motor (`run_session.py --esc-mock`, the ESC disconnected). **Design principle (owner, 2026-11-01): the wingman takes everything it needs to know about the main Pico (pins, which lines are bidirectional, DSHOT speed, run length) from the scenario the main Pico runs, read in one place (`tools/wingman_plan.py`); no pin, speed or fixture is written into the wingman's own code.** Equipment, not a test group. Not: anything about a real ESC, a motor or arming; a mock session is never evidence.
 
-Code shared by the bench test groups sits directly in `tests/bench/`: `scenario.py` and `throttle_profile.py` (load and validate a scenario's wiring and throttle curves), `decode_tally.py` (classifies decoded replies; holds the minimum-sample rule), `core1_runner.py` (the Core 1 `update()` loop and `fast_stop`, which every motor-spinning test imports; applications copy and adapt it too) and `session_recorder/` (the SD-card/RTC session recorder: `sdcard.py`, `pcf8523.py`, `capture_sink.py`, `bidir_capture_sink.py`, used by the scenario runner). It is not a test group: nothing in it has a verdict. Test groups may import this shared code, but never another group's files (a test that needs something from `dshot_protocol/` means that something belongs here instead). `deploy.py` flattens every file onto the Pico root and `run_test.py` finds a script by bare name, so keep file names unique across all of these folders.
+**One run is one session.** `scripts/run_session.py` (and the batch runner `scripts/run_scenarios.py`) names the session on the PC, records what was run in `session.json` (scenario, git commit, and the required `--load`: what the motors carry, `none` for bare shafts), has the **wingman** (a second board, found by ID, that records every wire edge) record the lines, pulls the Pico's SD record, and computes `summary.json`. **Owner's rule (2026-10-31): while the main Pico controls motors its I/O is the bare minimum (ESC I/O excepted); the spy records every wire edge.** A threshold that has too few samples to be judged is reported as not judged, never failed, and the spy's recording judges the line instead.
 
-`scripts/deploy.py` only uploads the driver/harness files and resets the board - it runs nothing on the Pico. `scripts/run_test.py` is the one that spins motors: it calls `deploy.py`'s upload+reset, then runs the chosen script via `mpremote run` and streams its output live. `scripts/run_scenarios.py` wraps `run_test.py` for a batch of runs (`/run-scenarios`, mirroring `/deploy`) rather than a one-off shell loop. All three are on this project's Claude Code permission allow-list (`.claude/settings.local.json`), since none is interactive and `run_test.py`/`run_scenarios.py` are the ones that touch hardware.
+**Same mechanics as the scenario runner.** A bench test that runs motors uses the scenario runner's mechanics (`gc.collect()` before arming, `Core1Runner` at `group.UPDATE_INTERVAL_US`, the one paced loop, throttle set right after `ARMED`, Core 0 reading every reply every `poll_ms` and decoding every `decode_every`-th), so every result compares with the same baseline. A test that must differ (for example, no SD logging) says so in its header.
+
+**Bench guards.** The scenario runner stops a run on two decoded-telemetry failsafes, both in `decode_tally.py`: `SpinWatch` (a motor commanded to spin that reports no real eRPM for 2 s) and `OverspeedWatch` (a motor that reports more than 300 eRPM per unit of its recently commanded throttle, 5 decodes in a row; throttle 60 reads about 8,400 eRPM, so its limit is 18,000). Both raise, so `fast_stop` zeroes the throttle. **The over-speed guard is switched off (owner, 2026-10-20)** by `OVERSPEED_GUARD_ENABLED = False` in `decode_tally.py` while the plateau reading on some channels is investigated; `run_scenario.py` prints "Over-speed guard: DISABLED" at the start of every run. Set it to `True` to bring it back; the no-spin failsafe and the throttle ceiling stay on. A guard only sees every `decode_every`-th reply, so a short disturbance can pass it: at one reply per 1045us period, 5 decodes 20 replies apart span about 100ms (arithmetic from the period, not measured).
+
+Code shared by the bench test groups sits directly in `tests/bench/`: `scenario.py` and `throttle_profile.py` (load and validate a scenario's wiring and throttle curves), `decode_tally.py` (classifies decoded replies; holds the minimum-sample rule), `core1_runner.py` (the Core 1 `update()` loop and `fast_stop`, which every motor-spinning test imports; applications copy and adapt it too) and `session_recorder/` (the SD-card session recorder: `sdcard.py`, `capture_sink.py`, `bidir_capture_sink.py`, used by the scenario runner). It is not a test group: nothing in it has a verdict. Test groups may import this shared code and the wingman's `main_pico/start_line.py` (the start line the scenario runner drives), but never another group's files (a test that needs something from `dshot_protocol/` means that something belongs here instead). `deploy.py` flattens every file onto the Pico root and `run_test.py` finds a script by bare name, so keep file names unique across all of these folders.
+
+`scripts/deploy.py` only uploads the driver/harness files and resets the board - it runs nothing on the Pico. `scripts/run_test.py` is the one that spins motors (it requires `--session <name>`: the PC names every session, `scripts/run_session.py` makes the name and calls it, and the batch runners make one per attempt): it calls `deploy.py`'s upload+reset, then runs the chosen script via `mpremote run` and streams its output live. `scripts/run_scenarios.py` wraps `run_test.py` for a batch of runs (`/run-scenarios`, mirroring `/deploy`) rather than a one-off shell loop. All three are on this project's Claude Code permission allow-list (`.claude/settings.local.json`), since none is interactive and `run_test.py`/`run_scenarios.py` are the ones that touch hardware.
 
 ### DShot Protocol
 
 See `specification/DSHOT.md` for the wire protocol itself (packet structure, bit timing for all
 variants, special commands 0-47, bidirectional DShot and eRPM telemetry, CRC), `specification/AM32.md` for how this project's target ESC firmware implements it, and `specification/BETAFLIGHT.md` for how a reference flight-controller host drives it.
 
-## Usage Example
+## Usage
 
-**Recommended (multi-motor with reliable timing):**
-```python
-from machine import Pin
-from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
-from motor_group import MotorGroup
-from core1_runner import Core1Runner  # application code, see tests/
-import utime
-
-motors = MotorGroup([
-    UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600),
-    UnidirectionalDShot(1, Pin(5), DSHOT_SPEEDS.DSHOT600),
-])
-
-# The application picks the core - here, a dedicated Core 1 loop. A real
-# interval_us (unlike UPDATE_INTERVAL_US=0 here, which means "no fixed
-# pacing") is an absolute period, held by anchoring each deadline to the
-# previous one rather than sleeping a pad after the call - immune to
-# update()'s own cost changing, matching how a flight controller's own
-# fixed-period scheduler paces DShot output (verified against Betaflight's
-# source - see Core1Runner's own docstring for the exact citation).
-# There used to be a second, pad-based mode, selected by a fixed_schedule
-# flag; removed 2026-10-09 (see Core1Runner's own docstring) because it only
-# ever worked by retuning a magic constant to one specific measurement.
-runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
-runner.start()
-
-motors.arm()                    # non-blocking
-while not motors.is_armed():
-    utime.sleep_ms(10)
-
-motors.set_throttle(0, 100)     # Motor 0
-motors.set_throttle(1, 150)     # Motor 1
-
-if not runner.stop():           # stop the loop first, and check it really exited
-    print("Core 1 still in update():", runner.error)
-motors.disarm()                 # cuts the signal and resets; the ESC stops the motor itself
-```
-
-**Low-level (single motor):**
-```python
-from machine import Pin
-from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
-
-motor = UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600)
-motor.start()  # Activate PIO state machine
-# ... arm first (send_throttle_command(0) for 2000ms, see README's Quick Start) ...
-motor.send_throttle_command(100)  # Must call continuously at ~1ms intervals
-motor.stop()   # Deactivate
-```
+Code examples live in README.md (Quick Start: single motor, several motors, without a second core), not here. This file holds conventions and methodology.

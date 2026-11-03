@@ -1,0 +1,15 @@
+{
+  "source_session": "2026-11-01_11-36-52",
+  "source_scenario": "tests\\bench\\dshot_protocol\\scenarios\\four_channel_bidirectional_600.json",
+  "source_git_commit": "02e08c860afe5887760437982a8b735c2c359596",
+  "source_load": "Gemfan D2.2 3-blade, 1-1.25 g each",
+  "built": "2026-11-01",
+  "replies_per_line": 1024,
+  "taken_after_ms": 5000,
+  "median_erpm_per_line": [
+    52632,
+    53004,
+    52265,
+    52632
+  ]
+}

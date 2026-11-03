@@ -1,5 +1,7 @@
 # ADR-002: Bidirectional DShot Implementation
 
+**Update 2026-10-19:** the loop this report describes as "unpaced" / "maximum rate" (`UPDATE_INTERVAL_US = 0`, `update()` back to back) no longer exists. The only mode is the paced loop at 1045us, and a scenario cannot choose its own period. What follows records the earlier unpaced loop and was not re-measured on the paced one.
+
 **Status:** Deferred — superseded by the 2026-08 implementation work below (RX
 capture + eRPM decode verified on hardware, 100% CRC-valid across two
 independent confirmation sweeps). The driver now exposes bidirectional
@@ -42,7 +44,7 @@ row's evidence is in the dated sections below.
 | Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing); corruption after a stall under the production command loop not re-tested |
 | RX FIFO management | 8 words deep (joined), drained on every command-loop tick before the commands are sent, capped per call (ADR-005); two bidirectional motors verified 100% CRC-valid at both speeds, deliberate consumer stalls not re-tested |
 | `update()`'s own frame-to-reply-window spacing for one bidirectional motor | Checked 2026-10-11 after the hot-path tightening below raised the concern: one bidirectional motor, DSHOT300, max-rate pacing, 8s - 114/114 CRC-valid, no collision observed (bug-reports/BUG-006); a longer/varied-load run would still be worth it before relying on this configuration |
-| Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4 fails and is parked, cause unknown; four bidirectional motors through the facade not verified |
+| Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4's earlier failure was a defect in this project's own code, not the PIO state machines or the channel (owner's correction, 2026-10-19; the specific defect is not recorded here); four bidirectional motors through the facade not verified |
 | Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one bidirectional motor verified through the facade, several not yet |
 | DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
 | Non-eRPM frames (extended telemetry, stopped-motor value) | Not handled |
@@ -1555,12 +1557,14 @@ test, passed:
   diverging throttle profiles for 60 seconds: 30,221 of 30,221 and 30,220 of
   30,221 CRC-valid, ~504 records/s sustained, no dropped records.
 
-Not verified: a fourth pair (channel 4, sm6/rx7 on PIO1) reproducibly failed -
-about 322 records/s against a 450/s floor, and 61.1% CRC-valid - even when it
-was the only pair on its block, which rules out block sharing as the cause.
-The cause is unknown (its pin, wiring or ESC channel are all candidates) and
-it is parked; the relative-IRQ mechanism itself is confirmed by the other
-three channels.
+Correction (2026-10-19, from the owner): an earlier version of this entry reported a
+fourth pair (channel 4, sm6/rx7 on PIO1) as failing reproducibly for an unknown cause
+(322 records/s against a 450/s floor, 61.1% CRC-valid even as the only pair on its
+block) and parked it. That conclusion is wrong. The failure was a defect in this
+project's own code; the PIO state machines and the channel were not the cause. The
+specific defect is not recorded here. Do not treat channel 4 as a known-bad channel on
+the strength of that earlier report. The relative-IRQ mechanism itself is confirmed by
+channels 1 to 3.
 
 ### Command-loop and decode performance (2026-09-19)
 

@@ -1,5 +1,7 @@
 # Bidirectional DShot on Raspberry Pi Pico 2 — Conceptual & Implementation Review
 
+**Update 2026-10-19:** this review predates the removal of the unpaced loop. Every mention of an "unpaced" or "maximum-rate" `update()` loop, or of `UPDATE_INTERVAL_US = 0`, describes a mode that no longer exists: the only mode is the paced loop at 1045us.
+
 **Review basis:** the current project files and ADR material provided in this conversation, especially `dshot_pio.py`, `motor_group.py`, and `ADR-002-bidirectional-dshot.md`.
 
 **Review status:** 2026-08-25
@@ -1030,7 +1032,7 @@ but not a squash).
    `dshot_bidir_tx` comment for the full history.
    **Channel 2 was confirmed bidir-capable** (its ESC had no motor mounted, but an unmotored
    ESC still replies to bidir DShot telemetry): 100% CRC-valid (34884/34884),
-   2026-08-30_21-22-07. **Channel 4 is PARKED** — reproducibly failed (record rate ~322/s vs a
+   2026-08-30_21-22-07. **Channel 4 was PARKED - CORRECTED 2026-10-19 by the owner: the failure was a defect in our own code, not the PIO state machines or the channel; the "root cause unknown" below is wrong** — reproducibly failed (record rate ~322/s vs a
    500/s floor, and corrupted telemetry down to 61.1% CRC-valid) even with its bidir pair
    isolated alone on its PIO block, ruling out block-sharing as the cause. Root cause unknown
    and not pursued — channel 4 has no motor on this ESC instance. **A second 4-in-1 ESC
@@ -1091,7 +1093,7 @@ but not a squash).
 | W15 | ADR-002 accuracy fixes | A1, A2, A3, A6, A7 | S | DONE (2026-09-19) |
 | W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
-| W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | MOSTLY DONE (scenario engine and channels 1/2/3 solid; channel 4 PARKED, root cause unknown) - own harness-failure-path gating condition never completed, later found to be a real gap, see BUG-008 (OPEN) |
+| W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | MOSTLY DONE (scenario engine and channels 1/2/3 solid; channel 4 was PARKED; corrected 2026-10-19: the failure was a defect in our own code, not PIO or the channel) - own harness-failure-path gating condition never completed, later found to be a real gap, see BUG-008 (OPEN) |
 | W19 | Run-length capture in the PIO receiver | — | L | DONE (code), hardware verification of W27/W28 still open - see those rows. Spike DONE 2026-09-20 (100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us); integrated as an opt-in `receiver=` 2026-09-26, validated on the bench (W23-W25), adopted as the sole production receiver (W26), harness ported and sample receiver removed from `BidirectionalDShot` (W27-W28, code done 2026-09-26, bench was powered off) |
 | W20 | Tests restructured into harness / unit / device; harness on `MotorGroup`; multi-motor RX stall fixed | — | L | DONE (2026-09-20, branch `cleanup/tests-restructure`) |
 | W21 | Bench-confirm the ESC bootloader-hang root cause (F2, F3) | D1, D2 | S | DONE (2026-09-25) — both falsifiers confirmed: a single bidirectional motor alone triggers the hang (F3), and driving the line low without a reset recovers it (F2) |
@@ -1115,6 +1117,8 @@ but not a squash).
 | W37 | Harness not-running check (`SpinWatch`) and mandatory `max_gap_ms` | — | S | DONE (2026-10-13) - healthy path bench-verified on two scenarios; failing path unit-tested only; BUG-008's per-motor silent-ESC check and reboot-after-ARMED flag remain open |
 | W38 | Published arming promise (>=99% within 3.0 s) in README/CLAUDE.md; batch runner bound 3000 ms | — | S | DONE (2026-10-13), evidence updated 2026-10-14 - the promise is stated with its evidence and its scope (one scenario, warm ESC, DSHOT600); the evidence still supports less than 99%, see W35 |
 | W39 | Batch runner reports pass/fail and arming time as separate `key=value` lines (`RUN`, `RESULT`, `ARMING_TIME`, `SCHEDULE`), with margin under the bound per run | — | S | DONE (2026-10-14) - unit-tested; run against the real bench for 3 and 100 runs |
+| W40 | Extract code that is written twice into a shared submodule / utils module, so each fact has one home | — | M | TODO (added 2026-11-01, found while moving the wingman code into one folder) |
+| W41 | STANDING: RPM-disk and reflective-sensor tests (eRPM vs physical shaft RPM, optical start-quality recording and KPI), paused and removed from the codebase 2026-11-02 | — | M | STANDING (paused until disks can be mounted) |
 
 ### Work items
 
@@ -1891,7 +1895,7 @@ only two channels with motors physically mounted on this ESC instance, and the a
 requirement. A second 4-in-1 ESC instance exists with all 4 channels motor-mounted, but work on
 it is deliberately deferred until confidence is established on this 2-motor bench.
 
-**Channel 4 — PARKED, not pursued further.** Channels 1, 2, and 3 are all established (channel
+**Channel 4 — PARKED, not pursued further. CORRECTED 2026-10-19 (owner): the failure was a defect in our own code; the PIO state machines and the channel were not the cause, so the "specific to channel 4 itself" conclusion below is wrong.** Channels 1, 2, and 3 are all established (channel
 2's ESC has no motor mounted but confirmed replying correctly to bidir DShot telemetry, 100%
 CRC-valid over 34884 records, 2026-08-30_21-22-07). Channel 4 (`channel4_bidir_bringup.json`,
 bidir pair sm6/rx7 on PIO1) failed three times, reproducibly:
@@ -2734,3 +2738,37 @@ stands, but only as a relative comparison: both arms ran with the same confound,
 absolute fall-behind counts (the confound raised `update()`'s own cost from ~530us to ~560-615us,
 directly raising how often a tick blows its budget) but affects both arms alike, so the before/after
 difference between them is still meaningful even though the absolute counts on each side are not.
+
+**W40 — Extract code that is written twice into a shared submodule / utils module** · `tests/bench/wingman/`, `driver/`, `scripts/`
+
+Added 2026-11-01 (owner), nothing is changed yet. In plain words: some facts are written down in two places and kept equal only by a
+comment or a test. Each should have one home that every user imports, so a change cannot leave one copy behind.
+
+Known candidates, all found while moving the wingman code (spy, ESC mock, start line, PC tools) into `tests/bench/wingman/`:
+- the spy's stream format (magic byte, marker value, entry layout, tick length) is written in `board/spy.py` (runs on the wingman) and
+  again in `pc/spy_edge_log.py` (reads it on the PC), kept equal by a comment and a unit test;
+- AM32's not-running reply word is written in `driver/gcr_decode.py` and again in `shared/esc_mock_format.py` (a test keeps them equal);
+- the two board IDs and the "refuse the main Pico" rule live in `pc/wingman_board.py`; check that nothing else copies them
+  (`scripts/run_session.py` reads them from there);
+- `scripts/analyze_bidir_capture_log.py` and `scripts/check_scenario.py` import `decode_tally` and `scenario` from `tests/bench`, the same
+  PC-tool-reaching-into-tests pattern the frame decoder move to `driver/dshot_frame_decode.py` removed for the spy tools;
+- the reply timing constants (bit time, reply delay after our frame) appear in the spy's AM32 checks, in `board/esc_mock.py` and in
+  `driver/gcr_decode.py` / `driver/dshot_profiles.py`.
+
+**Done when:** each listed fact has one home imported by every user, the tests of the consumers still pass, no second copy is left.
+
+**W41 — STANDING: RPM-disk and reflective-sensor tests** · removed 2026-11-02 (owner)
+
+In plain words: tests that need an RPM disk on a motor shaft and the reflective sensor on GPIO 14 cannot run now (channel 4 does not spin up with the disks mounted, on
+either of the owner's two AM32 ESCs, and the start KPI is limited to Gemfan 2218 props without disks), so they were deleted instead of left half-working. They are
+kept in git: restore them from commit `bf59186` (the last commit that has them) with `git checkout bf59186 -- tests/bench/rpm_accuracy tests/bench/rpm_disk.py
+scripts/run_optical_rpm_modes.py tests/pc/test_run_optical_rpm_modes.py`, and add back the `rpm_disk.py` upload in `scripts/deploy.py` and the `rpm_accuracy` entry in
+`SCRIPT_DIRS` in `scripts/run_test.py`. The start-quality recorder and its 14 configs (`tests/bench/start_quality/`, `scripts/run_start_quality.py`) were removed in an
+earlier commit (`e82c232`) and are restored the same way if the optical start KPI is wanted.
+
+What they did: `test_esc_rpm_vs_optical_rpm.py` compared the ESC's eRPM with the shaft RPM the sensor measured (the 6.02 eRPM-per-RPM factor in AM32.md section 9 and
+README came from it); `run_optical_rpm_modes.py` compared the shaft RPM across DSHOT300/600 regular and bidirectional modes; the start recorder judged a start from the
+shaft (BUG-009's optical KPI items: first turn, settling, jerks, stall).
+
+**Done when:** disks can be mounted without breaking channel 4's start. Then restore, re-measure the eRPM-per-RPM factor with the Gemfan 2218 props, and decide
+whether the optical start KPI returns. Until then nothing in the repo may depend on the disks or the sensor.

@@ -17,6 +17,11 @@ from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES, FRAME_CYCLES_PER_BIT, f
 # reads it on every frame of every motor.
 MAX_THROTTLE = 2047
 
+# TEMPORARY bench ceiling (owner's decision 2026-10-19): throttles above this are not tested yet, so
+# send_throttle_command() and MotorGroup.set_throttle() reject them instead of sending them. Raise or
+# remove it when higher throttles are tested; MAX_THROTTLE stays the protocol's own limit.
+THROTTLE_CEILING = 250
+
 
 class InvalidThrottleException(Exception):
     def __init__(self,message):
@@ -192,6 +197,7 @@ class DShotPIO:
 
     # Exposed for applications and MotorGroup; see the module constant
     MAX_THROTTLE = MAX_THROTTLE
+    THROTTLE_CEILING = THROTTLE_CEILING
 
     # Each subclass overrides this. send_throttle_command() inverts the CRC
     # when it is True, and application code reads it to tell the two apart.
@@ -291,7 +297,7 @@ class DShotPIO:
         Send a throttle command to the ESC.
 
         Args:
-            throttle: Throttle value (0 to MAX_THROTTLE)
+            throttle: Throttle value (0 to THROTTLE_CEILING, the temporary bench ceiling)
 
         Values 1-47 are DShot commands, not throttle: AM32 executes them
         (beep, direction, EEPROM save). This level sends them as given;
@@ -304,8 +310,8 @@ class DShotPIO:
         """
         if throttle < 0:
             raise InvalidThrottleException("Throttle cannot be negative.")
-        if throttle > MAX_THROTTLE:
-            raise InvalidThrottleException("Throttle value is too high. Maximum value is " + str(MAX_THROTTLE) + ".")
+        if throttle > THROTTLE_CEILING:
+            raise InvalidThrottleException("Throttle value is too high. The temporary bench ceiling is " + str(THROTTLE_CEILING) + ".")
 
         # Build 12-bit value: 11-bit throttle shifted left, telemetry bit = 0
         packetValue = throttle << 1

@@ -141,28 +141,17 @@ class SchedulingTestCase(unittest.TestCase):
         timestamps = self.run_calls(runner, len(costs), work_us=costs)
         self.assertEqual(self.gaps(timestamps), [INTERVAL_US] * (len(costs) - 1))
 
-    def test_zero_interval_means_no_fixed_pacing_at_all(self):
-        # MotorGroup.UPDATE_INTERVAL_US's own meaning: back to back, as fast
-        # as update() returns - no deadline, so nothing can fall behind.
-        runner = Core1Runner(None, interval_us=0)
-        costs = [0, 200, 5000, 100, 0]
-        timestamps = self.run_calls(runner, len(costs), work_us=costs)
-        # gap i is exactly call i's own cost - nothing added, nothing absorbed
-        self.assertEqual(self.gaps(timestamps), costs[:-1])
-        self.assertEqual(runner.schedule_behind_count, 0)
+    def test_an_unpaced_loop_is_not_supported(self):
+        # An interval of 0 (call update() back to back, as fast as it returns) was the library
+        # default until 2026-10-19 and was removed: it is rejected at construction, which also
+        # rules out the catch-up loop that never advances when the interval is 0.
+        for bad in (0, -1):
+            with self.assertRaises(ValueError):
+                Core1Runner(None, interval_us=bad)
 
-    def test_zero_interval_does_not_hang(self):
-        # Real regression, found by review 2026-10-08, before it ever ran on
-        # the bench: fixed_schedule defaulting to True (2026-10-07, before
-        # that mode was removed entirely 2026-10-09) made this reachable by
-        # any scenario that leaves core1_interval_us unset (bins_off.json,
-        # the CLAUDE.md usage example both do). The deadline branch's inner
-        # catch-up loop never advances next_due when interval_us is 0, so
-        # without a guard this test never returns - it would hang the whole
-        # suite, not just fail an assertion.
-        runner = Core1Runner(None, interval_us=0)
-        timestamps = self.run_calls(runner, 5, work_us=0)
-        self.assertEqual(len(timestamps), 5)
+    def test_the_interval_has_no_default(self):
+        with self.assertRaises(TypeError):
+            Core1Runner(None)
 
 
 class StopTest(unittest.TestCase):

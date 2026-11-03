@@ -5,10 +5,13 @@ This is the script that actually spins motors - see deploy.py if you only want
 to upload files without running anything.
 
 Run from project root:
-  python scripts/run_test.py --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_300.json
+  python scripts/run_test.py --scenario tests/bench/dshot_protocol/scenarios/four_channel_bidirectional_600.json
                                                    # runs the scenario runner (the default script)
   python scripts/run_test.py test_capture_slot_stress.py   # runs another script from tests/bench/*,
                                                    # --scenario uploads the file as scenario.json
+  python scripts/run_test.py --scenario <file> --session 2026-10-29_21-30-00   # --session is required: the PC names
+                                                   # every session, the Pico has no clock. Normally use
+                                                   # scripts/run_session.py, which makes the name and runs this.
 
 Pico must be connected on COM10. mpremote interrupts any running script on connect;
 deploy() resets the board before every run regardless (see deploy.py's module
@@ -19,6 +22,7 @@ import re
 import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,7 +36,7 @@ DEFAULT_TEST_SCRIPT = "run_scenario.py"
 
 # Where a script named on the command line is looked for, in order. tests/pc is
 # not here: those tests run on a PC, not on the Pico.
-SCRIPT_DIRS = ["tests/bench/dshot_protocol", "tests/bench/pio_and_cores", "tests/bench/rpm_accuracy"]
+SCRIPT_DIRS = ["tests/bench/dshot_protocol", "tests/bench/pio_and_cores"]
 
 # A killed-on-timeout run leaves the Pico still spinning motors, so this is
 # generous rather than tight (bidirectional_dshot_review.md's W31).
@@ -41,6 +45,11 @@ RUN_TIMEOUT_S = 600
 # run_scenario.py prints this line once it knows its own session name - the
 # same name scripts/pull_captures.py later pulls the binary captures under.
 SESSION_LINE_RE = re.compile(r"Session: */sd/dshot_captures/(\S+)")
+
+
+def new_session_name(now=None):
+    """The PC names every session, YYYY-MM-DD_HH-MM-SS from this PC's clock; the Pico has no clock."""
+    return (now or datetime.now()).strftime("%Y-%m-%d_%H-%M-%S")
 
 
 def main():
@@ -54,6 +63,19 @@ def main():
             sys.exit(1)
         scenario_path = args[idx + 1]
         del args[idx:idx + 2]
+
+    session = None
+    if "--session" in args:
+        idx = args.index("--session")
+        if idx + 1 >= len(args):
+            print("--session requires a name")
+            sys.exit(1)
+        session = args[idx + 1]
+        del args[idx:idx + 2]
+
+    if session is None:
+        print("--session <name> is required: the PC names every session (scripts/run_session.py does it for you)")
+        sys.exit(1)
 
     name = args[0] if args else DEFAULT_TEST_SCRIPT
     matches = [ROOT / d / name for d in SCRIPT_DIRS if (ROOT / d / name).exists()]
@@ -69,7 +91,7 @@ def main():
         print("run_scenario.py needs --scenario <path to a scenario JSON>")
         sys.exit(1)
 
-    if not deploy.deploy(scenario_path):
+    if not deploy.deploy(scenario_path, session):
         sys.exit(1)
 
     print(f"\nRunning {test_script.relative_to(ROOT)} on {COM_PORT} (live output)...\n")

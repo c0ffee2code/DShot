@@ -2,7 +2,7 @@
 DSHOT_SPEEDS / BIDIR_PROFILES - pure data, no hardware imports (unlike
 dshot_pio.py, which imports machine/rp2/utime at module level and can
 therefore only run under MicroPython on the Pico). They live here so PC-side
-tooling (e.g. scripts/verify_gcr_decode_port.py) can read the live values
+tooling (e.g. scripts/simulate_frame_receiver.py) can read the live values
 directly instead of keeping a hand-maintained copy that can drift out of sync.
 
 driver/dshot_pio.py imports and re-exports both names, so

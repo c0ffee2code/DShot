@@ -4,7 +4,7 @@ Does not run anything on the Pico - see run_test.py for that.
 
 Run from project root:
   python scripts/deploy.py                          # library files only
-  python scripts/deploy.py --scenario tests/bench/dshot_protocol/scenarios/two_channel_divergent_300.json
+  python scripts/deploy.py --scenario tests/bench/dshot_protocol/scenarios/four_channel_bidirectional_600.json
                                                       # also uploads the scenario as scenario.json
 
 Pico must be connected on COM10.
@@ -18,6 +18,7 @@ before the run is the only fix found for it.
 
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -37,10 +38,14 @@ LIBRARY_FILES = [
     ("driver/gcr_decode.py", "gcr_decode.py"),
     ("driver/motor_group.py", "motor_group.py"),
     ("tests/bench/core1_runner.py", "core1_runner.py"),
+    ("tests/bench/wingman/main_pico/start_line.py", "start_line.py"),
+    ("tests/bench/pin_timing.py", "pin_timing.py"),
+    ("tests/bench/pin_sampler.py", "pin_sampler.py"),
+    ("tests/bench/pacing_probe.py", "pacing_probe.py"),
+    ("driver/dshot_frame_decode.py", "dshot_frame_decode.py"),
     ("tests/bench/throttle_profile.py", "throttle_profile.py"),
     ("tests/bench/scenario.py", "scenario.py"),
     ("tests/bench/session_recorder/sdcard.py", "sdcard.py"),
-    ("tests/bench/session_recorder/pcf8523.py", "pcf8523.py"),
     ("tests/bench/session_recorder/capture_sink.py", "capture_sink.py"),
     ("tests/bench/session_recorder/bidir_capture_sink.py", "bidir_capture_sink.py"),
     ("tests/bench/decode_tally.py", "decode_tally.py"),
@@ -50,6 +55,16 @@ LIBRARY_FILES = [
 # has no mechanism to pass an extra file/argument into the running script,
 # so a chosen scenario file has to land at this fixed name instead.
 SCENARIO_REMOTE_NAME = "scenario.json"
+
+# The session name the PC chose for this run (scripts/run_session.py), left for the session recorder on the
+# Pico to use as its SD folder name. A deploy without a session removes any file left from an earlier run, so
+# a stale name is never reused.
+SESSION_REMOTE_NAME = "session_name.txt"
+
+
+def remove_remote(remote_name):
+    subprocess.run([PYTHON, "-m", "mpremote", "connect", COM_PORT, "rm", f":{remote_name}"],
+                   capture_output=True, text=True, timeout=30)
 
 
 def upload(local_rel, remote_name):
@@ -68,9 +83,9 @@ def upload(local_rel, remote_name):
     return True
 
 
-def deploy(scenario_path=None):
+def deploy(scenario_path=None, session=None):
     """
-    Upload the library files (and, if given, a scenario JSON as scenario.json),
+    Upload the library files (and, if given, a scenario JSON as scenario.json and the session name as session_name.txt),
     then reset the board. Returns True if every upload succeeded, False otherwise
     - the board is only reset on full success, since resetting after a partial
     upload would leave a half-updated, freshly-reset device.
@@ -88,6 +103,17 @@ def deploy(scenario_path=None):
             ok += 1
         else:
             failed += 1
+
+    if session is not None:
+        with tempfile.TemporaryDirectory() as folder:
+            name_file = Path(folder) / SESSION_REMOTE_NAME
+            name_file.write_text(session)
+            if upload(str(name_file), SESSION_REMOTE_NAME):
+                ok += 1
+            else:
+                failed += 1
+    else:
+        remove_remote(SESSION_REMOTE_NAME)
 
     print(f"\nUploaded {ok}, failed {failed}.")
     if failed:
@@ -120,13 +146,22 @@ def main():
         scenario_path = args[idx + 1]
         del args[idx:idx + 2]
 
+    session = None
+    if "--session" in args:
+        idx = args.index("--session")
+        if idx + 1 >= len(args):
+            print("--session requires a name")
+            sys.exit(1)
+        session = args[idx + 1]
+        del args[idx:idx + 2]
+
     if args:
         print("deploy.py only uploads files and resets the board - it takes no other "
               "arguments and runs nothing on the Pico. Use scripts/run_test.py to run a "
               "test script.")
         sys.exit(1)
 
-    sys.exit(0 if deploy(scenario_path) else 1)
+    sys.exit(0 if deploy(scenario_path, session) else 1)
 
 
 if __name__ == "__main__":

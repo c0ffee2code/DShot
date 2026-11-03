@@ -19,6 +19,9 @@
 # is also loaded PC-side (see DSHOT_SPEED_NAMES in scenario.py for the same
 # pattern). Update both places together if it ever changes.
 MAX_THROTTLE = 2047
+# Mirrors driver/dshot_pio.py's THROTTLE_CEILING, the temporary bench ceiling: a profile above it is a load
+# error, so a scenario never reaches the point where MotorGroup would reject it mid-run.
+THROTTLE_CEILING = 250
 # Mirrors MotorGroup.MIN_THROTTLE: DShot values 1-47 are commands, which
 # MotorGroup refuses, so a profile that would produce one is a load error.
 MIN_THROTTLE = 48
@@ -32,7 +35,7 @@ def check_not_command(value, what):
         )
 
 
-def compile_segments(segments, cursor, throttle):
+def compile_segments(segments, cursor, throttle, ceiling=THROTTLE_CEILING):
     """
     Compile one segment list (a motor's top-level profile, or a repeat's
     inner segments) starting at absolute time `cursor` with the throttle
@@ -45,9 +48,9 @@ def compile_segments(segments, cursor, throttle):
 
         if kind == "hold":
             value = segment["throttle"]
-            if value < 0 or value > MAX_THROTTLE:
+            if value < 0 or value > ceiling:
                 raise ValueError(
-                    "hold throttle must be 0.." + str(MAX_THROTTLE) + ", got " + str(value)
+                    "hold throttle must be 0.." + str(ceiling) + " (temporary bench ceiling), got " + str(value)
                 )
             check_not_command(value, "hold throttle")
             duration_ms = segment["duration_ms"]
@@ -57,9 +60,9 @@ def compile_segments(segments, cursor, throttle):
 
         elif kind == "ramp":
             to = segment["to"]
-            if to < 0 or to > MAX_THROTTLE:
+            if to < 0 or to > ceiling:
                 raise ValueError(
-                    "ramp target must be 0.." + str(MAX_THROTTLE) + ", got " + str(to)
+                    "ramp target must be 0.." + str(ceiling) + " (temporary bench ceiling), got " + str(to)
                 )
             step = segment["step"]
             duration_ms = segment["duration_ms"]
@@ -101,7 +104,7 @@ def compile_segments(segments, cursor, throttle):
             iterations = 0
             while cursor - start_cursor < total_ms:
                 before = cursor
-                inner_waypoints, cursor, throttle = compile_segments(inner, cursor, throttle)
+                inner_waypoints, cursor, throttle = compile_segments(inner, cursor, throttle, ceiling)
                 waypoints.extend(inner_waypoints)
                 iterations += 1
                 if cursor == before:
@@ -131,8 +134,8 @@ class ThrottleProfile:
                                                 # non-decreasing elapsed_ms
     """
 
-    def __init__(self, segments):
-        waypoints, total_duration_ms, _ = compile_segments(segments, 0, 0)
+    def __init__(self, segments, ceiling=THROTTLE_CEILING):
+        waypoints, total_duration_ms, _ = compile_segments(segments, 0, 0, ceiling)
         if not waypoints or waypoints[0][0] != 0:
             waypoints.insert(0, (0, 0))
         self.waypoints = waypoints

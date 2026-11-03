@@ -81,16 +81,24 @@ class DecodeTally:
         values = sorted(self.erpms[:self.erpm_count])
         return values[self.erpm_count // 2]
 
+    def not_judged(self, min_crc_valid_pct=None, min_median_erpm=None):
+        """
+        A message when thresholds were given but the sample is too small to judge them, else None.
+        Sampling rarely is the owner's choice (decode_every), so a thin sample is reported, never failed:
+        the real replies are on the spy's recording.
+        """
+        if (min_crc_valid_pct is None and min_median_erpm is None) or self.sampled >= MIN_SAMPLES:
+            return None
+        return "only " + str(self.sampled) + " captures decoded, need " + str(MIN_SAMPLES) + " to judge"
+
     def check(self, min_crc_valid_pct=None, min_median_erpm=None):
         """
         The thresholds this tally misses, as a list of messages (empty when met).
-        A threshold given on a sample smaller than MIN_SAMPLES is itself a miss.
+        A sample smaller than MIN_SAMPLES judges nothing (see not_judged()) and so misses nothing.
         """
         failures = []
-        if min_crc_valid_pct is None and min_median_erpm is None:
-            return failures
-        if self.sampled < MIN_SAMPLES:
-            failures.append("only " + str(self.sampled) + " captures decoded, need " + str(MIN_SAMPLES))
+        if self.not_judged(min_crc_valid_pct, min_median_erpm) is not None or (
+                min_crc_valid_pct is None and min_median_erpm is None):
             return failures
         if min_crc_valid_pct is not None and self.crc_valid_pct() < min_crc_valid_pct:
             failures.append("crc_valid=" + str(round(self.crc_valid_pct(), 1)) + "% < min_crc_valid_pct=" +
@@ -146,4 +154,56 @@ class SpinWatch:
 
     def tripped(self, throttle, now_ms):
         return self.stuck_ms(throttle, now_ms) > self.limit_ms
+
+
+# TEMPORARY (owner, 2026-10-20): the over-speed guard is switched off while the plateau reading on some
+# channels is investigated, so runs are not ended at the start. The scenario runner and the start
+# recorder both read this. Set it to True to bring the guard back; the SpinWatch failsafe and the
+# throttle ceiling are not affected.
+OVERSPEED_GUARD_ENABLED = False
+
+
+class OverspeedWatch:
+    """
+    Per-motor over-speed guard for the bench, for one motor.
+
+    A motor must not report a real eRPM far above what its commanded throttle
+    gives. The limit is erpm_per_throttle x the highest throttle commanded in
+    the last hold_ms (a motor that was just slowed down is still coasting, so
+    the lower throttle does not tighten the limit at once). The default 300
+    sits about 1.4x above this bench's slowest healthy case (throttle 60 reads
+    about 8,400 eRPM, at most 12,500) and about 1.2x above its fastest (throttle
+    300 reads about 75,000). Throttle 0 is never judged.
+
+    `consecutive` decoded readings in a row above the limit trip it, so one
+    stray CRC-valid value (BUG-009's single 30,000,000 eRPM reading) does not,
+    while a motor that really runs away does, within a few decodes. Times are
+    milliseconds since the run started; the caller supplies them.
+    """
+
+    def __init__(self, erpm_per_throttle=300, hold_ms=2000, consecutive=5):
+        self.erpm_per_throttle = erpm_per_throttle
+        self.hold_ms = hold_ms
+        self.consecutive = consecutive
+        self.peak = 0
+        self.peak_ms = 0
+        self.run = 0
+
+    def note_throttle(self, throttle, now_ms):
+        """Call with the motor's commanded throttle just before note_erpm()."""
+        if throttle >= self.peak or now_ms - self.peak_ms > self.hold_ms:
+            self.peak = throttle
+            self.peak_ms = now_ms
+
+    def limit_erpm(self):
+        return self.erpm_per_throttle * self.peak
+
+    def note_erpm(self, erpm):
+        """Call for a decode that is CRC-valid, not 'not running' and has an eRPM.
+        Returns True once `consecutive` readings in a row exceed the limit."""
+        if self.peak > 0 and erpm > self.erpm_per_throttle * self.peak:
+            self.run += 1
+        else:
+            self.run = 0
+        return self.run >= self.consecutive
 

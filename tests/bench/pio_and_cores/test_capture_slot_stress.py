@@ -7,7 +7,8 @@
 # it cannot return half of one capture and half of the next, and it is never
 # refused. MicroPython on the RP2350 runs the two cores truly in parallel with no
 # global interpreter lock, so this test hammers that against a writer far faster
-# than a real ESC.
+# than a real ESC. The writer is deliberately unpaced: this is a stress of the slot, not a
+# usage pattern. The real command loop is always paced at MotorGroup.UPDATE_INTERVAL_US.
 #
 # No motor and no ESC power are needed: the RX state machine is replaced by a
 # fake that supplies synthetic words, so the real drain_rx() and

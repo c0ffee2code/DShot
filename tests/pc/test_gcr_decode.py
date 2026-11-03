@@ -10,8 +10,8 @@
 #
 # Covers every 12-bit value via a synthetic reply: GCR-encoded, turned into
 # a 21-bit frame the way the frame receiver would hand it over, then
-# decoded. scripts/verify_gcr_decode_port.py cross-checks the same path
-# against an independent PC-side reference; this file is what runs without it.
+# decoded. DriverMatchesPcReferenceTest below cross-checks the same path against the
+# independent PC-side reference in scripts/dshot_bidir_decode.py.
 
 import sys
 import unittest
@@ -149,6 +149,26 @@ class NotRunningFrameTest(unittest.TestCase):
         result = gcr_decode.analyze_frame(gcr_decode.AM32_NOT_RUNNING_FRAME)
         self.assertTrue(result["crc_ok"])
         self.assertTrue(result["not_running"])
+
+
+class DriverMatchesPcReferenceTest(unittest.TestCase):
+    """driver/gcr_decode.py (on the Pico) and scripts/dshot_bidir_decode.py (the PC reference) decode the same frames alike."""
+
+    def test_every_12_bit_value_decodes_the_same_and_so_do_corrupted_frames(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        import dshot_bidir_decode
+        checked = 0
+        for data12 in range(4096):
+            frame = frame_for([GCR_CODE[n] for n in nibbles16(reply_number(data12))])
+            for variant in (frame, frame ^ 1, frame ^ (1 << 7), frame ^ (1 << 20)):
+                ours = gcr_decode.analyze_frame(variant)
+                reference = dshot_bidir_decode.analyze_frame(variant)
+                self.assertEqual(ours["crc_ok"], reference["crc_ok"], (data12, variant))
+                self.assertEqual(ours["data12"], reference["data12"], (data12, variant))
+                self.assertEqual(ours["not_running"], reference["not_running"], (data12, variant))
+                self.assertEqual(ours["erpm"], reference["erpm"], (data12, variant))
+                checked += 1
+        self.assertEqual(4 * 4096, checked)
 
 
 if __name__ == "__main__":

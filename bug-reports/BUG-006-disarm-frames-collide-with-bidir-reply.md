@@ -1,5 +1,7 @@
 # BUG-006: `disarm()` queues bidirectional frames back to back into the ESC's reply window
 
+**Update 2026-10-19:** the loop this report describes as "unpaced" / "maximum rate" (`UPDATE_INTERVAL_US = 0`, `update()` back to back) no longer exists. The only mode is the paced loop at 1045us, and a scenario cannot choose its own period. What follows records the earlier unpaced loop and was not re-measured on the paced one.
+
 **Update 2026-10-13:** the `disarm()` half of this bug no longer exists - `disarm()` transmits nothing now (ADR-004's revision note), so there are no disarm frames to collide. Only the `update()` exposure below remains.
 
 **Status:** `disarm()`'s own collision is gone (first fixed with `DISARM_ROUND_GAP_US`; since 2026-10-13 `disarm()` transmits nothing, so the constant no longer exists). `update()`'s "same

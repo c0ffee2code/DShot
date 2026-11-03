@@ -34,7 +34,7 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 │    - a machine.Timer IRQ                                    │
 │    - its own cooperative main loop                          │
 │                                                             │
-│         group.update()   <- at least every 1ms              │
+│         group.update()   <- every 1045us, steady            │
 │         group.set_throttle(index, value)                    │
 └──────────────────────────────┬──────────────────────────────┘
                                │

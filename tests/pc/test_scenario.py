@@ -13,7 +13,9 @@ import fakes  # noqa: E402,F401
 from scenario import build_scenario, load_scenario  # noqa: E402
 from throttle_profile import ThrottleProfile  # noqa: E402
 
-SCENARIOS = sorted((BENCH / "dshot_protocol" / "scenarios").glob("*.json"))
+SCENARIO_DIR = BENCH / "dshot_protocol" / "scenarios"
+# the baseline scenarios are loaded strictly
+SCENARIOS = sorted(SCENARIO_DIR.glob("*.json"))
 
 
 def valid_scenario():
@@ -33,7 +35,7 @@ def valid_scenario():
         "expect": {"max_gap_ms": 150},
         "motors": [
             {"pin": 6, "sm_id": 0, "bidirectional": True, "rx_sm_id": 1,
-             "hardware": {"name": "Test Motor 1104", "kv": 7200, "magnets": 12},
+             "hardware": {"name": "Test Motor 1104", "kv": 7200, "magnets": 12, "propeller": "Test Prop 2218"},
              "profile": [{"type": "hold", "throttle": 100, "duration_ms": 1000}]},
             {"pin": 7, "sm_id": 8, "bidirectional": False, "profile": idle},
             {"pin": 8, "sm_id": 9, "bidirectional": False, "profile": idle},
@@ -116,23 +118,37 @@ class ScenarioValidationTest(unittest.TestCase):
 
     def test_hardware_is_kept_and_converts_erpm_to_shaft_rpm(self):
         hardware = build_scenario(valid_scenario()).motors[0].hardware
-        self.assertEqual((hardware.name, hardware.kv, hardware.magnets), ("Test Motor 1104", 7200, 12))
+        self.assertEqual((hardware.name, hardware.kv, hardware.magnets, hardware.propeller), ("Test Motor 1104", 7200, 12, "Test Prop 2218"))
         self.assertEqual(hardware.pole_pairs, 6)
         self.assertAlmostEqual(hardware.shaft_rpm(20604), 3434.0)
 
     def test_hardware_fields_are_required(self):
-        for field in ("name", "kv", "magnets"):
+        for field in ("name", "kv", "magnets", "propeller"):
             with self.subTest(field):
                 self.rejected(lambda d: d["motors"][0]["hardware"].pop(field),
                               "missing required field: " + field)
 
     def test_hardware_values_are_checked(self):
-        bad = {"name": ["", "a\nb", 5], "kv": [0, -1, "7200", True], "magnets": [0, 1, 13, "12", True]}
+        bad = {"name": ["", "a\nb", 5], "kv": [0, -1, "7200", True], "magnets": [0, 1, 13, "12", True], "propeller": ["", "a\nb", 5, None]}
         for field, values in bad.items():
             for value in values:
                 with self.subTest(field=field, value=value):
                     self.rejected(lambda d: d["motors"][0]["hardware"].update({field: value}),
                                   "hardware: " + field)
+
+    def test_a_bare_shaft_is_declared_with_none_not_by_leaving_the_propeller_out(self):
+        scenario = build_scenario(valid_scenario())
+        self.assertEqual("Test Prop 2218", scenario.motors[0].hardware.propeller)
+        data = valid_scenario()
+        data["motors"][0]["hardware"]["propeller"] = "none"
+        self.assertEqual("none", build_scenario(data).motors[0].hardware.propeller)
+
+    def test_a_session_recorded_before_propellers_were_recorded_reads_as_not_recorded(self):
+        data = valid_scenario()
+        del data["motors"][0]["hardware"]["propeller"]
+        self.assertEqual("not recorded", build_scenario(data, historic=True).motors[0].hardware.propeller)
+        with self.assertRaisesRegex(ValueError, "propeller"):
+            build_scenario(data)
 
     def test_receiver_id_must_follow_the_transmitter(self):
         self.rejected(lambda d: d["motors"][0].update(rx_sm_id=3), "sm_id + 1")
@@ -163,6 +179,24 @@ class ScenarioValidationTest(unittest.TestCase):
 
     def test_min_send_interval_nonzero_is_rejected_as_retired(self):
         self.rejected(lambda d: d.update(min_send_interval_us=1000), "retired")
+
+    def test_core1_interval_us_is_rejected_as_retired_whatever_its_value(self):
+        # 2026-10-19: there is one paced loop (MotorGroup.UPDATE_INTERVAL_US) and a scenario cannot
+        # choose its own period - not another one, and above all not 0 (no pacing at all)
+        for value in (0, 1045, 5000):
+            with self.subTest(value):
+                self.rejected(lambda d, v=value: d.update(core1_interval_us=v), "retired")
+
+    def test_a_historic_session_loads_under_the_rules_of_its_own_day(self):
+        # sessions pulled from the SD card ran before the throttle ceiling and before the key above
+        # was retired; reading them must not raise, while a scenario about to run still does
+        data = valid_scenario()
+        data["core1_interval_us"] = 0
+        data["motors"][0]["profile"] = [{"type": "hold", "throttle": 300, "duration_ms": 1000}]
+        scenario = build_scenario(data, historic=True)
+        self.assertEqual(scenario.motors[0].profile.max_throttle, 300)
+        with self.assertRaises(ValueError):
+            build_scenario(data)
 
     def test_core1_fixed_schedule_true_is_a_harmless_leftover_value(self):
         data = valid_scenario()
@@ -235,9 +269,9 @@ class ScenarioValidationTest(unittest.TestCase):
 class ThrottleProfileTest(unittest.TestCase):
     def test_hold(self):
         profile = ThrottleProfile([{"type": "hold", "throttle": 100, "duration_ms": 1000},
-                                   {"type": "hold", "throttle": 300, "duration_ms": 500}])
+                                   {"type": "hold", "throttle": 250, "duration_ms": 500}])
         self.assertEqual(profile.total_duration_ms, 1500)
-        self.assertEqual([profile.throttle_at(t) for t in (0, 999, 1000, 1499)], [100, 100, 300, 300])
+        self.assertEqual([profile.throttle_at(t) for t in (0, 999, 1000, 1499)], [100, 100, 250, 250])
 
     def test_ramp_moves_in_equal_steps(self):
         profile = ThrottleProfile([{"type": "hold", "throttle": 100, "duration_ms": 100},
@@ -307,12 +341,14 @@ class ThrottleProfileTest(unittest.TestCase):
             {"type": "hold", "throttle": 60, "duration_ms": 0}]}], "zero duration")
 
     def test_hold_throttle_out_of_range_is_rejected(self):
-        self.rejected([{"type": "hold", "throttle": 2048, "duration_ms": 100}], "0..2047")
-        self.rejected([{"type": "hold", "throttle": -1, "duration_ms": 100}], "0..2047")
+        self.rejected([{"type": "hold", "throttle": 251, "duration_ms": 100}], "0..250")
+        self.rejected([{"type": "hold", "throttle": 2048, "duration_ms": 100}], "0..250")
+        self.rejected([{"type": "hold", "throttle": -1, "duration_ms": 100}], "0..250")
 
     def test_ramp_target_out_of_range_is_rejected(self):
-        self.rejected([{"type": "ramp", "to": 2048, "step": 1, "duration_ms": 100}], "0..2047")
-        self.rejected([{"type": "ramp", "to": -1, "step": 1, "duration_ms": 100}], "0..2047")
+        self.rejected([{"type": "ramp", "to": 251, "step": 1, "duration_ms": 100}], "0..250")
+        self.rejected([{"type": "ramp", "to": 2048, "step": 1, "duration_ms": 100}], "0..250")
+        self.rejected([{"type": "ramp", "to": -1, "step": 1, "duration_ms": 100}], "0..250")
 
 
 if __name__ == "__main__":

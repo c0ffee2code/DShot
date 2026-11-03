@@ -1,158 +1,129 @@
 """
-analyze_bidir_capture_log.py — decode a pulled scenario capture session (see
-scripts/pull_captures.py) into per-motor CRC-valid rate, eRPM history, and
-throttle-trace verification, using the shared decode algorithm in
-dshot_bidir_decode.py and the same scenario.py/throttle_profile.py the
-device itself validated the scenario against.
+analyze_bidir_capture_log.py - decode the sampled capture of a scenario session (captures/<session>/capture.bin, written
+by tests/bench/session_recorder/bidir_capture_sink.py) with the PC-side decoder in dshot_bidir_decode.py, and check it
+against what the Pico decoded itself.
 
 Run from project root:
   python scripts/analyze_bidir_capture_log.py [captures/<session>]
 
 With no argument, analyzes the most recently pulled session under captures/.
 
-Refuses to compute anything beyond outcome/record count on a session whose
-meta.txt says outcome != completed - mirrors Flight-Benchy's gate.py failing
-fast before verdict.py ever runs on a bad flight. Then re-checks the
-scenario's own "expect" thresholds PC-side (belt-and-suspenders against the
-on-device check) and exits non-zero if any is missed.
+What the log is: one record each time the Pico decoded a reply (every `decode_every`-th capture of a motor, the
+"sampled" decode): the time, the four throttles, each motor's latest raw capture (21-bit reply frame with a 9-bit publish
+token above it) and a flag byte naming the motor that was decoded and whether that decode failed on the Pico. The
+Pico writes nothing per reply; every reply on the wire is in spy.bin. So this script checks the decoder:
+each sampled word is decoded here, the per-motor tally must equal the Pico's, and every failed flag must agree with the
+decode here. The words carry their token, so any of them can be found on the spy's recording.
+
+Refuses a session whose meta does not say capture_kind=sampled (an older per-pass log is not read) and one whose outcome is
+not completed. Then re-checks the scenario's own "expect" thresholds: the decode thresholds on the sampled tally, the gap and
+rate thresholds from the Pico's own counters (meta largest_gap_us, capture_passes), which the log cannot show any more.
+Exits non-zero if any is missed.
 """
 
 import struct
 import sys
 from pathlib import Path
+import session_files  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "bench"))
 sys.path.insert(0, str(ROOT / "driver"))
 
-from dshot_bidir_decode import analyze_frame
-from decode_tally import DecodeTally, is_sampled
+from dshot_bidir_decode import analyze_frame, FRAME_LENGTH_BITS
+from decode_tally import DecodeTally
 from scenario import load_scenario
 
-# ticks_us, throttle0..3, then one word per motor (the frame receiver's
-# already-reconstructed frame) - must match tests/bench/session_recorder/bidir_capture_sink.py's
-# BidirCaptureSink.RECORD_FMT
-_RECORD_FMT = "<I4H4I"
-_RECORD_SIZE = struct.calcsize(_RECORD_FMT)
-
-_ZERO_GROUP = (0,)
+# ticks_us, flags, throttle0..3, capture0..3 - must match
+# tests/bench/session_recorder/bidir_capture_sink.py's BidirCaptureSink.RECORD_FMT
+RECORD_FMT = "<IB4H4I"
+RECORD_SIZE = struct.calcsize(RECORD_FMT)
+FLAG_FAILED = 0x80
+FLAG_MOTOR_MASK = 0x03
+CAPTURE_KIND = "sampled"
+# A capture is the 21-bit reply frame with the 9-bit publish token above it (driver/capture_mailbox.py, which needs
+# MicroPython and so cannot be imported here)
+FRAME_BITS = FRAME_LENGTH_BITS
+FRAME_MASK = (1 << FRAME_BITS) - 1
 
 
 def load_meta(session_dir):
-    meta = {}
-    for line in (session_dir / "meta.txt").read_text().splitlines():
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        meta[key.strip()] = value.strip()
-    return meta
+    return session_files.load_device_meta(session_dir)
 
 
 def load_records(session_dir):
+    """The log as dicts: ticks_us, motor, device_failed, throttles, captures (4 each)."""
     raw = (session_dir / "capture.bin").read_bytes()
-    count = len(raw) // _RECORD_SIZE
-    return [struct.unpack_from(_RECORD_FMT, raw, i * _RECORD_SIZE) for i in range(count)]
+    if len(raw) % RECORD_SIZE:
+        sys.exit(f"capture.bin is {len(raw)} bytes, not a whole number of {RECORD_SIZE}-byte records")
+    records = []
+    for i in range(len(raw) // RECORD_SIZE):
+        fields = struct.unpack_from(RECORD_FMT, raw, i * RECORD_SIZE)
+        records.append({"ticks_us": fields[0], "motor": fields[1] & FLAG_MOTOR_MASK,
+                        "device_failed": bool(fields[1] & FLAG_FAILED),
+                        "throttles": fields[2:6], "captures": fields[6:10]})
+    return records
 
 
 def most_recent_session(captures_dir):
-    sessions = sorted(p for p in captures_dir.iterdir() if p.is_dir())
+    sessions = sorted(p for p in captures_dir.iterdir() if session_files.is_session(p) and session_files.is_evidence(p))
     if not sessions:
         sys.exit(f"No sessions found under {captures_dir} - run "
-                  f"scripts/pull_captures.py first.")
+                 f"scripts/run_session.py or scripts/pull_captures.py first.")
     return sessions[-1]
 
 
-def _motor_words(record, motor_index):
-    base = 5 + motor_index
-    return record[base:base + 1]
+def decode_failed(result):
+    """The rule the Pico uses (run_scenario.py): no result, no reconstructable frame, or a CRC that does not match."""
+    return result is None or result["full"] is None or not result["crc_ok"]
 
 
-def _new_motor_state():
-    return {
-        "crc_valid": 0, "completed_groups": 0,
-        "fail_streak": 0, "longest_fail_streak": 0,
-        "last_success_ticks_us": None, "largest_gap_us": 0,
-        "erpm_min": None, "erpm_max": None, "erpm_sum": 0.0, "erpm_count": 0,
-        "erpms": [],
-        # what the device's sampled decode should have tallied: the same rule
-        # (every Nth non-empty capture of this motor), replayed on the log
-        "seen": 0, "sample": DecodeTally(),
-    }
+def new_motor_state():
+    return {"sample": DecodeTally(), "erpms": [], "failures": [], "flag_mismatches": 0, "samples": 0}
 
 
-def analyze_records(records, bidir_indices, decode_every):
-    per_motor = {i: _new_motor_state() for i in bidir_indices}
-    overall_largest_gap_us = 0
-    last_ticks_us = None
-
+def analyze_records(records, bidir_indices):
+    per_motor = {i: new_motor_state() for i in bidir_indices}
     for record in records:
-        ticks_us = record[0]
-
-        if last_ticks_us is not None:
-            gap = (ticks_us - last_ticks_us) & 0xFFFFFFFF
-            if gap > overall_largest_gap_us:
-                overall_largest_gap_us = gap
-        last_ticks_us = ticks_us
-
-        for index in bidir_indices:
-            words = _motor_words(record, index)
-            if words == _ZERO_GROUP:
-                continue  # no telemetry group completed for this motor this record
-
-            state = per_motor[index]
-            state["completed_groups"] += 1
-            result = analyze_frame(words[0])
-            state["seen"] += 1
-            if is_sampled(state["seen"], decode_every):
-                state["sample"].add(result)
-            ok = result is not None and result["crc_ok"]
-            if ok:
-                state["crc_valid"] += 1
-                state["fail_streak"] = 0
-                if state["last_success_ticks_us"] is not None:
-                    gap = (ticks_us - state["last_success_ticks_us"]) & 0xFFFFFFFF
-                    if gap > state["largest_gap_us"]:
-                        state["largest_gap_us"] = gap
-                state["last_success_ticks_us"] = ticks_us
-                erpm = result["erpm"]
-                if erpm is not None:
-                    state["erpm_count"] += 1
-                    state["erpm_sum"] += erpm
-                    state["erpms"].append(erpm)
-                    if state["erpm_min"] is None or erpm < state["erpm_min"]:
-                        state["erpm_min"] = erpm
-                    if state["erpm_max"] is None or erpm > state["erpm_max"]:
-                        state["erpm_max"] = erpm
-            else:
-                state["fail_streak"] += 1
-                if state["fail_streak"] > state["longest_fail_streak"]:
-                    state["longest_fail_streak"] = state["fail_streak"]
-
-    return per_motor, overall_largest_gap_us
+        state = per_motor.get(record["motor"])
+        if state is None:
+            continue
+        capture = record["captures"][record["motor"]]
+        frame = capture & FRAME_MASK
+        result = analyze_frame(frame)
+        state["samples"] += 1
+        state["sample"].add(result)
+        failed = decode_failed(result)
+        if failed != record["device_failed"]:
+            state["flag_mismatches"] += 1
+        if failed:
+            state["failures"].append({"ticks_us": record["ticks_us"], "token": capture >> FRAME_BITS, "frame": frame,
+                                      "device_flagged": record["device_failed"]})
+        elif result["erpm"] is not None:
+            state["erpms"].append(result["erpm"])
+    return per_motor
 
 
-
-
-def compare_with_device(meta, per_motor):
-    """
-    Messages for every motor whose on-device sampled decode tally differs from the
-    one replayed here on the same captures. The device decodes in MicroPython, this
-    script in CPython with an independent decoder: a difference means the two
-    disagree about the same words (or a capture was lost between the device and
-    the log).
-    """
+def compare_with_device(meta, per_motor, records):
+    """Messages for every disagreement between this decode of the log and what the Pico wrote about the same run."""
     failures = []
+    if "samples_written" in meta and int(meta["samples_written"]) != len(records):
+        failures.append(f"the Pico wrote {meta['samples_written']} samples, the log holds {len(records)}")
+    flagged = sum(1 for r in records if r["device_failed"])
+    if "samples_failed" in meta and int(meta["samples_failed"]) != flagged:
+        failures.append(f"the Pico counted {meta['samples_failed']} failed samples, {flagged} are flagged in the log")
     for index, state in per_motor.items():
         prefix = f"motor{index}_decode_"
-        if prefix + "sampled" not in meta:
-            continue  # a session from before the device decoded
-        replayed = state["sample"]
-        for name in ("sampled", "crc_ok", "crc_fail", "invalid"):
-            on_device = int(meta[prefix + name])
-            here = getattr(replayed, name)
-            if on_device != here:
-                failures.append(f"motor {index}: the device tallied {name}={on_device}, the "
-                                f"same captures decoded here give {here}")
+        if prefix + "sampled" in meta:
+            for name in ("sampled", "crc_ok", "crc_fail", "invalid"):
+                on_device = int(meta[prefix + name])
+                here = getattr(state["sample"], name)
+                if on_device != here:
+                    failures.append(f"motor {index}: the device tallied {name}={on_device}, the "
+                                    f"same words decoded here give {here}")
+        if state["flag_mismatches"]:
+            failures.append(f"motor {index}: {state['flag_mismatches']} samples where the device's failed flag "
+                            f"disagrees with the decode here")
     return failures
 
 
@@ -161,38 +132,27 @@ def median(values):
     return ordered[len(ordered) // 2]
 
 
-def check_expect(expect, largest_gap_us, total_records, elapsed_ms, per_motor):
+def check_expect(expect, meta, duration_ms, per_motor):
     failures = []
 
     max_gap_ms = expect.get("max_gap_ms")
-    if max_gap_ms is not None and largest_gap_us / 1000 > max_gap_ms:
-        failures.append(f"largest_gap={largest_gap_us / 1000:.1f}ms > max_gap_ms={max_gap_ms}")
+    gap_us = int(meta.get("largest_gap_us", 0))
+    if max_gap_ms is not None and gap_us / 1000 > max_gap_ms:
+        failures.append(f"largest_gap={gap_us / 1000:.1f}ms > max_gap_ms={max_gap_ms}")
 
     min_rate = expect.get("min_record_rate_hz")
-    if min_rate is not None and elapsed_ms > 0:
-        rate = total_records / (elapsed_ms / 1000)
+    if min_rate is not None and duration_ms > 0 and "capture_passes" in meta:
+        rate = int(meta["capture_passes"]) / (duration_ms / 1000)
         if rate < min_rate:
-            failures.append(f"record_rate={rate:.1f}/s < min_record_rate_hz={min_rate}")
+            failures.append(f"pass rate={rate:.1f}/s < min_record_rate_hz={min_rate}")
 
-    for motor_index_str, min_pct in expect.get("min_crc_valid_pct", {}).items():
-        motor_index = int(motor_index_str)
-        state = per_motor.get(motor_index)
-        completed = state["completed_groups"] if state else 0
-        actual_pct = (state["crc_valid"] / completed * 100) if state and completed else 0.0
-        if actual_pct < min_pct:
-            failures.append(f"motor {motor_index} crc_valid={actual_pct:.1f}% < "
-                             f"min_crc_valid_pct={min_pct}%")
-
-    # A CRC-valid reply only shows the telemetry link works: an armed ESC replies with
-    # a constant at-rest eRPM (917) even when the motor never starts. The median
-    # eRPM is what shows the motor actually turning.
-    for motor_index_str, min_median in expect.get("min_median_erpm", {}).items():
-        state = per_motor.get(int(motor_index_str))
-        actual = median(state["erpms"]) if state and state["erpms"] else 0.0
-        if actual < min_median:
-            failures.append(f"motor {motor_index_str} median eRPM={actual:.0f} < "
-                             f"min_median_erpm={min_median}")
-
+    # A CRC-valid reply only shows the telemetry link works: an armed ESC replies with a constant at-rest eRPM (917) even
+    # when the motor never starts, so the median eRPM is what shows the motor turning. Same rule as on the device.
+    crc = expect.get("min_crc_valid_pct", {})
+    erpm = expect.get("min_median_erpm", {})
+    for index, state in per_motor.items():
+        for message in state["sample"].check(crc.get(str(index)), erpm.get(str(index))):
+            failures.append(f"motor {index}: {message}")
     return failures
 
 
@@ -206,54 +166,61 @@ def main():
     meta = load_meta(session_dir)
     outcome = meta.get("outcome", "unknown")
     print(f"Outcome: {outcome}")
+    if meta.get("capture_kind") != CAPTURE_KIND:
+        sys.exit(f"Refusing to analyze: capture_kind={meta.get('capture_kind')!r}, not {CAPTURE_KIND!r} - this script reads "
+                 f"only the sampled log (an older per-pass log is not read).")
     if outcome != "completed":
         sys.exit(f"Refusing to analyze: outcome={outcome!r}, not 'completed' - "
-                  f"this session's capture.bin is from an aborted run.")
+                 f"this session's capture.bin is from an aborted run.")
 
-    rx_clock_hz = int(meta["rx_clock_hz"])
     bidir_indices = [int(s) for s in meta.get("bidir_motor_indices", "").split(",") if s]
     missed = int(meta.get("captures_missed", 0))
-    print(f"dshot_speed={meta.get('dshot_speed')} rx_clock_hz={rx_clock_hz} "
-          f"bidir_motors={bidir_indices}")
+    print(f"dshot_speed={meta.get('dshot_speed')} sample_every={meta.get('sample_every')} bidir_motors={bidir_indices}")
 
-    scenario = load_scenario(session_dir / "scenario.json")
+    scenario_path = session_dir / "scenario.json"
+    if not scenario_path.is_file():
+        sys.exit(f"No scenario.json in {session_dir}: scripts/run_session.py puts the scenario there; "
+                 f"a session pulled by hand has none.")
+    scenario = load_scenario(scenario_path, historic=True)   # a pulled session ran under its own day's rules
 
     records = load_records(session_dir)
-    total = len(records)
-    print(f"Records: {total}  captures published but never seen (device-side): {missed}")
+    print(f"Samples: {len(records)} ({meta.get('samples_failed', '?')} flagged as failed by the device)  "
+          f"passes with a new capture: {meta.get('capture_passes', '?')}  "
+          f"captures published but never seen (device-side): {missed}")
     for index in bidir_indices:
         published = meta.get(f"motor{index}_captures_published")
         if published is not None:
             print(f"  motor {index}: {published} captures published")
     print()
 
-    per_motor, overall_largest_gap_us = analyze_records(records, bidir_indices, scenario.decode_every)
+    per_motor = analyze_records(records, bidir_indices)
 
     for index in bidir_indices:
         state = per_motor[index]
-        completed = state["completed_groups"]
-        pct = (state["crc_valid"] / completed * 100) if completed else 0.0
+        tally = state["sample"]
         hardware = scenario.motors[index].hardware
-        print(f"Motor {index}: CRC-valid {state['crc_valid']}/{completed} ({pct:.1f}%)  "
-              f"longest_fail_streak={state['longest_fail_streak']}  "
-              f"largest_gap={state['largest_gap_us'] / 1000:.1f}ms")
+        print(f"Motor {index}: {state['samples']} samples, CRC-valid {tally.crc_ok}/{tally.sampled} "
+              f"({tally.crc_valid_pct():.1f}%)  crc_fail={tally.crc_fail} invalid={tally.invalid}")
         if hardware is not None:
             print(f"           {hardware.name}, {hardware.kv} KV, {hardware.magnets} magnets "
-                  f"({hardware.pole_pairs} pole pairs)")
-        if state["erpm_count"]:
-            avg = state["erpm_sum"] / state["erpm_count"]
-            print(f"           eRPM: min={state['erpm_min']:.0f} median={median(state['erpms']):.0f} "
-                  f"max={state['erpm_max']:.0f} avg={avg:.0f}")
+                  f"({hardware.pole_pairs} pole pairs), propeller: {hardware.propeller}")
+        if state["erpms"]:
+            erpms = state["erpms"]
+            avg = sum(erpms) / len(erpms)
+            print(f"           eRPM: min={min(erpms):.0f} median={median(erpms):.0f} "
+                  f"max={max(erpms):.0f} avg={avg:.0f}")
             if hardware is not None:
                 print(f"           shaft RPM (eRPM / {hardware.pole_pairs}): "
-                      f"min={hardware.shaft_rpm(state['erpm_min']):.0f} "
-                      f"median={hardware.shaft_rpm(median(state['erpms'])):.0f} "
-                      f"max={hardware.shaft_rpm(state['erpm_max']):.0f}")
+                      f"min={hardware.shaft_rpm(min(erpms)):.0f} "
+                      f"median={hardware.shaft_rpm(median(erpms)):.0f} "
+                      f"max={hardware.shaft_rpm(max(erpms)):.0f}")
         else:
             print("           eRPM: no valid decodes to report")
-
-    print()
-    print(f"Overall largest gap between any two records: {overall_largest_gap_us / 1000:.1f}ms")
+        for failure in state["failures"][:10]:
+            print(f"           failed sample at {failure['ticks_us']} us: token {failure['token']} frame "
+                  f"0x{failure['frame']:06x} (device flagged it: {failure['device_flagged']})")
+        if len(state["failures"]) > 10:
+            print(f"           ... and {len(state['failures']) - 10} more failed samples")
 
     print()
     print(f"Device verdict: {meta.get('verdict', 'not recorded')}")
@@ -261,12 +228,15 @@ def main():
         print(f"Command loop: longest gap between update() calls {int(meta['max_loop_gap_us']) / 1000:.1f}ms")
     for index in bidir_indices:
         if f"motor{index}_decode_sampled" in meta:
-            tally = per_motor[index]["sample"]
             print(f"Motor {index} sampled decode (every {scenario.decode_every}th capture), replayed here: "
-                  f"{tally.summary()}")
-    failures = check_expect(scenario.expect, overall_largest_gap_us, total,
-                             scenario.duration_ms, per_motor)
-    failures += compare_with_device(meta, per_motor)
+                  f"{per_motor[index]['sample'].summary()}")
+    for index, state in per_motor.items():
+        note = state["sample"].not_judged(scenario.expect.get("min_crc_valid_pct", {}).get(str(index)),
+                                          scenario.expect.get("min_median_erpm", {}).get(str(index)))
+        if note:
+            print(f"Motor {index}: not judged ({note}); the spy's recording holds every reply")
+    failures = check_expect(scenario.expect, meta, scenario.duration_ms, per_motor)
+    failures += compare_with_device(meta, per_motor, records)
     if failures:
         print("expect thresholds NOT met:")
         for f in failures:

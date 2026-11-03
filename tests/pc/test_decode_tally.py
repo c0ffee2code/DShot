@@ -121,10 +121,14 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("median eRPM=917", failures[0])
 
-    def test_a_threshold_on_a_tiny_sample_is_a_miss(self):
-        failures = self.filled(MIN_SAMPLES - 1).check(min_crc_valid_pct=50.0)
-        self.assertEqual(len(failures), 1)
-        self.assertIn("need " + str(MIN_SAMPLES), failures[0])
+    def test_a_tiny_sample_judges_nothing_and_says_so(self):
+        tally = self.filled(MIN_SAMPLES - 1)
+        self.assertEqual([], tally.check(min_crc_valid_pct=50.0, min_median_erpm=10000))
+        self.assertIn("need " + str(MIN_SAMPLES), tally.not_judged(min_crc_valid_pct=50.0))
+        self.assertIsNone(tally.not_judged())
+
+    def test_a_full_sample_is_judged(self):
+        self.assertIsNone(self.filled(MIN_SAMPLES).not_judged(min_crc_valid_pct=50.0))
 
     def test_a_sample_of_exactly_the_minimum_is_enough(self):
         self.assertEqual(self.filled(MIN_SAMPLES).check(min_crc_valid_pct=99.0), [])

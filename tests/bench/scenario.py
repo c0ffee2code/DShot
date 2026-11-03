@@ -13,7 +13,7 @@
 
 import json
 
-from throttle_profile import ThrottleProfile
+from throttle_profile import ThrottleProfile, MAX_THROTTLE, THROTTLE_CEILING
 
 # Mirrors driver/dshot_pio.py's DSHOT_SPEEDS values directly rather than
 # importing them: dshot_pio.py has top-level `import utime`/`machine`/`rp2`
@@ -42,19 +42,29 @@ class MotorHardware:
     is half its rotor magnet count. A session's eRPM means nothing at the shaft
     without this (measured on the bench: eRPM / optical RPM = 6.02 for a 12-magnet
     motor, see specification/AM32.md#9).
+
+    The propeller is part of what the motor carries and decides whether a start
+    works (it is the load the rotor has to catch against), so it is a required
+    entry: its name, or "none" for a bare shaft. A run can then never be recorded
+    without saying what was on the motor.
     """
 
-    def __init__(self, name, kv, magnets):
+    def __init__(self, name, kv, magnets, propeller):
         self.name = name
         self.kv = kv
         self.magnets = magnets
+        self.propeller = propeller
         self.pole_pairs = magnets // 2
 
     def shaft_rpm(self, erpm):
         return erpm / self.pole_pairs
 
 
-def build_hardware(entry, index):
+NO_PROPELLER = "none"                    # the explicit entry for a bare shaft
+PROPELLER_NOT_RECORDED = "not recorded"  # a session recorded before propellers were part of the scenario reads as this
+
+
+def build_hardware(entry, index, historic=False):
     raw = entry.get("hardware")
     if raw is None:
         return None
@@ -69,7 +79,14 @@ def build_hardware(entry, index):
     if not isinstance(magnets, int) or isinstance(magnets, bool) or magnets < 2 or magnets % 2:
         raise ValueError(context + ": magnets must be an even whole number >= 2 "
                          "(the rotor's magnet count), got " + str(magnets))
-    return MotorHardware(name, kv, magnets)
+    if historic and "propeller" not in raw:
+        propeller = PROPELLER_NOT_RECORDED
+    else:
+        propeller = _require(raw, "propeller", context)
+        if not isinstance(propeller, str) or not propeller.strip() or "\n" in propeller:
+            raise ValueError(context + ": propeller must be a non-empty single-line string "
+                             "(its name, or \"none\" for a bare shaft), got " + repr(propeller))
+    return MotorHardware(name, kv, magnets, propeller)
 
 
 class MotorSpec:
@@ -84,8 +101,7 @@ class MotorSpec:
 
 class Scenario:
     def __init__(self, dshot_speed, duration_ms, arm_duration_ms,
-                 status_interval_ms, poll_ms, decode_every, expect, motors,
-                 core1_interval_us=None):
+                 status_interval_ms, poll_ms, decode_every, expect, motors):
         self.dshot_speed = dshot_speed
         self.duration_ms = duration_ms
         self.arm_duration_ms = arm_duration_ms
@@ -94,13 +110,6 @@ class Scenario:
         self.decode_every = decode_every
         self.expect = expect
         self.motors = motors
-        # Overrides MotorGroup.UPDATE_INTERVAL_US for this run only (None = use the
-        # library's own default). Exists to investigate BUG-002: it lets a scenario
-        # reproduce a slower Core 1 tick (e.g. the one two bidirectional motors'
-        # RX drain naturally produces) without actually wiring a second motor, to
-        # separate "the tick period" from "a second bidirectional TX/RX pair" as
-        # BUG-002's trigger. Not a knob for tuning real applications.
-        self.core1_interval_us = core1_interval_us
 
     @property
     def bidir_indices(self):
@@ -130,13 +139,16 @@ def pio_block(sm_id):
     return sm_id // 4
 
 
-def load_scenario(path):
+def load_scenario(path, historic=False):
+    """historic=True is for reading a session pulled from the SD card, which ran under the rules of its own
+    day: it skips the retired-key checks and the temporary throttle ceiling. A scenario about to run on the
+    bench is always loaded strictly."""
     with open(path) as f:
         data = json.load(f)
-    return build_scenario(data)
+    return build_scenario(data, historic)
 
 
-def build_scenario(data):
+def build_scenario(data, historic=False):
     dshot_speed_name = data["dshot_speed"]
     dshot_speed = DSHOT_SPEED_NAMES.get(dshot_speed_name)
     if dshot_speed is None:
@@ -204,7 +216,7 @@ def build_scenario(data):
         if not profile_raw:
             raise ValueError("motor " + str(index) + ": profile is required (idle motors still "
                               "need an explicit hold-at-0 profile)")
-        profile = ThrottleProfile(profile_raw)
+        profile = ThrottleProfile(profile_raw, MAX_THROTTLE if historic else THROTTLE_CEILING)
         if profile.total_duration_ms != duration_ms:
             raise ValueError(
                 "motor " + str(index) + ": profile duration " +
@@ -215,7 +227,7 @@ def build_scenario(data):
         # A motor that is ever commanded to spin must say what it is: every eRPM,
         # RPM and throttle figure collected from it depends on its magnet count and
         # KV. An idle placeholder channel needs no entry.
-        hardware = build_hardware(entry, index)
+        hardware = build_hardware(entry, index, historic)
         if hardware is None and profile.max_throttle >= MIN_SPIN_THROTTLE:
             raise ValueError("motor " + str(index) + ": commands throttle " +
                              str(profile.max_throttle) + " so it needs a hardware entry "
@@ -256,9 +268,12 @@ def build_scenario(data):
     if not isinstance(decode_every, int) or decode_every < 0:
         raise ValueError("decode_every must be a whole number >= 0, got " + str(decode_every))
 
-    core1_interval_us = data.get("core1_interval_us")
-    if core1_interval_us is not None and (not isinstance(core1_interval_us, int) or core1_interval_us < 0):
-        raise ValueError("core1_interval_us must be a whole number >= 0, got " + str(core1_interval_us))
+    # Retired 2026-10-19: every run uses the one paced loop at MotorGroup.UPDATE_INTERVAL_US. The key
+    # let a scenario pick another period, including 0 (no pacing at all); rejected outright, like
+    # the other retired keys, so an old file does not look like it still does something.
+    if not historic and "core1_interval_us" in data:
+        raise ValueError("core1_interval_us was retired 2026-10-19: every run uses MotorGroup.UPDATE_INTERVAL_US, "
+                         "the one paced loop")
 
     # Both retired 2026-10-03 (BUG-002 perf cleanup): class-bin ground-truth
     # classification and the min_send_interval_us pacing floor. Rejected
@@ -266,10 +281,10 @@ def build_scenario(data):
     # to a nonzero value, so an old file doesn't look like it's still doing
     # something it no longer does (see _require()'s own rationale above) - a
     # lingering "0" is harmless and left alone.
-    if data.get("arming_class_bin_width_us", 0):
+    if not historic and data.get("arming_class_bin_width_us", 0):
         raise ValueError("arming_class_bin_width_us was retired 2026-10-03; "
                           "CaptureMailbox no longer supports class-bin classification")
-    if data.get("min_send_interval_us", 0):
+    if not historic and data.get("min_send_interval_us", 0):
         raise ValueError("min_send_interval_us was retired 2026-10-03 - see BUG-002.md's "
                           "perf review; MotorGroup no longer supports a pacing floor")
 
@@ -284,7 +299,7 @@ def build_scenario(data):
     # Rejected outright, not silently ignored, if a scenario still sets this
     # to False (the removed meaning) - a lingering True is harmless and left
     # alone, since it already matches the only behavior there is now.
-    if data.get("core1_fixed_schedule", True) is False:
+    if not historic and data.get("core1_fixed_schedule", True) is False:
         raise ValueError("core1_fixed_schedule was retired 2026-10-09; Core1Runner no longer "
                           "supports the sleep-after-work pad mode")
 
@@ -313,5 +328,4 @@ def build_scenario(data):
         decode_every=decode_every,
         expect=expect,
         motors=motors,
-        core1_interval_us=core1_interval_us,
     )

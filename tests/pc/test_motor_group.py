@@ -100,7 +100,7 @@ class ArmingTest(GroupTestCase):
 
     def test_arm_starts_the_motors_and_zeroes_the_throttles(self):
         group = self.make([uni(0, 6), uni(1, 7)])
-        group.set_throttle(0, 500)
+        group.set_throttle(0, 200)
         group.arm(ARM_MS)
         self.assertEqual(group.state, ARMING)
         self.assertTrue(group.is_arming() and not group.is_armed())
@@ -120,7 +120,7 @@ class ArmingTest(GroupTestCase):
     def test_arming_window_sends_literal_zeros_even_if_a_throttle_is_set(self):
         group = self.make([uni(0, 6)])
         group.arm(ARM_MS)
-        group.set_throttle(0, 700)
+        group.set_throttle(0, 200)
         for _ in range(10):
             group.update()
             Clock.advance_ms(1)
@@ -329,7 +329,7 @@ class DisarmTest(GroupTestCase):
     def test_disarm_transmits_nothing_and_deactivates_everything(self):
         group = self.make([uni(0, 6), uni(1, 7)])
         self.arm_fully(group)
-        group.set_throttle(0, 900)
+        group.set_throttle(0, 200)
         group.update()
         sent = [list(motor.sm.sent) for motor in group.motors]
         group.disarm()
@@ -343,7 +343,7 @@ class DisarmTest(GroupTestCase):
     def test_a_word_queued_behind_disarm_is_not_sent_at_the_next_arm(self):
         group = self.make([uni(0, 6)])
         self.arm_fully(group)
-        group.set_throttle(0, 900)
+        group.set_throttle(0, 200)
         group.update()
         group.disarm()
         # Another core's update() put one more word after the reset
@@ -398,13 +398,28 @@ class DisarmTest(GroupTestCase):
         self.assertTrue(group.is_armed())
 
 
+class UpdateIntervalTest(GroupTestCase):
+    def test_the_update_period_is_the_one_bench_verified_value(self):
+        # 1045us is what README's "Verified Parameters" table (20/20, then 13/13 clean) and CLAUDE.md's
+        # Operational Envelope rest on. There is no unpaced mode (0 was the default until 2026-10-19):
+        # changing this number is a deliberate act that needs new evidence and these docs updated.
+        self.assertEqual(MotorGroup.UPDATE_INTERVAL_US, 1045)
+
+
 class ThrottleTest(GroupTestCase):
-    def test_set_throttle_clamps_to_the_valid_range(self):
+    def test_set_throttle_clamps_a_negative_value_to_zero(self):
         group = self.make([uni(0, 6)])
         group.set_throttle(0, -5)
         self.assertEqual(group.get_all_throttles(), [0])
-        group.set_throttle(0, 99999)
-        self.assertEqual(group.get_all_throttles(), [group.MAX_THROTTLE])
+
+    def test_set_throttle_rejects_above_the_temporary_bench_ceiling(self):
+        group = self.make([uni(0, 6)])
+        group.set_throttle(0, group.THROTTLE_CEILING)
+        self.assertEqual(group.get_all_throttles(), [group.THROTTLE_CEILING])
+        for value in (group.THROTTLE_CEILING + 1, 300, 2047, 99999):
+            with self.assertRaises(MotorGroupException):
+                group.set_throttle(0, value)
+        self.assertEqual(group.get_all_throttles(), [group.THROTTLE_CEILING])
 
     def test_set_throttle_rejects_the_dshot_command_range(self):
         group = self.make([uni(0, 6)])
@@ -412,7 +427,7 @@ class ThrottleTest(GroupTestCase):
             with self.assertRaises(MotorGroupException):
                 group.set_throttle(0, value)
         self.assertEqual(group.get_all_throttles(), [0])
-        for value in (0, 48, 2047):
+        for value in (0, 48, 250):
             group.set_throttle(0, value)
             self.assertEqual(group.get_all_throttles(), [value])
 
@@ -431,10 +446,13 @@ class ThrottleTest(GroupTestCase):
 
     def test_set_all_throttles_needs_one_value_per_motor(self):
         group = self.make([uni(0, 6), uni(1, 7)])
-        group.set_all_throttles([60, 3000])
-        self.assertEqual(group.get_all_throttles(), [60, group.MAX_THROTTLE])
+        group.set_all_throttles([60, group.THROTTLE_CEILING])
+        self.assertEqual(group.get_all_throttles(), [60, group.THROTTLE_CEILING])
         with self.assertRaises(MotorGroupException):
             group.set_all_throttles([1])
+        with self.assertRaises(MotorGroupException):
+            group.set_all_throttles([60, group.THROTTLE_CEILING + 1])
+        self.assertEqual(group.get_all_throttles(), [60, group.THROTTLE_CEILING])
 
     def test_update_age_counts_from_the_last_transmission(self):
         group = self.make([uni(0, 6)])

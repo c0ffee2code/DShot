@@ -2,8 +2,8 @@
 Shared bidirectional DShot GCR telemetry decoder - PC-side (plain CPython).
 
 Counterpart: driver/gcr_decode.py is the on-device (MicroPython) port of
-this same algorithm, kept in sync by scripts/verify_gcr_decode_port.py - a
-permanent regression check, not a one-off. That port's check_crc() accepts
+this same algorithm, kept in sync by tests/pc/test_gcr_decode.py's parity test
+(every 12-bit value) - a permanent regression check, not a one-off. That port's check_crc() accepts
 only the inverted CRC polarity (real hardware data shows this ESC only ever
 produces inverted); this script deliberately keeps accepting both, since
 seeing a stray "plain" hit here would itself be diagnostic for exploration.
@@ -23,8 +23,7 @@ every live DShot speed had a verified fixed ratio (see decision/
 ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section). This
 script's job is analyzing any capture from any era or rate on demand - the
 sweep is what makes that possible for historical/pre-retune sessions that
-scripts/verify_gcr_decode_port.py no longer regression-checks
-automatically. Both estimate_bit_period (this file's own sweep) and
+nothing regression-checks automatically. Both estimate_bit_period (this file's own sweep) and
 estimate_bit_period_fixed (the shared fixed-ratio path) stay here; only
 the driver dropped the former.
 
@@ -190,9 +189,8 @@ def estimate_bit_period_fixed(edges, expected_ratio, tolerance=0.0):
     Betaflight-style fixed-ratio period estimate - PC-side counterpart to
     driver/gcr_decode.py's estimate_bit_period_fixed(). See that module's
     docstring and decision/ADR-002-bidirectional-dshot.md's fixed-ratio RX
-    sampling section for the full rationale. This copy exists so
-    scripts/verify_gcr_decode_port.py can diff the driver's fixed-ratio
-    path against a reference implementation, the same role this file
+    sampling section for the full rationale. This copy exists as a
+    reference implementation of the driver's fixed-ratio path, the same role this file
     already plays for the brute-force sweep below.
 
     tolerance=0.0 (default): returns expected_ratio directly, no search.
@@ -380,8 +378,8 @@ def analyze_capture(words, rx_clock_hz, expected_ratio=None, ratio_tolerance=0.0
 
     expected_ratio/ratio_tolerance: optional fixed-ratio fast path (see
     estimate_bit_period_fixed) - PC-side counterpart to driver/
-    gcr_decode.py's analyze_capture(), so scripts/verify_gcr_decode_port.py
-    can diff the driver's fixed-ratio path against this reference too.
+    gcr_decode.py's analyze_capture(), so the driver's fixed-ratio path
+    has a reference here too.
     Default (expected_ratio=None) keeps using the brute-force sweep
     exactly as before.
 

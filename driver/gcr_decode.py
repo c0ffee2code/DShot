@@ -14,9 +14,9 @@ which is PC-side and was the only other caller left.
 
 decode()/check_crc()/decode_result() are shared between analyze_frame() and
 scripts/dshot_bidir_decode.py (the PC-side reference) and
-scripts/simulate_frame_receiver.py. scripts/verify_gcr_decode_port.py's
-verify_frame_parity() checks analyze_frame() stays in sync with the
-reference - re-run it whenever either file changes.
+scripts/simulate_frame_receiver.py. tests/pc/test_gcr_decode.py's parity test checks
+analyze_frame() stays in sync with the reference, and scripts/analyze_bidir_capture_log.py
+checks it on real sampled captures.
 
 Unlike the reference script, check_crc() here accepts ONLY the inverted CRC
 polarity: every CRC-valid capture from real hardware has been inverted
@@ -136,10 +136,13 @@ def decode_result(frame):
     throttle (a polling-rate difference) was checked against this project's
     own measured numbers and ruled out - the gap is still unexplained. Treat
     the whole mechanism as a candidate, not confirmed: it already reversed
-    once between two source reads, and this driver's own TX-echo
-    capture path has not been ruled out as a competing explanation either. See
+    once between two source reads. It is not this driver's own TX echo: a
+    second Pico recording the signal line (2026-10-28) shows the ESC itself
+    sending data12=2 for 6-9 replies after the first throttle frame, which is
+    also what the source arithmetic gives for six zero intervals. Why the
+    intervals are still zero is not settled. See
     bug-reports/BUG-009-motors-sometimes-start-rough.md for the full,
-    still-open account - do not treat this as settled.
+    still-open account.
     """
     full = decode(frame)
     result = {

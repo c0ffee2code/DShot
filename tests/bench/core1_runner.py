@@ -19,10 +19,10 @@ from array import array
 
 class Core1Runner:
     """
-    Calls an update function on Core 1 at a fixed interval.
+    Calls an update function on Core 1 at a fixed, steady period.
 
     Usage:
-        runner = Core1Runner(motors.update)
+        runner = Core1Runner(motors.update, motors.UPDATE_INTERVAL_US)
         runner.start()
         ...
         if not runner.stop():
@@ -39,16 +39,17 @@ class Core1Runner:
     # so a healthy loop always makes it and only a stuck one does not.
     STOP_TIMEOUT_MS = 200
 
-    def __init__(self, update, interval_us=1000):
+    def __init__(self, update, interval_us):
         """
         Args:
             update: Zero-argument callable to invoke on Core 1
-            interval_us: Target period between calls (default: 1000us = 1kHz).
-                0 means no fixed pacing at all (MotorGroup.UPDATE_INTERVAL_US's
-                own meaning) - update() is called back to back, as fast as it
-                returns.
+            interval_us: Period between calls, required and positive (use
+                MotorGroup.UPDATE_INTERVAL_US). A loop with no pacing, update()
+                called back to back as fast as it returns, was the library
+                default until 2026-10-19 and was removed by the owner: 0 or a
+                negative value raises ValueError.
 
-                A positive value is an absolute period, held by anchoring
+                The period is absolute, held by anchoring
                 each deadline to the *previous* one and sleeping only what is
                 left of the current one - matching Betaflight's own
                 fixed-period scheduler (`nextTargetCycles = lastTargetCycles
@@ -82,6 +83,8 @@ class Core1Runner:
                 fix. The deadline-anchored mode here has armed 20/20, then
                 13/13, since.
         """
+        if interval_us <= 0:
+            raise ValueError("interval_us must be positive: an unpaced loop is not supported")
         self.update = update
         self.interval_us = interval_us
         self.running = False
@@ -94,8 +97,7 @@ class Core1Runner:
         # comment for what it becomes instead). Zero cost when on schedule -
         # this only increments inside the branch that already runs on the
         # rare path. Reset by start(), like self.error - read it after
-        # stop() for one run's count. Meaningless (stays 0) when
-        # interval_us<=0 - there is no deadline to fall behind.
+        # stop() for one run's count.
         self.schedule_behind_count = 0
 
         # Absolute ticks_us() of the first BEHIND_AT_CAPACITY fall-behind
@@ -170,43 +172,36 @@ class Core1Runner:
         interval_us = self.interval_us
 
         try:
-            if interval_us > 0:
-                ticks_us = utime.ticks_us
-                ticks_add = utime.ticks_add
-                ticks_diff = utime.ticks_diff
-                sleep_us = utime.sleep_us
-                next_due = ticks_us()
-                behind_at_us = self.behind_at_us
-                behind_at_capacity = self.BEHIND_AT_CAPACITY
-                while self.running:
-                    update()
-                    next_due = ticks_add(next_due, interval_us)
-                    now = ticks_us()
-                    remaining = ticks_diff(next_due, now)
-                    if remaining <= 0:
-                        # Fell behind - skip forward by whole periods
-                        # instead of resyncing to "now", which would fire
-                        # the very next call with zero gap (a burst) -
-                        # see BUG-002.md's "deadline underperforms the
-                        # pad" entry for why that burst, not just a
-                        # mistuned period, explained a real regression.
-                        # Matches Betaflight's own catch-up behavior
-                        # (scheduler.c skips forward by whole periods,
-                        # never fires immediately).
-                        count = self.schedule_behind_count
-                        if count < behind_at_capacity:
-                            behind_at_us[count] = now
-                        self.schedule_behind_count = count + 1
-                        while remaining <= 0:
-                            next_due = ticks_add(next_due, interval_us)
-                            remaining = ticks_diff(next_due, ticks_us())
-                    sleep_us(remaining)
-            else:
-                # No fixed pacing at all - call back to back, as fast as
-                # update() returns. There is no deadline to fall behind, so
-                # schedule_behind_count stays at its initial 0.
-                while self.running:
-                    update()
+            ticks_us = utime.ticks_us
+            ticks_add = utime.ticks_add
+            ticks_diff = utime.ticks_diff
+            sleep_us = utime.sleep_us
+            next_due = ticks_us()
+            behind_at_us = self.behind_at_us
+            behind_at_capacity = self.BEHIND_AT_CAPACITY
+            while self.running:
+                update()
+                next_due = ticks_add(next_due, interval_us)
+                now = ticks_us()
+                remaining = ticks_diff(next_due, now)
+                if remaining <= 0:
+                    # Fell behind - skip forward by whole periods
+                    # instead of resyncing to "now", which would fire
+                    # the very next call with zero gap (a burst) -
+                    # see BUG-002.md's "deadline underperforms the
+                    # pad" entry for why that burst, not just a
+                    # mistuned period, explained a real regression.
+                    # Matches Betaflight's own catch-up behavior
+                    # (scheduler.c skips forward by whole periods,
+                    # never fires immediately).
+                    count = self.schedule_behind_count
+                    if count < behind_at_capacity:
+                        behind_at_us[count] = now
+                    self.schedule_behind_count = count + 1
+                    while remaining <= 0:
+                        next_due = ticks_add(next_due, interval_us)
+                        remaining = ticks_diff(next_due, ticks_us())
+                sleep_us(remaining)
         except Exception as e:
             self.error = e
             self.running = False
@@ -214,9 +209,9 @@ class Core1Runner:
             self.stopped = True
 
 
-# How long fast_stop() lets the loop send throttle 0 before stopping it. At
-# the loop's usual rate that is dozens of frames; an ESC acts on the first
-# valid one.
+# How long fast_stop() lets the loop send throttle 0 before stopping it. At the
+# loop's period (MotorGroup.UPDATE_INTERVAL_US, 1045us) that is about 19 frames;
+# an ESC acts on the first valid one.
 FAST_STOP_SETTLE_MS = 20
 
 

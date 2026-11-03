@@ -1,5 +1,7 @@
 # ADR-005: Bidirectional Telemetry Data Flow
 
+**Update 2026-10-19:** the loop this report describes as "unpaced" / "maximum rate" (`UPDATE_INTERVAL_US = 0`, `update()` back to back) no longer exists. The only mode is the paced loop at 1045us, and a scenario cannot choose its own period. What follows records the earlier unpaced loop and was not re-measured on the paced one.
+
 **Status:** Accepted
 **Date:** 2026-09-19
 **Amends:** [ADR-004](ADR-004-client-owned-command-loop.md) (the facade's constructor and what `update()` does)

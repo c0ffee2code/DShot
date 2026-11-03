@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+import session_files  # noqa: E402
 
 PYTHON = sys.executable
 COM_PORT = "COM10"
@@ -139,7 +140,7 @@ def list_local():
     # directory holding only that log must still count as new.
     if not LOCAL_DIR.exists():
         return set()
-    return {p.name for p in LOCAL_DIR.iterdir() if p.is_dir() and (p / "meta.txt").exists()}
+    return {p.name for p in LOCAL_DIR.iterdir() if session_files.is_session(p)}
 
 
 def _delete_script(session_ids):
@@ -173,6 +174,7 @@ def fetch(new_ids, transfer_timeout=120):
             dest.mkdir(parents=True, exist_ok=True)
             for key in keys:
                 (dest / key.split("/", 1)[1]).write_bytes(files[key])
+            session_files.fold_device_meta(dest)
             ok.append(sid)
             print(f"  OK   {sid}")
         else:

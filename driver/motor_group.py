@@ -33,8 +33,11 @@ class MotorGroup:
     or main loop calls update(), because that is an architecture choice of the
     application, not of this library.
 
-    The only requirement is that update() is called at least every
-    UPDATE_INTERVAL_US while armed - ESCs disarm if commands stop arriving.
+    The only requirement is that update() is called at a steady period of
+    UPDATE_INTERVAL_US while armed - ESCs disarm if commands stop arriving, and
+    AM32's frame timing reacts to an uneven period (BUG-002). There is no
+    unpaced mode: calling update() back to back, as fast as it returns, is not
+    supported (removed 2026-10-19).
 
     Usage (application runs the loop on Core 1):
         from machine import Pin
@@ -46,7 +49,7 @@ class MotorGroup:
             BidirectionalDShot(2, Pin(5), DSHOT_SPEEDS.DSHOT600, rx_state_machine_id=3),
         ])
 
-        runner = Core1Runner(group.update)  # application-supplied, see tests/
+        runner = Core1Runner(group.update, group.UPDATE_INTERVAL_US)  # application-supplied, see tests/
         runner.start()
 
         group.arm()
@@ -61,16 +64,22 @@ class MotorGroup:
 
     Usage (application pumps update() from its own main loop):
         group.arm()
+        next_due = utime.ticks_us()
         while True:
             group.update()
-            ...application work, kept under UPDATE_INTERVAL_US...
-            utime.sleep_us(group.UPDATE_INTERVAL_US)
+            ...application work, kept well under UPDATE_INTERVAL_US...
+            next_due = utime.ticks_add(next_due, group.UPDATE_INTERVAL_US)
+            utime.sleep_us(max(0, utime.ticks_diff(next_due, utime.ticks_us())))
     """
 
-    # How often the application must call update(). 0 means "as fast as
-    # possible, no delay between calls", which is the rate the facade has been
-    # hardware-verified at (see the "Verified Parameters" table in README.md).
-    UPDATE_INTERVAL_US = 0
+    # The period at which the application must call update(), held steady: each
+    # deadline is anchored to the previous one (Core1Runner does this), so the
+    # achieved period does not depend on update()'s own cost. 1045us is the
+    # value the facade has been bench-verified at (README's "Verified
+    # Parameters" table). There is no "as fast as possible" mode: it was the
+    # default until 2026-10-19 and was removed by the owner, because AM32's
+    # frame timing reacts to an uneven period (BUG-002).
+    UPDATE_INTERVAL_US = 1045
 
     # Default arming window in milliseconds: the least time ARMING lasts. For a
     # unidirectional motor it is all there is - nothing comes back to observe -
@@ -102,8 +111,11 @@ class MotorGroup:
     READY_GAP_MS = 450
     READY_FRESH_MS = 50
 
-    # Highest throttle a motor will transmit; set_throttle() clamps to it
+    # Highest throttle the protocol can carry
     MAX_THROTTLE = DShotPIO.MAX_THROTTLE
+    # TEMPORARY bench ceiling (owner's decision 2026-10-19, see dshot_pio.THROTTLE_CEILING): set_throttle()
+    # rejects anything above it, because higher throttles are not tested yet
+    THROTTLE_CEILING = DShotPIO.THROTTLE_CEILING
     # DShot values 1-47 are commands (beep, direction, EEPROM save, ...), not
     # throttle. Commands are out of scope for now, so set_throttle() accepts
     # 0 (stop) or MIN_THROTTLE and above only.
@@ -279,7 +291,7 @@ class MotorGroup:
         Drain each bidirectional motor's reply FIFO, send one DShot command to
         each motor, and advance the arming sequence.
 
-        The application calls this at least every UPDATE_INTERVAL_US, from
+        The application calls this every UPDATE_INTERVAL_US, at a steady period, from
         whichever core or scheduling arrangement it chooses. Draining here is
         deliberate: an RX FIFO left undrained stalls the receiver, losing
         replies until it is drained again, so it must not depend on the
@@ -458,14 +470,17 @@ class MotorGroup:
     def clamp_throttle(self, value):
         """
         Limit a throttle to what a motor will transmit: 0, or MIN_THROTTLE to
-        MAX_THROTTLE. Out-of-range values are clamped; 1..MIN_THROTTLE-1 is
-        DShot's command range, which this driver does not offer, and is
-        rejected rather than clamped (BUG-005).
+        THROTTLE_CEILING. Negative values are clamped to 0. 1..MIN_THROTTLE-1 is
+        DShot's command range, which this driver does not offer, and above
+        THROTTLE_CEILING is the temporary bench ceiling; both are rejected
+        rather than clamped (BUG-005).
         """
         if value < 0:
             return 0
-        if value > self.MAX_THROTTLE:
-            return self.MAX_THROTTLE
+        if value > self.THROTTLE_CEILING:
+            raise MotorGroupException(
+                "Throttle above " + str(self.THROTTLE_CEILING) + " is rejected (temporary bench ceiling)"
+            )
         if 0 < value < self.MIN_THROTTLE:
             raise MotorGroupException(
                 "Throttle 1-47 is the DShot command range, not supported"
@@ -478,8 +493,9 @@ class MotorGroup:
 
         Args:
             motor_index: Motor index (0-based)
-            value: 0 (stop) or MIN_THROTTLE-MAX_THROTTLE (48-2047). Values
-                outside 0-2047 are clamped; 1-47 raises MotorGroupException.
+            value: 0 (stop) or MIN_THROTTLE-THROTTLE_CEILING (48-250, a
+                temporary bench ceiling). Negative values are clamped to 0;
+                1-47 and anything above the ceiling raise MotorGroupException.
 
         Accepted while disarmed, but nothing is transmitted until the group is
         armed, and arm() resets all throttles to zero.
