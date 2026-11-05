@@ -26,7 +26,7 @@ plain polarity as well would double the false-accept probability of the
 4-bit CRC (2/16 instead of 1/16) for a polarity the hardware never produces.
 The reference script accepts both because a stray plain hit is diagnostic
 there; this module is the driver's validity gate and has no such use for it.
-scripts/verify_am32_reply.py independently confirms the whole GCR table
+tests/pc/test_am32_reply_path.py independently confirms the whole GCR table
 against AM32's own encoder: it reproduces make_dshot_package() line for
 line and decodes all 2,304 distinct payloads AM32 can emit, with 0
 mismatches against this module.

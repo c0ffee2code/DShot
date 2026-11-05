@@ -98,6 +98,15 @@ paced channel's spacing went from 1023-1065 us (p1-p99) to 848-1265 us, and the 
    measurement includes the cost of a reply.
 4. If a Core 0 change brings the spread to the baseline, apply it to the scenario runner and re-measure.
 
+## Cross-check with the spy (2026-10-29)
+
+The wingman's spy (a second Pico recording every edge, independent of the main Pico's clock and code) recorded 46.5 s of
+four bidirectional lines (throttle 0/60/250 cycles) while Core 0 changed what it did. Frame spacing (min / median / max):
+idle 1024.6 / 1045.0 / 1069.0 us (std 5.1), USB print 739.6 / 1044.0 / 1333.9 (std 42.8), SD write 856.3 / 1042.1 /
+1286.9 (std 63.2), gc 978.7 / 1044.7 / 1095.4. The pin sampler (a different instrument, a separate run, GPIO 10-13) read
+p1 / p99 / max: idle 1032 / 1058 / 1071, print 861 / 1232 / 1297, SD 867 / 1227 / 1310 us. The two agree: with Core 0
+idle the spacing stays within about +-24 us of 1045 us, with USB printing or SD writing it swings by about +-300 us.
+
 ## Where the evidence is
 
 `tests/bench/pio_and_cores/test_pin_sampler.py` (the recorder self-test, passed), `test_core0_effect_on_pacing.py`

@@ -5,7 +5,7 @@ two roles, which can run together on the same board:
 
 | Role | What it does | Details |
 |------|--------------|---------|
-| **Spy** | Records every edge of the ESC signal lines and the start line and streams it to the PC. It only watches; it never drives a pin. | `SPY.md`; why its timing can be trusted: `SPY_EVIDENCE.md` |
+| **Spy** | Records every edge of the ESC signal lines and the start line and streams it to the PC. It only watches; it never drives a pin. | `SPY.md` (including why its timing can be trusted) |
 | **ESC mock** | Answers the main Pico's frames with recorded real ESC replies, so the reply path runs with no ESC and no motor. The ESC must be disconnected. | `ESC_MOCK.md` |
 
 Folder rule: **everything the wingman relies on lives here, grouped by the machine the code runs on.** It is equipment for the

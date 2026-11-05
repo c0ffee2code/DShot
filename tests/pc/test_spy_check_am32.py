@@ -160,11 +160,18 @@ class ReplySideTests(unittest.TestCase):
         results = check.run_checks(recording([0] * 400, replies=broken), from_first_frame=True)
         self.assertIn(result(results, "CRC-valid").status, (check.WARN, check.FAIL))
 
-    def test_reply_bit_time_is_matched_to_a_family(self):
-        results = self.with_replies(range(110, 400))
+    def test_a_reply_bit_time_off_the_f421_figure_is_a_warning(self):
+        results = self.with_replies(range(110, 400))                           # the test builds 1.3333us bits, not F421's 1.2833
         timing = result(results, "reply bit time")
-        self.assertEqual(timing.status, check.INFO)
-        self.assertIn("F415/V203", timing.detail)                              # 1.3333us is the bit time the test builds
+        self.assertEqual(timing.status, check.WARN)
+        self.assertIn("esc_buddy", timing.detail)
+
+    def test_the_f421_reply_bit_time_passes_at_both_speeds(self):
+        for speed, units in ((600, 12.83), (300, 25.67)):
+            records = [{"reply": {"bit_units": units, "delay": 231}} for _ in range(20)]
+            timing = check.check_reply_timing(records, speed)
+            self.assertEqual(timing.status, check.PASS, speed)
+            self.assertAlmostEqual(timing.values["off_pct"], 0, delta=0.1)
 
     def test_start_and_stuck_rotor_report(self):
         throttles = [0] * 300 + [60] * 700

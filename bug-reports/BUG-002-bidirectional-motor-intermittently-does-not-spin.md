@@ -111,6 +111,13 @@ everything pruned from this distillation, was deliberately not kept - by explici
 preparation for merging this branch (whose history is squashed at merge anyway). This summary is
 the permanent record.
 
+## What the recordings cannot show
+
+The session captures begin at `ARMED`: the arming phase itself is not logged, by design (see "Telemetry overhead and the
+timed window" above). So an arm that takes unusually long but still passes - for example a 2516 ms arm among otherwise
+2026-2027 ms arms (2026-10-14) - cannot be explained from its own session. The wingman's spy records every line edge
+from the start line on, including the arming phase, which is where such an outlier would have to be read.
+
 ## Related
 
 - BUG-001 - ruled out as cause or fix.

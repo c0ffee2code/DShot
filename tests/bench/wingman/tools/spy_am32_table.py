@@ -7,8 +7,8 @@ one column per recording, one row per measure, the worst of the recorded lines i
 Every row is a measure of tests/bench/wingman/tools/spy_check_am32.py (see its docstring for where in AM32's source each
 condition comes from) with the limit AM32 imposes next to it, so repeated runs can be laid side by side and the
 spread between them read off directly. This is the input side only: it reads our own frames on the spy, no
-ESC is involved. It describes the wire as the spy (+-0.1 us per edge) saw it; the tick-based limits assume an
-F051 build of AM32. The last block (frame spacing) is our own pace, not an AM32 condition: AM32 does not measure
+ESC is involved. It describes the wire as the spy (+-0.1 us per edge) saw it; the tick-based limits are the F421
+ones, the only family supported (see spy_check_am32.py). The last block (frame spacing) is our own pace, not an AM32 condition: AM32 does not measure
 the time between frames.
 """
 
@@ -55,8 +55,8 @@ def reply_metrics(results, records):
         "bad_crc": integrity.values.get("bad_crc", 0),
         "edt_shaped": integrity.values.get("edt_shaped", 0),
         "bit_us": timing.values.get("bit_us"),
-        "family": timing.values.get("family"),
-        "f051_off_pct": timing.values.get("f051_off_pct"),
+        "expected_us": timing.values.get("expected_us"),
+        "off_pct": timing.values.get("off_pct"),
         "delay_us": timing.values.get("delay_us"),
         "first_running_ms": start.values.get("first_running_ms"),
         "glitch_replies": glitch,
@@ -156,9 +156,8 @@ REPLY_ROWS = (
     ("arming silence starts after our first frame (ms)", lambda r: fnum(r["silence_start_ms"], "%.0f"), ">= 1020", "silence"),
     ("arming silence lasts (ms)", lambda r: fnum(r["silence_ms"], "%.0f"), "about 300 per cell", None),
     ("replies with a bad CRC / shaped like EDT", lambda r: "%d / %d" % (r["bad_crc"], r["edt_shaped"]), "0 / 0", "integrity"),
-    ("reply bit time (us)", lambda r: fnum(r["bit_us"], "%.3f"), "per MCU family", None),
-    ("  nearest family", lambda r: str(r["family"]), "", None),
-    ("  F051/F031 figure, off by (%)", lambda r: fnum(r["f051_off_pct"], "%+.1f"), "", None),
+    ("reply bit time (us)", lambda r: fnum(r["bit_us"], "%.3f"), "F421: 1.2833 / 2.5667", None),
+    ("  off the F421 figure (%)", lambda r: fnum(r["off_pct"], "%+.1f"), "within +-1.5", None),
     ("reply starts after our frame (us), median", lambda r: fnum(r["delay_us"], "%.1f"), "", None),
     ("first running reply after the throttle step (ms)", lambda r: fnum(r["first_running_ms"], "%.0f"), "", None),
     ("replies reading data12=2 (30,000,000 eRPM)", lambda r: str(r["glitch_replies"]), "", None),
@@ -212,9 +211,7 @@ def main():
     parser.add_argument("files", nargs="+")
     parser.add_argument("--unidirectional", action="store_true")
     parser.add_argument("--lines", default=None, help="comma-separated line indexes to use (default all)")
-    parser.add_argument("--mcu", default="F051", choices=sorted(check.MCU_TICK_US), help="MCU family for the tick-based limits (default F051)")
     args = parser.parse_args()
-    check.set_mcu(args.mcu)
     by_speed = {}
     for path in sorted(args.files):
         start, channels, end = spy_edge_log.parse_stream(Path(path).read_bytes())

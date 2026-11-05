@@ -26,6 +26,7 @@ add code paths or timing accommodations to keep it working.
 | **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
 | **DShot commands** | TODO | No driver-side command API yet (BUG-005's prerequisite is done: `MotorGroup` rejects 1-47, so a command API needs its own entry point, not `set_throttle()`). AM32 itself implements commands (AM32.md#7) and this bench has already heard a `BEEP1` while armed (sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver (`dshot_bidir_rx_frame`) bench-validated on AM32 and adopted as the sole production receiver (2026-09-26) |
+| **ESC configuration access** | Read done | ADR-006: `tools/esc_buddy/` reads every ESC's AM32 settings through the main Pico (no flight controller) and gives the web configurator read-only passthrough; the vendor settings as read are in `specification/KM55A2_DEFAULTS.md`. Tuning (writes) is backlog. Owner's aim: Claude's own access to the hardware |
 | **Smooth start** | In progress | KPI re-scoped 2026-11-02 (owner): **all four motors spin up with Gemfan 2218 props**, measured by the share of runs in which all four spin up and hold and by the spin-up duration; RPM disks and heavier or draggier props are paused (channel 4 did not spin up with the disks on either of the owner's AM32 ESCs). Definition and baseline: BUG-009 ("Current KPI", "Result 3") |
 
 ## Operational Envelope (what this driver guarantees)
@@ -36,7 +37,7 @@ add code paths or timing accommodations to keep it working.
 | Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
 | Throttle range | `0` (stop) or `48`-`250`. `1`-`47` are DShot commands (BUG-005) and above `250` is a **temporary bench ceiling** (owner, 2026-10-19: nothing higher is tested yet); `MotorGroup.set_throttle()` and `send_throttle_command()` reject both. Raise `THROTTLE_CEILING` in `driver/dshot_pio.py` (mirrored in `tests/bench/throttle_profile.py`) when higher throttles are tested |
 | ESC firmware | AM32 only |
-| AM32 input match (what our frames look like to AM32) | Measured on the wire with no ESC (2026-10-28): AM32's own input threshold would read 0 of 74,752 bits per run differently from ours, the worst frame length is 2.7% off the window AM32 learns (limit 6.25%), no wrong CRC, largest gap between frames 1.1 ms (limit 500 ms). With one ESC attached (single motor, throttle 100) the input figures are the same and every frame is answered outside the ESC's arming silence. Not covered: other motors/channels, several ESCs, other throttles, cold ESC power-on. Figures, method and tools: `specification/BENCH_EVIDENCE.md`. |
+| AM32 input match (what our frames look like to AM32) | Measured on the wire with no ESC (2026-10-28): AM32's own input threshold would read 0 of 74,752 bits per run differently from ours, the worst frame length is 2.7% off the window AM32 learns (limit 6.25%), no wrong CRC, largest gap between frames 1.1 ms (limit 500 ms). With one ESC attached (single motor, throttle 100) the input figures are the same and every frame is answered outside the ESC's arming silence. Not covered: other motors/channels, several ESCs, other throttles, cold ESC power-on. Full figures: README's Operational Envelope; ESC-side figures: `specification/KM55A2_DEFAULTS.md`; method and tools: `tests/bench/wingman/SPY.md`. |
 | Start quality | **Pending - not yet guaranteed.** Scope (owner, 2026-11-02): all four motors, Gemfan 2218 3-Blade props, no RPM disks, no heavier or draggier props (the RPM-disk and reflective-sensor tests were removed 2026-11-02, standing backlog item W41). Target **≥ 99%** of runs (armed, then a jump from `0` to throttle 215 on all four motors, held for the run) that **succeed: all four motors spin up and hold, and the slowest spin-up is within 0.5 s** (a drone with fewer than four motors turning does not fly, so one motor short is a failed run). A motor spins up when it reaches 80% of its own settled speed and the ESC never cuts it; the spin-up duration is the time from the first nonzero throttle frame to that speed, limit **0.5 s** (owner, 2026-11-02, provisional: set from the 28-run baseline). About 300 clean runs would support 99% (exact one-sided 95% bound, the arming evidence's convention); the check also compares each motor's settled speed with the other three, so a motor stuck at a low reading does not pass, counts runs that never reached the step apart, and covers only the ESC's own eRPM over back-to-back warm restarts (`scripts/start_kpi.py`). The four motors start together, so a run, not a motor-start, is one trial. Both are in each session's `summary.json` (`start`, per-line `spin_up_ms`), which also says whether the session counts toward the KPI; `scripts/start_kpi.py` holds the definition and prints the totals (the batch runner prints them at the end of every batch). Baseline so far, 2026-11-01, 28 runs: all four spun up and held in 28 of 28, but 26 of 28 runs fully succeed (93%, exact one-sided 95% lower bound 79%), because two GPIO 6 spin-ups took 0.9 and 1.05 s; per-motor medians 0.09-0.16 s; BUG-009 "Result 3". Second batch 2026-11-02, 32 runs: 30 of 32 fully succeed, both failures a slow GPIO 6 spin-up; the cause is not found (BUG-009 "Result 4" to "Result 6") |
 
 An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that
@@ -45,10 +46,9 @@ indefinitely.
 
 **Evidence.** The 3.0 s bound sits in the empty gap between clean arms (2.08-2.59 s) and arms that needed an ESC reboot
 (4.06 s or more) across 698 archived sessions; that archive justifies the bound, not the rate. The 99% rate is **not yet
-supported**: 104 of 104 passing runs support about 97%, and about 300 clean runs on the current code are needed (the
-long batch waits for the owner to schedule it; bidirectional scenario runs count). Scope of the earlier evidence: one
-scenario, one bench, an already-powered ESC, DSHOT600, two bidirectional motors. Full record:
-`specification/BENCH_EVIDENCE.md`.
+supported**: there is no rate evidence on the current code (earlier runs used a loop mode that no longer exists and are not
+counted), and about 300 clean runs on the current code are needed (the long batch waits for the owner to schedule it,
+backlog W35; bidirectional scenario runs count). Full record: README's Operational Envelope.
 
 The bound is measured by `scripts/run_scenarios.py` (`CLEAN_ARM_THRESHOLD_MS`); keep that constant,
 README.md and this table in agreement. The batch runner also flags arms within 500 ms of the bound as
@@ -64,6 +64,8 @@ DShot commands, other ESC firmware, behaviour of the motor after arming (BUG-009
 Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremote.
 
 **Pico-only runs need no permission** (owner, 2026-10-20). Code that relies on the Pico 2 but uses no real ESC and no motor - a test on unused GPIO with nothing attached, a PIO/DMA/timing experiment, a driver or harness change that can be exercised without an ESC - is written, deployed and run on the Pico without asking the owner first. Anything that can put a signal on an ESC's input or spin a motor (GPIO 6-9 with an ESC attached, any throttle above 0) still needs the owner's go. Say in the report which pins a run used.
+
+**The ESC buddy skill needs no permission** (owner, 2026-11-04). `tools/esc_buddy/esc_buddy_run.py` (`--read`, `--passthrough`, `--debug`, through the `esc-buddy` skill) talks to the ESCs' bootloaders on GPIO 6-9 but sends no throttle and cannot write: writes, erases and settings writes are refused on the Pico. Claude runs it without asking first. It still must not run during a motor run (it stops DShot on all four lines), and the report names the pins used. Any future write (tuning) action is not covered: each write needs the owner's go.
 
 ## Communicating with the user
 
@@ -97,7 +99,7 @@ naming one without evidence just launders a gap in the investigation as a findin
 bench-tested *before* it's committed - so "what commit was HEAD at that wall-clock time" is not
 "what code was actually running on the bench." A commit's own message often says so directly (e.g.
 "bench-verified: 10 more runs") - that verification happened before the commit, not after. When
-comparing two batches, check `git log --date=iso-local -- driver tests/bench tests/harness tests/device` for every commit
+comparing two batches, check `git log --date=iso-local -- driver tests/bench tools scripts` for every commit
 between them, read what each one actually changed, and check whether it's mechanistically capable
 of causing the observed shift - not just correlated in time with it. A real example from BUG-002's
 2026-09-30 investigation: a 09-27 evening jump in first-contact acceptance lined up with a commit
@@ -160,6 +162,8 @@ temporary scenario turns out worth keeping, ask first; do not move it into the r
 
 6. **Lock-free design**: Shared throttle array allows one core to update values while another sends commands. See ADR-001 for technical details on atomic writes.
 
+**`tools/esc_buddy/`** - access to the ESCs' AM32 configuration through the main Pico, Betaflight-style passthrough to each ESC's bootloader: `--read` (Claude reads every ESC's settings, one JSON report on stdout), `--passthrough` (the owner uses the AM32 web configurator), `--debug` (the buddy's own record, plain text). Read-only by construction; its only input is `--pins`. Used through the `esc-buddy` skill (`.claude/skills/esc-buddy/`); the vendor's settings as read: `specification/KM55A2_DEFAULTS.md`. Not a test group and not part of a motor run. Details: `tools/esc_buddy/README.md`.
+
 **`tests/`** is split first by whether it needs hardware, then by what it checks. Each folder has one rule; a file that
 breaks its folder's rule goes elsewhere, not into a catch-all. How each script works, the scenario format, the session
 folder contents and the spy's tools are in `tests/README.md`.
@@ -167,7 +171,7 @@ folder contents and the spy's tools are in `tests/README.md`.
 - **`tests/pc/`** - runs on a PC under plain Python with `fakes.py` (`python -m unittest discover -s tests/pc`). Nothing that touches the Pico.
 - **`tests/bench/dshot_protocol/`** - does the DShot link and the arming/telemetry behaviour hold on this ESC across motor counts and configurations? The scenario runner, its JSON scenarios, the single-motor ESC probes. Not: physical RPM, code another group also needs, anything without an ESC.
 - **`tests/bench/pio_and_cores/`** - how the driver uses the RP2350's PIO blocks and its two cores. Pico only, no ESC or motor power. Not: anything that arms an ESC.
-- **`tests/bench/wingman/`** - the second Pico (the wingman) and everything it relies on, grouped by the machine the code runs on: the **spy** records every edge of the ESC lines, the **ESC mock** answers our frames with recorded ESC replies so the reply path runs with no ESC and no motor (`run_session.py --esc-mock`, the ESC disconnected). **Design principle (owner, 2026-11-01): the wingman takes everything it needs to know about the main Pico (pins, which lines are bidirectional, DSHOT speed, run length) from the scenario the main Pico runs, read in one place (`tools/wingman_plan.py`); no pin, speed or fixture is written into the wingman's own code.** Equipment, not a test group. Not: anything about a real ESC, a motor or arming; a mock session is never evidence.
+- **`tests/bench/wingman/`** - the second Pico (the wingman) and everything it relies on, grouped by the machine the code runs on: the **spy** records every edge of the ESC lines, the **ESC mock** answers our frames with recorded ESC replies so the reply path runs with no ESC and no motor (`run_session.py --esc-mock`, the ESC disconnected). **Design principle (owner, 2026-11-01): the wingman takes everything it needs to know about the main Pico (pins, which lines are bidirectional, DSHOT speed, run length) from the scenario the main Pico runs, read in one place (`tests/bench/wingman/tools/wingman_plan.py`); no pin, speed or fixture is written into the wingman's own code.** Equipment, not a test group. Not: anything about a real ESC, a motor or arming; a mock session is never evidence.
 
 **One run is one session.** `scripts/run_session.py` (and the batch runner `scripts/run_scenarios.py`) names the session on the PC, records what was run in `session.json` (scenario, git commit, and the required `--load`: what the motors carry, `none` for bare shafts), has the **wingman** (a second board, found by ID, that records every wire edge) record the lines, pulls the Pico's SD record, and computes `summary.json`. **Owner's rule (2026-10-31): while the main Pico controls motors its I/O is the bare minimum (ESC I/O excepted); the spy records every wire edge.** A threshold that has too few samples to be judged is reported as not judged, never failed, and the spy's recording judges the line instead.
 
@@ -182,7 +186,7 @@ Code shared by the bench test groups sits directly in `tests/bench/`: `scenario.
 ### DShot Protocol
 
 See `specification/DSHOT.md` for the wire protocol itself (packet structure, bit timing for all
-variants, special commands 0-47, bidirectional DShot and eRPM telemetry, CRC), `specification/AM32.md` for how this project's target ESC firmware implements it, and `specification/BETAFLIGHT.md` for how a reference flight-controller host drives it.
+variants, special commands 0-47, bidirectional DShot and eRPM telemetry, CRC), `specification/AM32.md` for how this project's target ESC firmware implements it, and `specification/BETAFLIGHT.md` for how a reference flight-controller host drives it. The bench ESC itself (AM32 2.16, older bootloader, its stored settings): `specification/KM55A2_DEFAULTS.md`.
 
 ## Usage
 

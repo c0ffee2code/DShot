@@ -17,14 +17,14 @@ What it needs from the recording:
 arming, as tests/bench/wingman/tools/wingman_run.py's real runs do); without it the checks that count from the first frame the ESC
 saw (arming gate, the 101-frame latch) can only say INFO.
 
-The reply-side checks have so far been exercised only on synthetic recordings built with this file's own assumptions
-(tests/pc/test_spy_check_am32.py); the first recording with an ESC attached, compared with the main Pico's own decoded
-replies, is what validates them. The input-side checks need no such validation: they read our own frames.
+The reply-side checks were first run on recordings with an ESC attached on 2026-10-28; their synthetic tests are in
+tests/pc/test_spy_check_am32.py. The input-side checks read our own frames.
 
-The tick-based limits assume the capture clock of one MCU family (--mcu, default F051: 5.333 MHz during speed
-classification); the bench's target is not known, and other families have other clocks (AM32.md section 13 lists the
-reply bit times per family; the loop timer is 1 MHz x 51 us on F051, E230 and F421 alike, so the 1.02 s arming gate does
-not depend on the family).
+F421 is the only MCU family supported (owner, 2026-11-05): the bench ESC is an F421 (AM32 2.16, target
+SKYSTARS_KM55_V2_F421, read from the ESCs with tools/esc_buddy on 2026-11-04, specification/KM55A2_DEFAULTS.md). The
+speed classification's tick and the expected reply bit time are the F421 ones. Another ESC's family is not guessed here:
+read it with tools/esc_buddy/esc_buddy_run.py --read, then add its figures; a reply bit time off the F421 figure is
+reported as a warning for that reason. (The 1.02 s arming gate is the same on F421 and F051: a 1 MHz x 51 us loop timer.)
 """
 
 import argparse
@@ -37,16 +37,10 @@ import spy_edge_log
 import spy_stats
 
 UNIT_US = 0.1
-# Capture-clock tick while the speed is classified, per MCU family (microseconds): ic_timer_prescaler is set from the CPU clock in each
-# family's Mcu/*/Src/IO.c - F051: 48 MHz / (8+1) = 5.333 MHz; F421: 120 MHz / (17+1) = 6.667 MHz; E230: 72 MHz / (12+1) = 5.538 MHz.
-MCU_TICK_US = {"F051": 6 / 32, "F421": 18 / 120, "E230": 13 / 72}
-IC_TICK_US = MCU_TICK_US["F051"]
-
-
-def set_mcu(name):
-    """Choose the MCU family whose capture clock the tick-based limits use (the bench's is not known; F051 is the default)."""
-    global IC_TICK_US
-    IC_TICK_US = MCU_TICK_US[name]
+MCU = "F421"                        # the only supported family (see the docstring)
+# capture-clock tick while the speed is classified: Mcu/f421/Src/IO.c, 120 MHz / (ic_timer_prescaler 17 + 1) = 6.667 MHz
+# (checked at AM32 v2.16, the bench ESC's firmware: CPU_FREQUENCY_MHZ 120, ic_timer_prescaler = 120 / 7)
+IC_TICK_US = 18 / 120
 RESOLUTION_US = 0.1                 # the spy's edge resolution
 CLASSIFY_FRAMES = 8                 # the speed is classified on the first frames AM32 captures
 LATCH_FRAMES = 101                  # high_pin_count > 100
@@ -57,9 +51,8 @@ SIGNAL_LOSS_DISARMED_MS = 2000
 TUNE_GAP_MS = (250, 400)            # playInputTune: three 100 ms beeps with interrupts disabled
 REBOOT_GAP_MS = 550                 # startup tune 600 ms, bootloader, then the 101-frame latch again
 STUCK_TIMEOUT_MS = 22.5
-# DSHOT600 reply bit times by MCU family (half of the DSHOT300 figures in AM32.md section 13), microseconds
-REPLY_BIT_US = {"F051/F031": 1.2917, "F421": 1.2833, "F415/V203": 1.3333, "G431": 1.3625, "L431": 1.3875,
-                "E230": 1.4028, "G071/G031": 1.4531}
+REPLY_BIT_US = 1.2833                # F421 DSHOT600 reply bit time (half the DSHOT300 figure in AM32.md section 13)
+REPLY_BIT_TOLERANCE_PCT = 1.5
 
 PASS, FAIL, WARN, INFO, NA = "PASS", "FAIL", "WARN", "INFO", "N/A"
 
@@ -161,8 +154,8 @@ def check_speed_band(frames):
     speed = frame_speed(frames)
     name = "the first frames classify as DSHOT%d (shortest edge interval, average interval)" % speed
     source = ("signal.c detectInput/checkDshot: smallest of the intervals between edges 0-30 in 1..3 ticks and sum/32 < 60 ticks for "
-              "DSHOT600, in 4..8 ticks and sum/32 < 100 for DSHOT300 (F051: 0.1875 us per tick - holds only if the reply bit time check "
-              "lands on F051/F031)")
+              "DSHOT600, in 4..8 ticks and sum/32 < 100 for DSHOT300 (F421: 0.15 us per tick - holds only if the reply bit time is "
+              "the F421 one)")
     low_ticks, high_ticks, average_limit = (1, 3.999, 60) if speed == 600 else (4, 8, 100)
     smallest = []
     averages = []
@@ -324,26 +317,22 @@ def check_reply_integrity(records):
 
 
 def check_reply_timing(records, speed=600):
-    name = "reply bit time matches an AM32 MCU family"
-    source = "IO.c per MCU family (AM32.md section 13): DSHOT600 reply bit times 1.28-1.45 us, twice that at DSHOT300"
+    name = "reply bit time is the F421 one (the bench ESC's family)"
+    source = "Mcu/f421/Src/IO.c (AM32.md section 13): DSHOT600 reply bit 1.2833 us, twice that at DSHOT300"
     replies = [r["reply"] for r in records if r["reply"] is not None]
     if not replies:
         return Result(name, NA, "no replies", source)
     bit = statistics.median(x["bit_units"] for x in replies) * UNIT_US
     delay = statistics.median(x["delay"] for x in replies) * UNIT_US
-    scale = 600 / speed
-    family, expected = min(((k, v * scale) for k, v in REPLY_BIT_US.items()), key=lambda kv: abs(kv[1] - bit))
+    expected = REPLY_BIT_US * 600 / speed
     off = (bit - expected) / expected * 100
-    detail = "measured %.3f us per reply bit; nearest %s (%.4f us, %+.1f%%); the reply starts %.1f us after our frame ends (%.1f bit times; the source pads %d bit times of idle first)" % (
-        bit, family, expected, off, delay, delay / bit, 14 if speed == 600 else 7)
-    values = {"bit_us": bit, "family": family, "off_pct": off, "delay_us": delay,
-              "f051_off_pct": (bit - REPLY_BIT_US["F051/F031"] * scale) / (REPLY_BIT_US["F051/F031"] * scale) * 100}
-    if abs(off) > 1.5:
-        return Result(name, WARN, "no family within 1.5%: " + detail, source, values)
-    if family != "F051/F031":
-        detail += ("; the speed-band and window numbers in this report assume the F051 capture clocks, so with %s they must be "
-                   "re-derived from its IO.c first" % family)
-    return Result(name, INFO, detail, source, values)
+    detail = "measured %.3f us per reply bit, F421 figure %.4f us (%+.1f%%); the reply starts %.1f us after our frame ends (%.1f bit times; the source pads %d bit times of idle first)" % (
+        bit, expected, off, delay, delay / bit, 14 if speed == 600 else 7)
+    values = {"bit_us": bit, "expected_us": expected, "off_pct": off, "delay_us": delay}
+    if abs(off) > REPLY_BIT_TOLERANCE_PCT:
+        return Result(name, WARN, detail + "; not an F421 ESC? identify it with tools/esc_buddy/esc_buddy_run.py --read "
+                      "before trusting the speed classification", source, values)
+    return Result(name, PASS, detail, source, values)
 
 
 def check_start_and_stop(rows):
@@ -446,9 +435,7 @@ def main():
     parser.add_argument("--from-first-frame", action="store_true",
                         help="the recording began when our frames began (the start line rose before arming)")
     parser.add_argument("--lines", default=None, help="comma-separated line indexes (default all)")
-    parser.add_argument("--mcu", default="F051", choices=sorted(MCU_TICK_US), help="MCU family for the tick-based limits (default F051)")
     args = parser.parse_args()
-    set_mcu(args.mcu)
     start, channels, end = spy_edge_log.parse_stream(Path(args.file).read_bytes())
     info = spy_edge_log.parse_end(end)
     print("recording: %s" % start)

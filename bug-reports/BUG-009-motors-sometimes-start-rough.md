@@ -234,6 +234,16 @@ the slow GPIO 6 starts: 596, 896, 1,052 and 1,559 ms). Window per start: 50 ms b
   make the plateau length a property of the motor-ESC start, not of our frames. Confirming or rejecting it needs the ESC's own state (not on the wire) or a source-level model with the ESC's EEPROM settings
   (unknown); neither can be done with the ESC off. Software-testable next, with the ESC powered: the order and state-machine scenarios of Result 5.
 
+**Result 7: the slow GPIO 6 start is a stretched low plateau; the ESC settings and the two suspected AM32 paths are ruled out (2026-11-05, recorded data, ESC settings and AM32 2.16 source; no new run).**
+- **ESC settings known.** Read from all four ESCs with `tools/esc_buddy/` (2026-11-04): AM32 2.16, `SKYSTARS_KM55_V2_F421`, identical blocks, AM32's template defaults (KV 2220, 14 poles, startup power 100 %, timing 15 deg, stall protection off, sine start off). Identical settings cannot by themselves single out one channel.
+- **KV and poles do not act at this start (AM32 v2.16 source; not yet confirmed on the bench).** They only set a low-speed duty cap whose floor is 400/2000; throttle 215 asks for about 194/2000, so the cap never limits, and poles have no effect (integer `32/poles` is 2 for 12 and 14). Startup power is the stored value that shapes the start. Details: `specification/KM55A2_DEFAULTS.md`.
+- **Data (the wingman's recordings of all 60 KPI runs of 2026-11-01/02, 240 motor-starts, every ESC reply about one per 1.045 ms).** In each of the four slow starts (spin-up 596, 896, 1,052 and 1,559 ms; the five-start tail of 292-406 ms has the same shape) GPIO 6 reaches a steady low plateau of 2,400-3,400 eRPM (medians 2,640-2,690) about 50 ms after the step and holds it for 0.5-1.4 s, then rises to full speed in the same ~72 ms a normal start takes (6k eRPM to 80 %: slow 71-77 ms, fast 70-73 ms). No telemetry gap, no bad CRC, no "not running" reply in any plateau. GPIO 6 normally leaves the low phase (6k eRPM) in about 25 ms. The step reached all four lines within 0.04 ms, in the same order, in every run; the other three motors spun up normally in every slow run.
+- **Lost-sync restart: ruled out.** No collapse toward 0 in any slow start; by the 2.16 source the desync check needs `average_interval < 2000` (above about 10,000 eRPM) and cannot fire on the plateau, and the rises show no reply below 0.8 x the running maximum past 10k.
+- **Forced steps / stuck-rotor path: ruled out.** The plateau is about 6 x the ~444 eRPM of forced steps alone. Their wire signature (about 21 identical replies, then a drop of 10 % or more) is found 1-4 times in 43 of GPIO 9's 60 starts (positive control) and 0 times in the four slow GPIO 6 plateaus.
+- **Result 6's hypothesis does not fit its timing.** By the source the ESC leaves polling mode below `commutation_interval` 1300 (about 15,400 eRPM); the plateau is about 7,700 ticks and its end starts from about 3,000 eRPM, so the changeover is crossed during the rise, after the escape has begun. What holds the ESC at about 2,600 eRPM and releases it is ESC-internal (duty, zero-crossing count, ramp state) and not on the wire.
+- **Weak, not separating:** 5 of the 9 tail starts fall in the 20 runs that armed after 2,120 ms, against 4 of the 40 on-time runs (about p 0.25).
+- **Next, software-testable:** (a) add the time to 6,000 eRPM and a forced-step count per line to `summary.json` - the plateau, not total spin-up, separates these starts; (b) with motors spinning (owner's go): throttle steps other than 215 (if plateau frequency or length changes, the start duty and ramp are implicated), and the GPIO-6-last order and state-machine swap scenarios of Result 5 (if the plateau follows the pin, call order and PIO assignment are ruled out); (c) AM32's extended telemetry (current every 40th reply) would show the drive level during the plateau - it needs the driver's DShot command entry point first.
+
 **Next powered session (runbook, needs the owner's go: it spins motors; props mounted, ESC powered).** In this order:
 1. One four-channel bidirectional run at 215 with `decode_every` 50 (`run_session.py`): expect ARMED about 2,112 ms, about 34 decodes per motor,
    all CRC ok - the first check that Core 0 keeps up with the new setting on a real ESC.
@@ -434,10 +444,10 @@ throttle on. The throttle differs between scenarios, so this counts a signature,
 
 **Owner fact, 2026-10-29:** the owner has rotated the motors between the channels and every motor works on the other channels, so the motors are ruled out as the difference (owner's statement, not re-tested here).
 
-**Spy validated, 2026-10-29** (`tests/bench/wingman/SPY_EVIDENCE.md`): loss detectors fire on purpose; known gaps from 1 ms to 3.5 s read back to 0.21 us; 44,522 frames per line over 46.5 s with nothing lost. The test found and fixed two defects (long intervals read 92 ppm low; an edge right after a 3.28 ms marker was lost), neither of which changes a finding in this report. The "one frame, then ~2 s" start did not reproduce in 10 resets with the pacing-probe start sequence on the Pico alone (first frame always 21.6 ms after the start line, no gap over 5 ms). That harness has no reply gate, SD session or scenario loading, while the two cases came through the scenario runner's start path, so the next step is the scenario runner's start, Pico-only.
+**Spy validated, 2026-10-29** (`tests/bench/wingman/SPY.md`, "Can the recording be trusted?"): loss detectors fire on purpose; known gaps from 1 ms to 3.5 s read back to 0.21 us; 44,522 frames per line over 46.5 s with nothing lost. The test found and fixed two defects (long intervals read 92 ppm low; an edge right after a 3.28 ms marker was lost), neither of which changes a finding in this report. The "one frame, then ~2 s" start did not reproduce in 10 resets with the pacing-probe start sequence on the Pico alone (first frame always 21.6 ms after the start line, no gap over 5 ms). That harness has no reply gate, SD session or scenario loading, while the two cases came through the scenario runner's start path, so the next step is the scenario runner's start, Pico-only.
 
-Open leads: whether the 22.5 ms multiples are the stuck-rotor timer; the owner's AM32 settings of channel 4's ESC against channel 1's
-(startup power, sine start, stall protection); what changed on the bench on the dates the affected channel changed (see History above); the MCU target (the reply bit time fits F421 to 0.1% and F051/F031 to 0.5-0.9%). The spy has been attached to every one of
+Open leads: whether the 22.5 ms multiples are the stuck-rotor timer; what changed on the bench on the dates the affected channel changed (see History above).
+Closed 2026-11-04/05: the ESC settings (read from all four ESCs: identical, AM32's template defaults - `specification/KM55A2_DEFAULTS.md`; see Result 7) and the MCU target (F421, AM32 2.16). The spy has been attached to every one of
 these runs; a few runs with its wires removed would show whether it matters (owner's option).
 
 ## What's NOT yet reconciled - do not call this settled
@@ -494,16 +504,11 @@ within milliseconds of arming anyway.
 
 ## Starting point for the next session
 
-1. Resolve the echo-vs-AM32 question first (see above): validate `EchoModel` against a known-real
-   echo before trusting it either way, and run `measure_rough_start.py` at `BASE_THROTTLE=60`.
-2. Fix or work around BUG-005 before any gradual-ramp-from-0 experiment.
-3. Re-run the channel-3 isolation and divergent-600 spike batches only once the physical setup on
-   that channel is known and stable.
-4. A full backup of `captures/` as it stood 2026-10-10 is at `captures Backup/` (sibling directory,
-   repo root) - captures themselves are being dropped from git; use this backup, not git history,
-   for any historical-capture analysis (e.g. bucketing spike timing by first-nonzero-throttle
-   record instead of `armed_ticks_us`, or checking for eRPM sentinel re-entry after a motor has
-   genuinely spun).
+Updated 2026-11-05. Start from **Result 7** (the slow GPIO 6 start is a stretched low plateau at about 2,600 eRPM; ESC
+settings, lost-sync restarts and forced steps are ruled out) and its "Next, software-testable" list: plateau metrics in
+`summary.json` first (no bench time), then - with the owner's go, motors spinning - other throttle steps and the order /
+state-machine swap scenarios of Result 5. The earlier items here (the echo-vs-AM32 question, BUG-005, the channel-3
+isolation, the 2026-10-10 `captures Backup/`) are done or obsolete; the backup no longer exists.
 
 ## Related
 

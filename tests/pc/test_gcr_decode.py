@@ -138,9 +138,8 @@ class AnalyzeFrameTest(unittest.TestCase):
 class NotRunningFrameTest(unittest.TestCase):
     def test_it_is_what_am32_sends_for_a_stopped_motor(self):
         # AM32's make_dshot_package() substitutes com_time 65535 when not running;
-        # scripts/verify_am32_reply.py ports it
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-        from verify_am32_reply import am32_make_dshot_package, expected_frame
+        # tests/pc/am32_reply.py ports it
+        from am32_reply import am32_make_dshot_package, expected_frame
         payload, levels = am32_make_dshot_package(65535)
         self.assertEqual(payload, gcr_decode.AM32_NOT_RUNNING_DATA12)
         self.assertEqual(expected_frame(levels), gcr_decode.AM32_NOT_RUNNING_FRAME)

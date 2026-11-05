@@ -87,7 +87,7 @@ Betaflight never relies on a timer alone
    frame: payload `0xFFF` with its inverted CRC, which `dshot_bidir_rx_frame` pushes as
    **`0x52951`**. Add it to `gcr_decode.py` as `AM32_NOT_RUNNING_FRAME`, next to
    `AM32_NOT_RUNNING_DATA12`, with a unit test that derives it from
-   `scripts/verify_am32_reply.py`'s port of `make_dshot_package()`.
+   the port of `make_dshot_package()` in `tests/pc/am32_reply.py` (formerly `scripts/verify_am32_reply.py`).
 2. **Record it without decoding.** In `CaptureMailbox.drain()`, in both modes, compare each word
    with that constant. On a match, if the previous match is more than `READY_GAP_US` (450 ms) old,
    set `ready_first_us = now`; then set `ready_last_us = now`. That is one integer compare per

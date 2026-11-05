@@ -1483,8 +1483,11 @@ and are 8% off an E230-class build (E230's own
 [internal RC oscillator source, system_gd32e23x.c#L50](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Mcu/e230/Src/system_gd32e23x.c#L50)).
 AM32's only [published Skystars KM55 target, targets.h#L535-L541](https://github.com/am32-firmware/AM32/blob/55c96847a0cddfee9852eb65d2b10e58f563b3d7/Inc/targets.h#L535-L541),
 however, is an E230 build - so this bench's unit is either a different MCU revision of that same
-product, or was flashed with a different AM32 target than its label suggests. `scripts/verify_am32_reply.py`
-reproduces this cross-check from source. This also bounds `BIDIR_PROFILES`' own portability - not
+product, or was flashed with a different AM32 target than its label suggests. *(Settled 2026-11-04: AM32 also has a
+`SKYSTARS_KM55_V2_F421` target, and that is what the ESCs run - firmware 2.16 on an F421, read from the ESCs themselves;
+see `specification/KM55A2_DEFAULTS.md`. A later spy measurement put the reply bit at 1.280-1.285us, within 0.3% of the
+F421 figure.)* A script once reproduced this cross-check for every family; since 2026-11-05 the unit test
+`tests/pc/test_am32_reply_path.py` checks the F421 alone, the only family supported. This also bounds `BIDIR_PROFILES`' own portability - not
 from a hardware measurement on each family, but from running the project's own PIO receiver model
 (`scripts/simulate_frame_receiver.py`) against every family's theoretical reply period: as tuned,
 it reads 100% of frames correctly for F051/F031/F421/F415/V203, about 80% for G431, about 44% for
