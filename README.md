@@ -9,7 +9,8 @@ DShot protocol implementation for Raspberry Pi Pico/Pico 2 (RP2040/RP2350) using
 - **Lock-free design** for low-latency throttle updates across cores
 - **MicroPython** runtime (no external dependencies)
 - **ESC configuration access** - the main Pico reads every ESC's AM32 settings (JSON) or hands the ESCs to the AM32 web
-  configurator, read-only, with no flight controller (`tools/esc_buddy/`, ADR-006)
+  configurator, and changes named motor, start-up and protection settings (ranges from the AM32 source) one ESC at a time, with no flight controller
+  (`tools/esc_buddy/`, ADR-006)
 
 ## Hardware
 
@@ -23,7 +24,7 @@ trail for some of the library's conservative defaults, not as current hardware.
 | **Controller** | Raspberry Pi Pico 2 | RP2350, dual ARM Cortex-M33, 150MHz |
 | **Motors** | BETAFPV LAVA Series 1104 (×4, one per ESC channel) | 7200KV, 5.3g, 12 rotor magnets (6 pole pairs) |
 | **Load** | Gemfan 2218 3-blade props, or printed RPM disks | Props: the current start-quality scope. RPM disks (2-hole, for the optical sensor): paused since 2026-11-02 |
-| **ESC** | Skystar RC KM55A2 (4-in-1) | AM32 2.16, target `SKYSTARS_KM55_V2_F421` (F421 MCU), bootloader v1; vendor settings as read: `specification/KM55A2_DEFAULTS.md` |
+| **ESC** | Skystar RC KM55A2 (4-in-1) | AM32 2.16, target `SKYSTARS_KM55_V2_F421` (F421 MCU), bootloader v1; vendor settings as read: `specification/KM55A2_DEFAULTS.md`; as configured now: "ESC settings as configured" below |
 | **Optical RPM sensor** | Adafruit STEMMA reflective photo interrupt sensor (TCRT1000) | GPIO 14, 3.3V; 2-hole printed disk on motor 1's shaft. **Not mounted now** (owner, 2026-11-02): the disk and sensor tests were removed, see backlog item W41 |
 
 The 12-magnet count is not on BETAFPV's product page; it was counted by eye on the rotor and then
@@ -57,6 +58,26 @@ See `tests/bench/dshot_protocol/scenarios/*.json` for the source-of-truth wiring
 Four motors, one per channel: GPIO 6 = ch1 = motor 1, GPIO 7 = ch2 = motor 2, GPIO 8 = ch3 = motor 3, GPIO 9 = ch4 =
 motor 4. Each can carry a Gemfan 2218 3-blade prop (the current start-quality scope) or a printed RPM disk; what the
 motors carried in a run is recorded per session (`--load` in `session.json`).
+
+### ESC settings as configured
+
+The ESCs hold the vendor's settings except for the three below (owner's go for each write, via `tools/esc_buddy/`; the vendor's values, identity and
+wire facts: `specification/KM55A2_DEFAULTS.md`). Last read 2026-11-08: the four ESCs on GPIO 6-9 identical.
+
+| Setting | Byte | Vendor | Now | Why |
+|---------|------|--------|-----|-----|
+| Motor KV | 26 | 2220 | **7180** | the motors are 7200 KV; KV is stored in steps of 40 from 20, so 7200 cannot be stored and 7180 is the nearest step below |
+| Motor poles | 27 | 14 | **12** | the motors have 12 rotor magnets (above); AM32's "motor poles" is the magnet count |
+| Beeper volume | 30 | 5 | **1** | the startup and no-signal beeps at 5 were too loud |
+
+- **History.** 2026-11-05: KV and beeper volume written to all eight ESCs of the two KM55A2 boards that have been on the bench (a spare and the primary).
+  2026-11-08: poles written on the four ESCs on GPIO 6-9 (backups of the page before the write: `tmp/esc<N>_before_poles12.json`, local, git-ignored). The
+  other board's four ESCs are expected to hold 14 poles and have not been read since. Firmware (2.16) and bootloader (version 1) were never changed. Motor-run
+  results taken before 2026-11-05 were taken with the vendor values (KV 2220, volume 5); none has been taken with 12 poles yet.
+- **What KV and poles do at the start test (AM32 2.16 source, not bench-confirmed).** They only set a low-speed duty cap with a floor of 400/2000, and
+  throttle 215 asks for about 194/2000, so the cap never limits; poles have no effect at all (`32/14` and `32/12` are both 2). What shapes the start is startup
+  power (100). Detail and line numbers: BUG-009, "KV and poles do not act at this start".
+- Read them again with `tools/esc_buddy/` (`--read`) before relying on this table. Do not change this section without the owner's go.
 
 ## Architecture
 
@@ -190,7 +211,7 @@ What this driver guarantees, and what it does not.
 |-----------|-------|
 | Arming success rate | **≥ 99%** of `arm()` attempts reach `ARMED` |
 | Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
-| Throttle range | `0` (stop) or `48`-`250`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) and, as a temporary bench ceiling, anything above `250` (`THROTTLE_CEILING` in `driver/dshot_pio.py`) |
+| Throttle range | `0` (stop) or `48`-`250`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) and, as a temporary bench ceiling, anything above `250` (`THROTTLE_CEILING` in `driver/dshot_pio.py`, mirrored in `tests/bench/throttle_profile.py`; owner, 2026-10-19: nothing higher is tested yet, raise it when higher throttles are tested) |
 | ESC firmware | AM32 only |
 | AM32 input match | Measured on the wire with a second Pico recording the signal lines, no ESC (2026-10-28, unidirectional frames, DSHOT600 and DSHOT300, `tests/bench/wingman/tools/spy_am32_table.py`): every bit reads the same under AM32's own decision rule as in our decoder (0 of 74,752 differ per run), with margins of 0.18 / 0.44 us (DSHOT600) and 0.37 / 0.88 us (DSHOT300) for the 0 and 1 bits; frame length within 2.7% of the window AM32 learns (limit 6.25%); correct CRC polarity and no command values in every frame; largest gap between frames 1.1 ms (limit 500 ms); 4 lines, 3 runs at DSHOT600 and 2 at DSHOT300, identical run to run (properties of the PIO waveform; the spy resolves 0.1 us). With one ESC attached (bidirectional, single motor, throttle 100, DSHOT600 and DSHOT300): the ESC's first reply after 104 frames (latch 101 in AM32's source), every frame answered outside its 301 ms arming silence (which starts 1020 ms after our first frame, as the source's 1.02 s gate predicts), no CRC errors in 9,309 replies per run, the start glitch `data12=2` sent by the ESC itself for 6-9 replies after the throttle step (BUG-009). Other motors, throttles and ESCs not yet covered |
 | Start quality | **Pending - not yet guaranteed.** Scope (owner, 2026-11-02): all four motors with Gemfan 2218 3-Blade props (no RPM disks, no heavier or draggier props). Target: **≥ 99%** of runs that succeed when jumped from `0` to throttle 215: all four motors spin up and hold, and the slowest spin-up is within 0.5 s (provisional limit); a drone with fewer than four motors turning does not fly. Defined in `bug-reports/BUG-009-motors-sometimes-start-rough.md` ("Current KPI"), measured from the spy's telemetry in each session's `summary.json`. Baseline 2026-11-01: all four held in 28 of 28 runs, 26 of 28 fully succeed (93%, exact one-sided 95% lower bound 79%). Second batch 2026-11-02, 32 runs: 30 of 32 fully succeed, both failures a slow GPIO 6 spin-up; the cause is not found (BUG-009 "Result 4" to "Result 6") |
@@ -292,7 +313,7 @@ a reference flight-controller host drives it.
 | **DShot commands** | TODO | No driver-side command API yet (BUG-005's prerequisite is done: `MotorGroup` rejects 1-47, so a command API needs its own entry point, not `set_throttle()`). AM32 itself implements commands (`specification/AM32.md`#7), and this bench has already heard a `BEEP1` while armed (see above - sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, in production use |
 | **Smooth start** | In progress | KPI defined in BUG-009; recording test built; the first baselines ran on the old unpaced loop and must be recorded again on the paced one before any limit is set |
-| **ESC configuration access** | Read done, tuning TODO | ADR-006: `tools/esc_buddy/` reads all four ESCs' settings (JSON) and gives the AM32 web configurator read-only passthrough; writing settings is backlog (`tools/esc_buddy/README.md`) |
+| **ESC configuration access** | Read and write done | ADR-006: `tools/esc_buddy/` reads all four ESCs' settings (JSON), gives the AM32 web configurator read-only passthrough, and writes named motor, start-up and protection settings to one ESC at a time with a backup and read-back (only KV, poles and beeper volume tried on real ESCs so far); firmware update is not built (`tools/esc_buddy/README.md`) |
 | **Extended telemetry (EDT)** | TODO | Current AM32 source already implements it (`specification/AM32.md`#10) - the bench runs AM32 2.16 (`specification/KM55A2_DEFAULTS.md`); whether 2.16 implements it is not checked yet. This driver's own decoder doesn't yet discriminate an EDT frame from an eRPM frame either way |
 
 See `decision/` folder for Architecture Decision Records (ADRs).

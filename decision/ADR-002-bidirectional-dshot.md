@@ -224,15 +224,15 @@ period_us = mantissa << exponent
 if period_us > 0:
     erpm = 60_000_000 / period_us
 
-# Convert to mechanical RPM (motor poles / 2). eRPM above is the verified
-# quantity; this conversion is not: `driver`/`scripts` code uses
-# MOTOR_POLES = 14 (AM32's EEPROM default), unverified for this specific
-# motor/ESC pairing. This table originally guessed 12 (typical for small
-# FPV motors) - the two disagree, and neither has been confirmed against
-# the actual BetaFPV Lava 1104 hardware. Every RPM figure quoted anywhere
-# in this ADR carries this uncertainty as a constant scale factor; eRPM,
-# CRC-validity, and monotonicity/repeatability conclusions do not.
-rpm = erpm / (motor_poles / 2)
+# Convert to mechanical RPM: divide by the real motor's pole pairs (rotor
+# magnets / 2). The BetaFPV Lava 1104 has 12 magnets, so 6 pole pairs; an
+# optical RPM sensor measured eRPM / shaft RPM = 6.02-6.05 (2026-10-15,
+# specification/AM32.md "Reading it as shaft RPM"). AM32's own "motor poles"
+# setting plays no part in the telemetry. The sweeps below were computed
+# earlier with 14 poles (7 pole pairs), an unverified guess, so their RPM
+# figures are 6/7 of the true ones (true RPM = figure x 7/6); eRPM,
+# CRC-validity, and monotonicity/repeatability conclusions are unaffected.
+shaft_rpm = erpm / pole_pairs
 ```
 
 ## PIO Implementation Analysis
@@ -886,11 +886,11 @@ far.
 
 **Result: 59/59 captures CRC-valid (100%).** RPM rises monotonically and
 close to linearly across the entire range. (eRPM is the verified quantity;
-the RPM figures below divide by `MOTOR_POLES = 14`, unverified for this
-motor/ESC - see "eRPM Decoding" above. That divisor is a constant scale
-factor, so it doesn't affect monotonicity, per-level spread, or any other
-shape-of-the-data conclusion drawn here - only the absolute RPM labels carry
-the uncertainty.)
+the RPM figures below divide by 7 pole pairs (an assumed 14 poles). The
+motor has 6 pole pairs - see "eRPM Decoding" above - so true RPM = figure
+x 7/6. That divisor is a constant scale factor, so it doesn't affect
+monotonicity, per-level spread, or any other shape-of-the-data conclusion
+drawn here - only the absolute RPM labels were off.)
 
 | Throttle | Mean RPM (settled, excl. first snapshot per level) | Range |
 |---------:|----------------------------------------------------:|:------|
@@ -941,9 +941,9 @@ rerun fresh afterward (results below are from that rerun).
 
 **Result: 162/162 captures CRC-valid (100%).** Up-ramp and down-ramp
 values at the same throttle level agree to within ~1%, i.e. no meaningful
-hysteresis. (Same `MOTOR_POLES = 14` caveat as the previous sweep applies to
-every RPM figure below - a constant scale factor that doesn't affect the
-CRC-valid rate, monotonicity, or the up/down agreement being reported here.)
+hysteresis. (Same divisor as the previous sweep (7 pole pairs, true RPM = figure x 7/6)
+applies to every RPM figure below - a constant scale factor that doesn't
+affect the CRC-valid rate, monotonicity, or the up/down agreement being reported here.)
 
 | Throttle | Up RPM | Down RPM | Diff |
 |---------:|-------:|---------:|-----:|

@@ -2,7 +2,7 @@
 
 ## Before
 
-- **Permission:** none needed (CLAUDE.md, "The ESC buddy skill needs no permission"): no throttle, no writes. Say which
+- **Permission:** none needed (SKILL.md): no throttle, no writes. Say which
   pins it used.
 - **The ESC must be powered.** Ask if unsure; the Pico cannot see power.
 - **COM10 must be free:** no configurator tab still open from before (closing the tab, not just Disconnect, frees it),
@@ -37,6 +37,13 @@ python tools/esc_buddy/esc_buddy_run.py --passthrough --pins 6 7 8 9
   every block read, refused writes, line diagnostics). It also ends a buddy that is still running.
 - On exit the buddy drives all lines low and each ESC starts its firmware again (no-signal beeps shortly after). Before a
   run that counts as arming or start evidence, mention that the ESCs were just through their bootloader.
-- If the owner reports values, compare them with `specification/KM55A2_DEFAULTS.md`; don't update that page without their go.
+- If the owner reports values, compare them with the README's "ESC settings as configured"; don't update that section without their go.
 
 Details: `tools/esc_buddy/README.md`.
+
+## Recording what the configurator would write (no write reaches the ESC)
+
+`python tools/esc_buddy/esc_buddy_run.py --passthrough --record-writes --pins 6 7 8 9` answers the configurator's
+save commands (erase, write, verify) "OK" without sending anything to the ESC, and logs each one in full: command,
+address, data. The owner clicks Save on one ESC; `--debug` then shows the `refused` lines, to be checked against the
+bootloader source. The configurator's read-back shows the old settings, so it may report a failed save - expected.

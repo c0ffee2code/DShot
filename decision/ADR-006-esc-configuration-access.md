@@ -28,7 +28,7 @@ to spin a motor, and the project runs MicroPython on the Pico.
 ## Decision
 
 **The main Pico acts as the flight controller: it answers the configurator's MSP and 4-way commands itself and speaks
-the AM32 bootloader protocol on each ESC's signal line, with Betaflight's line handling. It is read-only by
+the AM32 bootloader protocol on each ESC's signal line, with Betaflight's line handling. It is read-only (apart from the one guarded write added 2026-11-05, see Consequences) by
 construction. The same path lets Claude read the configuration without the configurator.**
 
 1. **One MicroPython program on the main Pico** (`tools/esc_buddy/`): the USB serial port carries MSP and 4-way frames
@@ -52,8 +52,8 @@ construction. The same path lets Claude read the configuration without the confi
    its metadata). It does not read a scenario file: the pins are the only thing it needs to know.
 5. **A project skill** (`.claude/skills/esc-buddy/`: a router plus `configuration.md` and `passthrough.md`) so any
    Claude session can poll the configuration, compare it with the recorded vendor defaults
-   (`specification/KM55A2_DEFAULTS.md`) and hand the owner the configurator link. Because it sends no throttle and
-   cannot write, it runs without asking (CLAUDE.md, owner 2026-11-04); never during a motor run.
+   (`specification/KM55A2_DEFAULTS.md`) and the current configuration (README, "ESC settings as configured") and hand the owner the configurator link. Because it sends no throttle and
+   cannot write (the later write path is a separate action with its own go), it runs without asking (owner 2026-11-04; rules in tools/esc_buddy/README.md); never during a motor run.
 
 ## Approaches tried
 
@@ -125,8 +125,17 @@ program, or pre-encode the instruction once (`rp2.asm_pio_encode`) and exec the 
   settings).
 - Reading puts each ESC through its bootloader and back (about 2 s each, 20-60 s for four). Not compatible with a
   motor run; a run that counts as evidence should note that the ESCs were just rebooted.
-- The buddy cannot tune. Writing is backlog: its own action flag, the owner's go per change, a read before and after,
-  and the old block kept - without weakening the read path's guarantee.
+- **Writing (decided and built 2026-11-05; first write done the same day on ESC 2, see tools/esc_buddy/README.md).** The read path and the configurator
+  passthrough stay unable to write. `esc_buddy_run.py --plan --esc N --set "motor KV=2220"` is a plan (reads the ESC's whole
+  1 KB settings page, shows old and new); `--write --backup <path>` instead saves the page there (never overwritten), writes,
+  reads back and compares. The guards are on the Pico, so a mistake in the PC script cannot get past them: only the ESC
+  the session was started for, once, only the settings address with exactly the block size, and bytes 0-16 and 176-183
+  equal to what the buddy last read from that ESC. This is because the configurator's own save blanks the firmware name
+  and pads the tail (recorded on the wire 2026-11-05, tools/esc_buddy/README.md), so its block is never forwarded. Only
+  motor KV, motor poles and beeper volume can be named (limits for poles and volume are mine, not the configurator's). The bootloader erases the
+  whole page when a write starts at its first byte, so the tool refuses unless the page beyond the 184-byte block is
+  blank. The bench bootloader (version 1) has no public source; the public one (version 19) was used for the frame
+  sequence, and the first write showed version 1 follows the same sequence.
 - The tool imports two modules from the wingman's folder (the main Pico's board ID and the start-line pin); harmless
   today, a shared home for them would be cleaner.
 
@@ -134,8 +143,13 @@ program, or pre-encode the instruction once (`rp2.asm_pio_encode`) and exec the 
 
 - PC unit tests: the allow-list (every one of the 247 non-allowed 4-way commands refused without touching the line),
   bootloader frames and CRCs, MSP answers where the configurator reads them, the settings decoder against the
-  configurator's own display of the KM55A2's settings.
+  configurator's own display of the KM55A2's settings; the write path (encoders and ranges, every Pico-side guard, the
+  bootloader sequence against a fake bootloader built from the public source, plan/apply/restore end to end).
 - Pico only (GPIO 10-13, nothing attached), after each change: byte loopback, channel switching, output driver states,
   the configurator's connect sequence.
 - Bench (GPIO 6-9, ESC powered, 2026-11-04): the real configurator read all four ESCs through the buddy; its downloads,
   the buddy's record and two later `--read` runs (20:34 and 21:25) were byte-for-byte identical.
+- Bench writes (2026-11-05): the configurator's save frames recorded without sending them (two sessions); the first write
+  on one ESC recorded on the wire (the version 1 bootloader follows the public sequence), read back by the buddy and by the
+  configurator; `--restore` on a real ESC; then KV 7180 and beeper volume 1 on all eight ESCs of the two boards, each read
+  back equal and a final `--read` identical. Figures and times: `tools/esc_buddy/README.md`.

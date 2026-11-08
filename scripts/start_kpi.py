@@ -52,6 +52,14 @@ PEER_TOLERANCE = 0.15                   # a motor's settled speed against the me
 HOLD_OUTSIDE_MAX_PCT = 1.0              # replies outside the motor's own +-35% band after spin-up (baseline brief dips are about 0.1%)
 CLEAN_RUNS_FOR_99 = 300                 # the evidence rule the arming promise uses (CLAUDE.md, Operational Envelope)
 
+# Sessions the owner has taken out of the KPI by name (folder name -> why). They are counted apart, never as runs, and the totals say how many
+# were left out. Add one only on the owner's word.
+EXCLUDED_SESSIONS = {
+    "2026-11-05_22-41-53": "owner, 2026-11-06: first run after the ESC settings were written (motor KV 2220 -> 7180, beeper volume 5 -> 1); the "
+                           "AM32 2.16 source says KV does not touch start-up at throttle 215, but it is not bench-confirmed",
+    "2026-11-08_21-19-55": "owner, 2026-11-08: a single four-motor DShot 600 run asked for outside the KPI series",
+}
+
 
 def start_block(lines, propeller_names, esc_mock):
     """The start KPI facts of one run, from the spy's per-line facts. status is in_scope (a KPI run), not_started (the intended KPI run never reached the throttle
@@ -154,7 +162,11 @@ def percentile(sorted_values, fraction):
 
 def aggregate(summaries):
     """The KPI totals over session summaries (dicts as in summary.json). Only valid, in-scope sessions are runs; the others are counted apart: out_of_scope,
-    not_started (the intended KPI run never reached the throttle step), instrument_problem (the spy record lost data) and skipped_no_start_block."""
+    not_started (the intended KPI run never reached the throttle step), instrument_problem (the spy record lost data), skipped_no_start_block and
+    excluded_by_owner (EXCLUDED_SESSIONS: left out before anything is counted)."""
+    excluded = [s for s in summaries if s.get("session") in EXCLUDED_SESSIONS]
+    all_sessions = len(summaries)
+    summaries = [s for s in summaries if s.get("session") not in EXCLUDED_SESSIONS]
     skipped_old = [s for s in summaries if not s.get("start")]
     with_start = [s for s in summaries if s.get("start")]
     instrument = [s for s in with_start if s.get("spy") and not s["spy"].get("valid", True)]
@@ -188,7 +200,7 @@ def aggregate(summaries):
     def low(k, n):
         return None if not n else round(100.0 * lower_bound(k, n), 1)
     n = len(runs)
-    return {"sessions": len(summaries), "runs": n, "out_of_scope": out_of_scope, "not_started": not_started, "instrument_problem": len(instrument),
+    return {"sessions": all_sessions, "excluded_by_owner": len(excluded), "runs": n, "out_of_scope": out_of_scope, "not_started": not_started, "instrument_problem": len(instrument),
             "skipped_no_start_block": len(skipped_old),
             "all_spun_up": spun_up, "all_spun_up_pct": pct(spun_up, n), "all_spun_up_lower95_pct": low(spun_up, n),
             "start_ok": start_ok, "start_ok_pct": pct(start_ok, n), "start_ok_lower95_pct": low(start_ok, n),
@@ -208,6 +220,8 @@ def format_lines(agg):
                  val(agg["all_spun_up_lower95_pct"]), agg["runs_with_a_start_over_the_limit"], agg["spin_up_limit_ms"], agg["not_started"],
                  val(agg["start_ok_if_not_started_fail_pct"]), val(agg["start_ok_if_not_started_fail_lower95_pct"]), agg["out_of_scope"],
                  agg["instrument_problem"], agg["skipped_no_start_block"], agg["clean_runs_for_99"])]
+    if agg["excluded_by_owner"]:
+        lines.append("START_KPI_EXCLUDED sessions=%d (left out of the totals above, see EXCLUDED_SESSIONS in start_kpi.py)" % agg["excluded_by_owner"])
     for g, c in agg["per_gpio"].items():
         lines.append("SPIN_UP gpio=%s starts=%d not_spun_up=%d median_ms=%s p90_ms=%s max_ms=%s over_limit=%d" % (
             g, c["starts"], c["not_spun_up"], val(None if c["median_ms"] is None else round(c["median_ms"])),

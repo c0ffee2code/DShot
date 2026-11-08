@@ -85,6 +85,27 @@ class ReadOnly(unittest.TestCase):
             self.assertIn(frame[0], (p.BL_SET_ADDRESS, p.BL_READ_FLASH, p.BL_KEEP_ALIVE, p.BL_RUN))
         self.assertEqual(link.sent[0], p.BOOT_INIT)
 
+    def test_a_refused_write_is_logged_in_full(self):
+        logged = []
+        passthrough = p.Passthrough(FakeLink(), 4, lambda *entry: logged.append(entry))
+        passthrough.handle_four_way(four_way(0x3B, 0x7C00, b"\x01\x02\x03"))
+        self.assertEqual(logged, [("refused", None, 0x7C00, b";\x01\x02\x03")])
+
+    def test_record_writes_answers_ok_but_never_touches_the_line(self):
+        for cmd in p.WRITE_CLASS_4WAY:
+            link = FakeLink()
+            logged = []
+            passthrough = p.Passthrough(link, 4, lambda *entry: logged.append(entry), record_writes=True)
+            _, _, _, ack = parse_reply(passthrough.handle_four_way(four_way(cmd, 0x7C00, bytes(range(184)))))
+            self.assertEqual(ack, p.ACK_OK, hex(cmd))
+            self.assertEqual((link.sent, link.selected, link.restarts), ([], [], 0), hex(cmd))
+            self.assertEqual(logged[0][3], bytes([cmd]) + bytes(range(184)))
+
+    def test_record_writes_still_refuses_what_is_not_a_save_command(self):
+        passthrough = p.Passthrough(FakeLink(), 4, record_writes=True)
+        _, _, _, ack = parse_reply(passthrough.handle_four_way(four_way(0x3C, 0, b"\x00")))    # C2CK low
+        self.assertEqual(ack, p.ACK_I_INVALID_CMD)
+
     def test_bad_crc_is_answered_and_nothing_is_sent(self):
         frame = bytearray(four_way(p.CMD_DEVICE_READ, 0x7C00, b"\x10"))
         frame[-1] ^= 0xFF

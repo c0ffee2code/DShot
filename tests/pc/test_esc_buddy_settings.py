@@ -13,7 +13,7 @@ import esc_buddy_settings as s
 KM55A2 = bytes.fromhex(
     "01020102104b4d35352046342020202020000000010101021864370e0000050080808032003200000f0a0a8d66060000") + b"\xff" * 136
 
-# what the configurator showed for this block (owner's screenshot, tools/esc_buddy/dump/)
+# what the configurator showed for this block (owner's screenshot, 2026-11-04)
 SHOWN = {
     "motor KV": "2220", "motor poles": "14", "startup power": "100 %", "timing advance": "15.0 deg",
     "PWM frequency": "24 kHz", "variable PWM": "on", "complementary PWM": "on", "stuck rotor protection": "on",

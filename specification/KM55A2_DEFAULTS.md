@@ -1,7 +1,6 @@
 # Skystars KM55A2: vendor defaults as read from the ESCs
 
-The bench ESC (Skystars KM55A2) as it came from the vendor - identity and stored settings, never changed by us - read from the ESC itself. Every section says when it was recorded;
-re-read with `tools/esc_buddy/` (`--read`) before relying on it after anything was flashed or written.
+The bench ESC (Skystars KM55A2) as it came from the vendor - identity and stored settings - read from the ESC itself. This page is the vendor's state only and stays as recorded: what we changed afterwards and what the ESCs hold now is in the top-level README, "ESC settings as configured". Every section says when it was recorded.
 
 **Recorded 2026-11-04**, by two independent reads of all four ESCs through the ESC buddy (`tools/esc_buddy/`), no
 writes:
@@ -68,7 +67,7 @@ Whole block (184 bytes): `01020102104b4d3535204634202020202000000001010102186437
 followed by 136 bytes of `ff`. Decoder: `tools/esc_buddy/esc_buddy_settings.py`, tested against the configurator's
 display (`tests/pc/test_esc_buddy_settings.py`).
 
-## What this means (recorded 2026-11-04)
+## What this means
 
 - These are **AM32's generic template defaults** (they equal the AM32 wiki's EEPROM-format defaults, [R-002](REFERENCES.md):
   KV byte 55, 14 poles, startup power 100, 15 deg, 24 kHz). Nobody has tuned them for the fitted motors: the ESC assumes
@@ -76,20 +75,4 @@ display (`tests/pc/test_esc_buddy_settings.py`).
 - In layout 2, bytes 5-16 hold the firmware name. `minimum_duty_cycle` and `max_ramp`, settings in the newer layout,
   are **not settings in firmware 2.16** but built-in values. Any reasoning about startup duty must use the **2.16**
   source, not the newer commit `AM32.md` is pinned to.
-- **Stored against fitted** (added 2026-11-05): the ESCs are set for **2220 KV and 14 poles**; the fitted motors are
-  BETAFPV LAVA 1104, **7200 KV with 12 rotor magnets** (the scenarios' `hardware` block and README; the magnet count was
-  counted and confirmed by the optical sensor, eRPM / shaft RPM = 6.02-6.05). AM32's "motor poles" setting is the magnet
-  count, so the matching values would be about 7200 KV and 12 poles.
-- **What the mismatch does, by the 2.16 source** (AM32 tag `v2.16`, read 2026-11-05; source reading, not yet confirmed on
-  the bench):
-  - KV and poles only set a low-speed duty cap: `duty_cycle_maximum = map(k_erpm, low_rpm_level, high_rpm_level, 400,
-    2000)` with `low_rpm_level = kv/100/(32/poles)` and `high_rpm_level = kv/12/(32/poles)`, integer arithmetic
-    (`Src/main.c:827-832, 2112-2122`). Poles have no effect at all: `32/14` and `32/12` are both 2.
-  - The cap never goes below 400/2000; throttle 215 asks for about 194/2000 (`map(215, 47, 2047, 33, 2000)`), so at the
-    start test the cap never limits. It would only bite above DShot throttle ~422 (outside the 250 ceiling), and matched
-    KV (byte 179-180) would make it stricter: 400 held up to ~35k eRPM instead of ~11k.
-  - What shapes the start at 215 is **startup power** (byte 25 = 100): start duty 100/2000, throttle-to-duty offset 33
-    (`main.c:690-692, 1232, 1238`). Ramp, forced-step timeout, the switch to closed loop and stuck-rotor protection are
-    built in and do not depend on KV or poles.
-  - So the mismatch does not explain the occasional slow spin-up at 215 - and could not single out one channel, since all
-    four ESCs hold the same settings.
+- The stored KV and poles assumed a 14-pole, 2220 KV motor; the fitted motors are BETAFPV LAVA 1104 (7200 KV, 12 magnets). What was changed to match: the top-level README, "ESC settings as configured".

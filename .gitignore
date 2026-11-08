@@ -27,3 +27,6 @@ captures Backup/
 
 # Claude Code machine-local settings (permission allow-list etc.) - not for a public repo
 .claude/settings.local.json
+
+# Scratch for local files that must not be committed: ESC settings backups (esc_buddy_run.py --write --backup tmp/...)
+tmp/

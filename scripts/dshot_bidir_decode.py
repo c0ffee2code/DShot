@@ -109,7 +109,6 @@ GCR_ENCODE_TABLE = [
 ]
 GCR_DECODE_TABLE = {symbol: nibble for nibble, symbol in enumerate(GCR_ENCODE_TABLE)}
 
-MOTOR_POLES = 14  # AM32 EEPROM default (wiki.am32.ca) - unverified for this specific ESC
 FRAME_LENGTH_BITS = 21  # marker (1) + 20 differentially-encoded data bits - see module docstring
 
 # AM32's fixed "motor not running" payload - mirrors driver/gcr_decode.py's

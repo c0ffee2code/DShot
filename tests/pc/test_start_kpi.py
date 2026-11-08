@@ -3,6 +3,7 @@
 
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -176,6 +177,23 @@ class AggregateTest(unittest.TestCase):
         self.assertIn("instrument_problem=1", lines[0])
         self.assertEqual(5, len(lines))
         self.assertTrue(lines[4].startswith("SPIN_UP gpio=9 starts=8 not_spun_up=1 median_ms=160 "))
+
+    def test_an_excluded_session_is_left_out_before_anything_is_counted_and_reported(self):
+        left_out = dict(summary(), session="excluded_for_the_test")
+        with unittest.mock.patch.dict(start_kpi.EXCLUDED_SESSIONS, {"excluded_for_the_test": "a reason"}):
+            agg = start_kpi.aggregate([summary(), left_out])
+            lines = start_kpi.format_lines(agg)
+        self.assertEqual((2, 1, 1, 1), (agg["sessions"], agg["runs"], agg["excluded_by_owner"], agg["start_ok"]))
+        self.assertEqual(0, agg["out_of_scope"])
+        self.assertTrue(any(l.startswith("START_KPI_EXCLUDED sessions=1") for l in lines))
+
+    def test_nothing_is_excluded_unless_listed_and_no_extra_line_then(self):
+        agg = start_kpi.aggregate([dict(summary(), session="some_session")])
+        self.assertEqual((1, 0), (agg["runs"], agg["excluded_by_owner"]))
+        self.assertFalse(any(l.startswith("START_KPI_EXCLUDED") for l in start_kpi.format_lines(agg)))
+
+    def test_the_first_run_after_the_settings_change_is_on_the_list(self):
+        self.assertIn("2026-11-05_22-41-53", start_kpi.EXCLUDED_SESSIONS)
 
     def test_an_empty_batch_prints_dashes_not_a_crash(self):
         lines = start_kpi.format_lines(start_kpi.aggregate([]))

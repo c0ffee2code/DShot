@@ -2,11 +2,15 @@
 esc_buddy_run.py - the PC side of the ESC buddy: read the ESCs' AM32 configuration through the main Pico, hand them
 to the AM32 web configurator (passthrough), or show the buddy's record of its last session.
 
-Exactly one action is required; all of them are read-only:
+Exactly one action is required. --read, --passthrough, --debug, --plan and --plan-restore cannot write; --write and --restore
+change settings on ONE ESC (a plan first, then the same command with --write / --restore):
 
   python tools/esc_buddy/esc_buddy_run.py --read --pins 6 7 8 9 > esc.json   # read every ESC's settings, JSON on stdout
   python tools/esc_buddy/esc_buddy_run.py --passthrough --pins 6 7 8 9       # hand the ESCs to the browser configurator
   python tools/esc_buddy/esc_buddy_run.py --debug                            # the buddy's record of its last session
+  python tools/esc_buddy/esc_buddy_run.py --plan --pins 6 7 8 9 --esc 4 --set "motor KV=2220"                     # what would change
+  python tools/esc_buddy/esc_buddy_run.py --write --pins 6 7 8 9 --esc 4 --set ... --backup tmp/esc4_before.json   # change it
+  python tools/esc_buddy/esc_buddy_run.py --plan-restore BACKUP | --restore BACKUP --backup ... (with --pins, --esc)  # put a backup back
 
 --read writes nothing to disk: stdout carries exactly one JSON report (progress goes to stderr), and the caller decides
 what to keep - pipe it, redirect it, or store it as a session's metadata. Exit status 1 when no ESC could be read.
@@ -14,9 +18,9 @@ what to keep - pipe it, redirect it, or store it as a session's metadata. Exit s
 --pins: the GPIO numbers of the ESC signal lines, in order = ESC 1..n (in the configurator and in the report). The
 caller knows the wiring; nothing about it is written here. The main Pico is found by its unique ID, never by COM number.
 
-Read-only: the buddy refuses every write, erase and settings-write command (esc_buddy_protocol.ALLOWED_4WAY).
-It puts signals on the ESC lines but no throttle and no writes: no permission needed (CLAUDE.md), never during a
-motor run.
+--read, --passthrough, --debug, --plan and --plan-restore are read-only: the buddy refuses every write, erase and settings-write
+command (esc_buddy_protocol.ALLOWED_4WAY). --write and --restore write the settings block of one ESC under the guards in
+esc_buddy_protocol.Passthrough.write_refusal, need --backup, and need the owner's go (README, "Permissions and safety rules"). Never during a motor run.
 """
 
 import argparse
@@ -39,10 +43,8 @@ import esc_buddy_settings  # noqa: E402
 BOARD_FILES = [("tools/esc_buddy/esc_buddy_protocol.py", "esc_buddy_protocol.py"),
                ("tools/esc_buddy/esc_buddy_board.py", "esc_buddy_board.py")]
 LOG_NAME = "esc_buddy_log.txt"
-# Where the settings block sits, per bootloader signature, for bootloaders without the v3 devinfo block (am32-configurator
-# src/mcu.ts variants). Only what this bench has met is listed; an unknown signature is refused, not guessed.
-SETTINGS_ADDRESS = {0x1F06: 0x7C00, 0x3506: 0xF800}
-SETTINGS_SIZE = 0xB8          # Mcu.LAYOUT_SIZE
+SETTINGS_ADDRESS = protocol.SETTINGS_ADDRESS
+SETTINGS_SIZE = protocol.SETTINGS_SIZE
 
 
 def check_pins(pins):
@@ -110,7 +112,7 @@ def start_detached(port, code):
         link.close()
 
 
-def start(pins, quiet=False):
+def start(pins, quiet=False, record_writes=False, write_channel=None, restore_block=None):
     pins = check_pins(pins)
     port = find_main_port()
     stop_running(port)
@@ -121,11 +123,16 @@ def start(pins, quiet=False):
             sys.exit("upload of %s failed: %s" % (local, result.stderr.strip()))
     wingman_board.mpremote(port, "reset")
     time.sleep(3)
-    start_detached(find_main_port(), "import esc_buddy_board\nesc_buddy_board.main(%r, %d)\n" % (pins, start_line.START_PIN))
+    start_detached(find_main_port(), "import micropython\nmicropython.kbd_intr(-1)\nimport esc_buddy_board\nesc_buddy_board.main(%r, %d, %r, %r, %r)\n" % (
+        pins, start_line.START_PIN, record_writes, write_channel, restore_block))
     if quiet:
         return pins
     print("ESC buddy running on the main Pico (%s), pins %s = ESC 1..%d." % (port, pins, len(pins)))
-    print("Read-only: writes, erases and settings writes are refused.")
+    if record_writes:
+        print("Recording writes: the configurator's save sequence is answered OK and logged in full; nothing reaches the ESCs.")
+        print("Its read-back will show the old settings, so the configurator may report a failed save - expected.")
+    else:
+        print("Read-only: writes, erases and settings writes are refused.")
     print("Start line GPIO %d is high for the session (the wingman's spy records while it is)." % start_line.START_PIN)
     print("Now: AM32 configurator -> select this port -> Connect -> read the ESCs -> Disconnect.")
     print("Connect within 30 min. It returns to the REPL on Disconnect, or after 5 min of silence once connected.")
@@ -169,21 +176,16 @@ def read_settings(pins):
     blocks = []
     link = serial.Serial(find_main_port(), 115200, timeout=0.2)
     try:
+        wait_until_ready(link)
         for esc in range(len(pins)):
             entry = {"esc": esc + 1, "gpio": pins[esc]}
             report["escs"].append(entry)
-            info = None
-            for attempt in range(10):
-                answer = four_way(link, protocol.CMD_DEVICE_INIT_FLASH, 0, bytes([esc]))
-                if answer and answer[0] == protocol.ACK_OK:
-                    info = answer[1]
-                    break
-                time.sleep(1)
-            if info is None:
+            connected = connect_esc(link, esc)
+            if connected is None:
                 entry["error"] = "no answer to init flash access after 10 tries"
                 note("ESC %d (GPIO %d): %s" % (esc + 1, pins[esc], entry["error"]))
                 continue
-            signature, pin_code = (info[1] << 8) | info[0], info[2]
+            signature, pin_code = connected
             entry["bootloader"] = {"signature": "0x%04X" % signature, "input_pin": "P%s%d" % (
                 "ABCDEF"[pin_code >> 4] if pin_code >> 4 < 6 else "?", pin_code & 15)}
             note("ESC %d (GPIO %d): bootloader signature %s, input pin %s" % (
@@ -214,6 +216,173 @@ def read_settings(pins):
         sys.exit(1)
 
 
+def wait_until_ready(link, tries=40):
+    """Ask the buddy for its interface name until it answers (it needs a moment after the start command); a harmless request
+    that touches no ESC. Exits if it never does."""
+    for _ in range(tries):
+        if four_way(link, protocol.CMD_INTERFACE_GET_NAME, 0, b"\x00", timeout_s=0.5):
+            return
+    sys.exit("the ESC buddy on the main Pico does not answer")
+
+
+def connect_esc(link, esc, tries=10):
+    """Init flash access on ESC `esc` (index from 0), retried while it reboots into its bootloader: (signature, input pin
+    code), or None."""
+    for _ in range(tries):
+        answer = four_way(link, protocol.CMD_DEVICE_INIT_FLASH, 0, bytes([esc]))
+        if answer and answer[0] == protocol.ACK_OK:
+            return (answer[1][1] << 8) | answer[1][0], answer[1][2]
+        time.sleep(1)
+    return None
+
+
+def parse_sets(items):
+    """--set NAME=VALUE ... -> {name: value text}; exits on a malformed or repeated one."""
+    changes = {}
+    for item in items:
+        name, separator, value = item.partition("=")
+        name = name.strip()
+        if not separator or not name or not value.strip():
+            sys.exit("--set needs NAME=VALUE (for example 'motor KV=2220'), got %r" % item)
+        if name in changes:
+            sys.exit("%r is set twice" % name)
+        changes[name] = value.strip()
+    return changes
+
+
+def write_settings(pins, esc, sets, apply, backup):
+    """Change named settings on ONE ESC (esc = 1..n). Without apply it is a plan (--plan): the ESC is read and the change shown,
+    nothing is written. With apply (--write): the page is saved to `backup` first (never overwritten), the Pico writes the block - it checks the
+    protected bytes itself - and the page is read back and compared. Prints one JSON report on stdout and returns it."""
+    changes = parse_sets(sets)
+    try:
+        esc_buddy_settings.apply_changes(bytes(SETTINGS_SIZE), changes)      # names and values checked before anything starts
+    except ValueError as error:
+        sys.exit(str(error))
+    return run_write(pins, esc, changes, None, apply, backup)
+
+
+def restore_settings(pins, esc, saved, apply, backup):
+    """Put the settings block saved by an earlier --write back on ONE ESC (`saved` = that backup file). Plan unless apply; the
+    backup must be of this ESC (same number and GPIO) and hold a block that decodes. `backup` is where the page as it is NOW
+    is saved first, like any write."""
+    try:
+        with open(saved) as handle:
+            data = json.load(handle)
+        block = bytes.fromhex(data["settings_block_hex"])
+        esc_buddy_settings.decode(block)
+    except (OSError, ValueError, KeyError) as error:
+        sys.exit("cannot restore from %s: %s" % (saved, error))
+    if len(block) != SETTINGS_SIZE:
+        sys.exit("%s holds %d bytes, not a settings block of %d" % (saved, len(block), SETTINGS_SIZE))
+    if not 1 <= esc <= len(pins):
+        sys.exit("--esc %d: there are %d ESCs in --pins" % (esc, len(pins)))
+    if data.get("esc") != esc or data.get("gpio") != pins[esc - 1]:
+        sys.exit("%s is a backup of ESC %s (GPIO %s), not of ESC %d (GPIO %d)" % (
+            saved, data.get("esc"), data.get("gpio"), esc, pins[esc - 1]))
+    return run_write(pins, esc, {}, block, apply, backup)
+
+
+def run_write(pins, esc, changes, restore, apply, backup):
+    """The common part of write_settings and restore_settings. restore: the exact block to put back, or None."""
+    if not 1 <= esc <= len(pins):
+        sys.exit("--esc %d: there are %d ESCs in --pins" % (esc, len(pins)))
+    if apply:
+        if not backup:
+            sys.exit("--write and --restore need --backup <path>: the old settings page is saved there before anything is written")
+        backup = Path(backup)
+        if backup.exists():
+            sys.exit("%s exists; the backup is never overwritten" % backup)
+        backup.parent.mkdir(parents=True, exist_ok=True)
+    index = esc - 1
+    pins = start(pins, quiet=True, write_channel=index if apply else None, restore_block=restore if apply else None)
+    report = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "esc": esc, "gpio": pins[index], "applied": False, "ok": False}
+    link = serial.Serial(find_main_port(), 115200, timeout=0.2)
+    try:
+        wait_until_ready(link)
+        fill_report(link, report, index, changes, apply, backup, restore)
+    finally:
+        four_way(link, protocol.CMD_INTERFACE_EXIT, timeout_s=1.0)
+        link.close()
+    print(json.dumps(report, indent=1))
+    return report
+
+
+def read_page(link, address):
+    """The whole 1 KB settings page (four reads of 256), or None. The bootloader erases all of it when a write starts at its
+    first byte, so it is what is saved, checked for blankness and compared after a write."""
+    page = b""
+    for part in range(4):
+        answer = four_way(link, protocol.CMD_DEVICE_READ, address + 256 * part, bytes([0]))
+        if not answer or answer[0] != protocol.ACK_OK or len(answer[1]) != 256:
+            return None
+        page += answer[1]
+    return page
+
+
+def field_texts(block):
+    """{byte offset: decoded text} of a settings block, or {} when it does not decode (blank, other layout)."""
+    try:
+        return {offset: text for offset, _, _, text in esc_buddy_settings.decode(block)}
+    except ValueError:
+        return {}
+
+
+def fill_report(link, report, index, changes, apply, backup, restore=None):
+    """The body of run_write: sets report["error"] and returns at the first thing that stops it."""
+    found = connect_esc(link, index)
+    if found is None:
+        report["error"] = "no answer to init flash access after 10 tries"
+        return
+    address = SETTINGS_ADDRESS.get(found[0])
+    if address is None:
+        report["error"] = "settings address unknown for bootloader signature 0x%04X" % found[0]
+        return
+    page = read_page(link, address)
+    if page is None:
+        report["error"] = "reading the settings page failed"
+        return
+    old = page[:SETTINGS_SIZE]
+    blank = b"\xff" * (len(page) - SETTINGS_SIZE)
+    report["page_beyond_block_blank"] = page[SETTINGS_SIZE:] == blank
+    if restore is None:
+        try:
+            new, done = esc_buddy_settings.apply_changes(old, changes)
+            esc_buddy_settings.decode(old)
+        except ValueError as error:
+            report["error"] = str(error)
+            return
+    else:
+        new = restore
+        names = {offset: name for offset, name, _, _ in esc_buddy_settings.decode(new)}
+        done = [(names[offset], offset, old[offset], new[offset]) for offset in names if old[offset] != new[offset]]
+    before, after = field_texts(old), field_texts(new)
+    report["changes"] = [{"field": name, "byte": offset, "old_raw": old_raw, "new_raw": new_raw,
+                          "old": before.get(offset, "unreadable"), "new": after.get(offset, "unreadable")}
+                         for name, offset, old_raw, new_raw in done]
+    report["old_block_hex"], report["new_block_hex"] = old.hex(), new.hex()
+    if not report["page_beyond_block_blank"]:
+        report["error"] = "the page holds data beyond the settings block; a write would erase it - not doing that"
+        return
+    if new == old:
+        report["error"] = "nothing to change: the ESC already holds these values"
+        return
+    if not apply:
+        report["ok"] = True
+        return
+    with open(backup, "x") as saved:                   # before anything is sent to the ESC
+        json.dump({"saved_at": report["at"], "esc": report["esc"], "gpio": report["gpio"], "address": "0x%04X" % address,
+                   "page_hex": page.hex(), "settings_block_hex": old.hex()}, saved, indent=1)
+    report["backup"] = str(backup)
+    answer = four_way(link, protocol.CMD_DEVICE_WRITE, address, new, timeout_s=10.0)
+    report["applied"] = True
+    report["write_ack"] = None if answer is None else answer[0]
+    back = read_page(link, address)
+    report["readback_block_hex"] = None if back is None else back[:SETTINGS_SIZE].hex()
+    report["readback_matches"] = back == new + blank       # the block as written and nothing left in the rest of the page
+    report["ok"] = report["write_ack"] == protocol.ACK_OK and report["readback_matches"]
+
+
 def debug():
     """The buddy's record of its last session (esc_buddy_log.txt on the Pico), as plain text on stdout; ends a buddy that
     is still running first. Nothing is written on the PC."""
@@ -225,23 +394,75 @@ def debug():
     sys.stdout.write(result.stdout)
 
 
-def main():
+def parse_args(argv=None):
+    """The command line, checked. Exactly one action; --plan / --write and --plan-restore / --restore are pairs: the first of
+    each pair only reads and shows what would change, the second writes (and then needs --backup)."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--read", action="store_true", help="read every ESC's settings; one JSON report on stdout")
     action.add_argument("--passthrough", action="store_true",
                         help="hand the ESCs to the AM32 configurator (browser) until it disconnects")
+    action.add_argument("--plan", action="store_true",
+                        help="show what --write would change on ONE ESC (--esc, --set); reads, writes nothing")
+    action.add_argument("--write", action="store_true",
+                        help="change named settings on ONE ESC (--esc, --set); needs --backup and the owner's go")
+    action.add_argument("--plan-restore", metavar="BACKUP",
+                        help="show what --restore would change on ONE ESC (--esc); reads, writes nothing")
+    action.add_argument("--restore", metavar="BACKUP",
+                        help="put the settings block saved in BACKUP (by an earlier --write) back on ONE ESC (--esc); "
+                             "needs --backup for the page as it is now, and the owner's go")
     action.add_argument("--debug", action="store_true",
                         help="print the buddy's record of its last session (plain text, stdout)")
+    parser.add_argument("--record-writes", action="store_true",
+                        help="with --passthrough: answer the configurator's save commands OK without sending them to "
+                             "the ESC, and log them in full (--debug shows them)")
+    parser.add_argument("--esc", type=int,
+                        help="with --plan, --write, --plan-restore or --restore: which ESC, 1..n in the order of --pins")
+    parser.add_argument("--set", nargs="+", metavar="NAME=VALUE",
+                        help="with --plan or --write: settings to change, e.g. \"motor KV=2220\" \"motor poles=12\"")
+    parser.add_argument("--backup", metavar="PATH",
+                        help="with --write or --restore: where the settings page as it is now is saved first (never "
+                             "overwritten; created with its folder if missing)")
     parser.add_argument("--pins", type=int, nargs="+", metavar="GPIO",
-                        help="ESC signal lines in order = ESC 1..n (needed by --read and --passthrough)")
-    args = parser.parse_args()
-    if (args.read or args.passthrough) and not args.pins:
-        parser.error("--%s needs --pins" % ("read" if args.read else "passthrough"))
+                        help="ESC signal lines in order = ESC 1..n (needed by every action except --debug)")
+    args = parser.parse_args(argv)
+    args.saved = args.restore if args.restore is not None else args.plan_restore       # the backup file to put back
+    args.apply = bool(args.write or args.restore is not None)                           # the actions that write
+    changing = bool(args.plan or args.write or args.saved is not None)
+    chosen = next(name for name in ("read", "passthrough", "plan", "write", "plan_restore", "restore", "debug")
+                  if getattr(args, name) not in (False, None))
+    shown = "--" + chosen.replace("_", "-")
+    if chosen != "debug" and not args.pins:
+        parser.error("%s needs --pins" % shown)
+    if changing and args.esc is None:
+        parser.error("%s needs --esc" % shown)
+    if (args.plan or args.write) and not args.set:
+        parser.error("%s needs --set" % shown)
+    if args.set and not (args.plan or args.write):
+        parser.error("--set only goes with --plan or --write")
+    if args.esc is not None and not changing:
+        parser.error("--esc only goes with --plan, --write, --plan-restore or --restore")
+    if args.apply and not args.backup:
+        parser.error("%s needs --backup <path>: the old settings page is saved there before anything is written" % shown)
+    if args.backup and not args.apply:
+        parser.error("--backup only goes with --write or --restore (a plan writes nothing, so there is nothing to back up)")
+    if args.record_writes and not args.passthrough:
+        parser.error("--record-writes only goes with --passthrough")
+    return args
+
+
+def main():
+    args = parse_args()
+    if args.plan or args.write:
+        report = write_settings(args.pins, args.esc, args.set, args.apply, args.backup)
+        sys.exit(0 if report["ok"] else 1)
+    if args.saved is not None:
+        report = restore_settings(args.pins, args.esc, args.saved, args.apply, args.backup)
+        sys.exit(0 if report["ok"] else 1)
     if args.read:
         read_settings(args.pins)
     elif args.passthrough:
-        start(args.pins)
+        start(args.pins, record_writes=args.record_writes)
     else:
         debug()
 

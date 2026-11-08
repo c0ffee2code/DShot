@@ -1091,7 +1091,7 @@ but not a squash).
 | W13 | DShot600 bidir calibration (speed matrix) | R4, TE | L | TODO |
 | W14 | Hygiene batch | R12 | S | DONE |
 | W15 | ADR-002 accuracy fixes | A1, A2, A3, A6, A7 | S | DONE (2026-09-19) |
-| W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | TODO |
+| W16 | Verify MOTOR_POLES against the bench magnetic encoder | R15, A4 | M | DONE (2026-10-15, optical sensor instead of the encoder; see the item) |
 | W17 | Dual-core raw capture + SD/PC decode pipeline (architecture pivot) | — | L | DONE |
 | W18 | JSON-scenario engine + all 4 channels bidirectional (architecture pivot) | — | L | MOSTLY DONE (scenario engine and channels 1/2/3 solid; channel 4 was PARKED; corrected 2026-10-19: the failure was a defect in our own code, not PIO or the channel) - own harness-failure-path gating condition never completed, later found to be a real gap, see BUG-008 (OPEN) |
 | W19 | Run-length capture in the PIO receiver | — | L | DONE (code), hardware verification of W27/W28 still open - see those rows. Spike DONE 2026-09-20 (100% CRC-valid on the bench at DSHOT300 and DSHOT600, decode ~213us); integrated as an opt-in `receiver=` 2026-09-26, validated on the bench (W23-W25), adopted as the sole production receiver (W26), harness ported and sample receiver removed from `BidirectionalDShot` (W27-W28, code done 2026-09-26, bench was powered off) |
@@ -1504,8 +1504,8 @@ known stale-flag corruption path is closed, rather than one where R1/R2 was stil
 Port the offline run-length reconstruction decode (marker edge → period estimate →
 `reconstruct_bits()` → GCR reverse-lookup → CRC → eRPM) into a driver-side module callable
 per capture on the Pico. It returns **eRPM** (plus mantissa/exponent and CRC status) — pole
-count and mechanical RPM are the application's business; `MOTOR_POLES = 14` is unverified
-(ADR-002) and must not be baked into the driver. Per findings A3/A4, the production decoder
+count and mechanical RPM are the application's business; the motor's pole pairs (6; 14 poles was an unverified guess,
+resolved by W16) must not be baked into the driver. Per findings A3/A4, the production decoder
 must go beyond the offline script in three ways: accept exactly one CRC polarity (the one
 the hardware sweeps produced — recorded by W15), handle the stopped-motor/max-period
 sentinel explicitly, and check AM32 source for when Extended DShot Telemetry (EDT) frames
@@ -1565,8 +1565,7 @@ that against the device's own sampled tally (`decode_tally.py`), not as a one-of
 Still genuinely deferred, confirmed by grepping `driver/gcr_decode.py` (no match): EDT/stopped-
 motor frame-type discrimination is documented (`specification/AM32.md`#10's bit-8 discrimination
 note) but not implemented in production code - carries forward as real remaining scope, not
-closed by the architecture pivot. `MOTOR_POLES` verification against the bench encoder is W16's
-own separate scope, not this one's.
+closed by the architecture pivot. The pole count was settled separately by W16 (done).
 
 **W10 — Telemetry health state (R16)** · driver module from W9
 Wrap decoded telemetry in explicit health state: `valid`, `erpm`, `timestamp` (ticks),
@@ -1705,7 +1704,10 @@ the eRPM/RPM ratio is the pole-pair count directly. Confirm with the user which 
 encoder reads and that it is channel 1 before the hardware session. This also validates the
 entire telemetry chain end-to-end against an independent sensor — the strongest single
 check available on this bench.
-**Done when:** the measured ratio pins the pole count to an integer consistently across
+**Resolved 2026-10-15:** measured with the optical RPM sensor instead of the encoder: eRPM / shaft RPM = 6.02-6.05 at throttle 60-100, so
+6 pole pairs (12 magnets); the script constant was removed (nothing used it) and ADR-002 / DSHOT.md carry the correction
+(`specification/AM32.md`, "Reading it as shaft RPM").
+**Done when (original):** the measured ratio pins the pole count to an integer consistently across
 ≥3 throttle levels; `MOTOR_POLES` is corrected (or confirmed) with provenance in the
 script and ADR-002, and the ADR's "unverified" caveats are resolved.
 

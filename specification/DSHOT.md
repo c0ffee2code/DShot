@@ -174,8 +174,11 @@ through the inverse of the encode table.
 ```
 period_us = mantissa << exponent
 erpm = 60_000_000 / period_us
-rpm = erpm / (motor_poles / 2)
+shaft_rpm = erpm / pole_pairs        # pole_pairs = rotor magnets / 2 of the real motor
 ```
+
+`erpm` is electrical RPM; the host divides by the motor's pole pairs. For AM32 that is the rotor's, not the ESC's "motor poles"
+setting, which the telemetry path does not use (`AM32.md`, "Reading it as shaft RPM", with the bench confirmation).
 
 ### Extended DShot Telemetry (EDT)
 
