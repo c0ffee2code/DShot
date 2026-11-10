@@ -19,8 +19,15 @@ settings.
 | Firmware target | `SKYSTARS_KM55_V2_F421` (AM32 `Inc/targets.h`, hardware group AT_B, dead time 60) | firmware file name read from each ESC |
 | Firmware version | **AM32 2.16** ("KM55 F4") | settings block bytes 3-16 |
 | MCU | F421 (configurator's reading); bootloader signature `0x1F06` | configurator, device info |
-| Settings layout | EEPROM layout version 2 | settings block byte 1 |
+| Settings layout | EEPROM layout version 2 as shipped (the vendor's AM32 2.16); AM32 2.22 migrates the page to layout 4 on its first boot (ADR-007) | settings block byte 1 |
 | Bootloader | version 1, input pin **PB4**, device-info protocol `0x01` - an older (AlkaMotors-era) AM32 bootloader | device info `34 37 31 14 1F 06 06 01 30` |
+
+**The firmware image (dumped 2026-11-09, `esc_buddy_run.py --dump-firmware`, application area 0x1000..0x7BFF):** the four ESCs of the spare
+board hold byte-identical images (SHA-256 `275f1399...d0ca08`). It is not the binary of any AM32 release for `SKYSTARS_KM55_V2_F421` from 2.16 to 2.22:
+against the 2.16 release 19,178 of 27,648 bytes differ, but aligned with it (a shift of 0x30, later 0x2c and 0x28 bytes from about 0x2400)
+the code matches 96-100% per 1 KB window; 2.17 and later fit worse. So it is a 2.16 build that differs from the release in a few small places.
+The "2.16" label is the firmware's own stamp: AM32 2.16 `Src/main.c` rewrites settings bytes 3-4 (and the name in 5-16) from its compiled-in
+VERSION_MAJOR/MINOR at boot when they differ. No copy of this image is kept: the dumps were discarded on 2026-11-10 (no downgrade is planned, ADR-007).
 
 Not the E230 target the retailers list. The F421 target matches the ESC's bidirectional reply bit time measured earlier
 (1.280-1.285 us at DSHOT600; F421: 1.2833 us).
@@ -63,7 +70,7 @@ difference to it. Details: ADR-006 and `tools/esc_buddy/README.md`.
 | Beeper volume | 30 | 5 | 5 |
 | 30 ms interval telemetry | 31 | 0 | off |
 
-Whole block (184 bytes): `01020102104b4d35352046342020202020000000010101021864370e0000050080808032003200000f0a0a8d66060000`
+Whole block as shipped (layout 2, 184 bytes): `01020102104b4d35352046342020202020000000010101021864370e0000050080808032003200000f0a0a8d66060000`
 followed by 136 bytes of `ff`. Decoder: `tools/esc_buddy/esc_buddy_settings.py`, tested against the configurator's
 display (`tests/pc/test_esc_buddy_settings.py`).
 

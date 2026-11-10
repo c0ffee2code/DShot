@@ -18,7 +18,7 @@ Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0
 | **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
 | **DShot commands** | TODO | No driver-side command API yet; `MotorGroup` rejects 1-47 (BUG-005), so a command API needs its own entry point. AM32 implements commands: `specification/AM32.md`#7 |
 | **Bidirectional DShot** | Done | ADR-002: frame receiver, bench-validated on AM32, the sole production receiver |
-| **ESC configuration access** | Read and write done | ADR-006, `tools/esc_buddy/README.md` and the `esc-buddy` skill. Firmware/bootloader update: a separate session, not built |
+| **ESC configuration access** | Read and write done | ADR-006, `tools/esc_buddy/README.md` and the `esc-buddy` skill. Firmware flash (`--flash`, ADR-007): AM32 2.22 flashed on all eight ESCs (both boards); the buddy's settings code speaks layout 4 only (no older layouts); bootloader update: not built |
 | **Smooth start** | In progress | Definition, scope and baseline: BUG-009 ("Current KPI") |
 
 ## Operational Envelope (what this driver guarantees)
@@ -29,6 +29,8 @@ Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0
 | Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
 | ESC firmware | AM32 only |
 | Start quality | **Pending - not yet guaranteed.** Target **≥ 99%** of runs succeeding, spin-up within 0.5 s |
+
+All figures were measured with AM32 2.16; the bench ESCs run 2.22 since 2026-11-10 and none has been re-measured on it (ADR-007). The baseline for the KPIs restarts on 2.22 (owner, 2026-11-10); runs on 2.16 are not comparable.
 
 An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that arms later after an ESC reboot. The 99% arming rate is **not yet supported** on the current code. The evidence and the measurements behind these figures are in the README's Operational Envelope.
 
@@ -117,6 +119,7 @@ temporary scenario turns out worth keeping, ask first; do not move it into the r
 
 - **`specification/`** holds specifications and the external references used in the work (protocols, firmware behaviour, the vendor's facts about a part). It describes what exists outside this project.
 - **What we set up on the bench** - the boards, motors, props, wiring and the settings we configured on the ESCs - is test bench setup. It lives in the top-level README's Hardware section, never in `specification/` and never in this file.
+- **A tool's README (`tools/*/README.md`) describes the capability** (owner, 2026-11-10): what the tool is for, which firmware or versions it supports and how that is checked, what it does and does not do, and its complete set of properties or options. It is not a logbook or backlog: a dated bench run and what it showed ("poles 14 -> 12 on GPIO 6-9") has a lifetime of about one session, and when it is evidence for a decision it goes to the ADR or bug that owns the claim; open items go to the ADR or bug they belong to.
 - This file holds conventions and pointers (see "Usage"), not facts about the setup.
 
 ## Architecture
@@ -136,7 +139,7 @@ Where the rest is: the receiver and its PIO cost, and the reply mailbox: ADR-002
 
 ### ESC buddy (`tools/esc_buddy/`)
 
-Access to the ESCs' AM32 configuration through the main Pico. Not a test group and not part of a motor run. What it does, how to run it and which commands need no permission: `tools/esc_buddy/README.md` and the `esc-buddy` skill (use the skill; follow its rules). **Every write to an ESC needs the owner's explicit go, each time.** Why it is built this way: ADR-006; the bench ESC and its settings: `specification/KM55A2_DEFAULTS.md` (vendor) and the README's "ESC settings as configured" (now).
+Access to the ESCs' AM32 configuration through the main Pico. Not a test group and not part of a motor run. What it does, how to run it and which commands need no permission: `tools/esc_buddy/README.md` and the `esc-buddy` skill (use the skill; follow its rules). **Principle (owner, 2026-11-10): the buddy serves the firmware that is on the bench, and only that.** No backward compatibility with older AM32 versions or settings layouts: when the ESCs move to a new firmware, the buddy moves with them in the same piece of work - decoder, field names and units, ranges, guards, tests, docs - and the old encodings, names and branches are deleted, not kept behind a shim (an old name is refused like any unknown name; an ESC on another layout is refused, not guessed at). There is no other hardware to keep working. History stays in git and in the dated records of ADRs and READMEs. Today: AM32 2.22, settings layout 4 (ADR-007). **Every write to an ESC needs the owner's explicit go, each time.** Why it is built this way: ADR-006; the bench ESC and its settings: `specification/KM55A2_DEFAULTS.md` (vendor) and the README's "ESC settings as configured" (now).
 
 ### Tests (`tests/`)
 
@@ -160,7 +163,7 @@ folder contents and the spy's tools are in `tests/README.md`.
 ### DShot Protocol
 
 See `specification/DSHOT.md` for the wire protocol itself (packet structure, bit timing for all
-variants, special commands 0-47, bidirectional DShot and eRPM telemetry, CRC), `specification/AM32.md` for how this project's target ESC firmware implements it, and `specification/BETAFLIGHT.md` for how a reference flight-controller host drives it. The bench ESC itself (AM32 2.16, older bootloader): `specification/KM55A2_DEFAULTS.md` (vendor settings as read); what the ESCs hold now is in the README's "ESC settings as configured".
+variants, special commands 0-47, bidirectional DShot and eRPM telemetry, CRC), `specification/AM32.md` for how this project's target ESC firmware implements it, and `specification/BETAFLIGHT.md` for how a reference flight-controller host drives it. The bench ESC itself (AM32 2.22 since 2026-11-10, shipped with 2.16; older bootloader): `specification/KM55A2_DEFAULTS.md` (vendor settings as read); what the ESCs hold now is in the README's "ESC settings as configured".
 
 ## Usage
 

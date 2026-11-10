@@ -2,15 +2,17 @@
 esc_buddy_run.py - the PC side of the ESC buddy: read the ESCs' AM32 configuration through the main Pico, hand them
 to the AM32 web configurator (passthrough), or show the buddy's record of its last session.
 
-Exactly one action is required. --read, --passthrough, --debug, --plan and --plan-restore cannot write; --write and --restore
-change settings on ONE ESC (a plan first, then the same command with --write / --restore):
+Exactly one action is required. --read, --passthrough, --debug and --dump-firmware cannot write; --write and --restore
+change settings on ONE ESC, and --flash puts new firmware on ONE ESC (each checks everything it can before it sends a byte, and
+refuses with an `error` in its report when something is off):
 
   python tools/esc_buddy/esc_buddy_run.py --read --pins 6 7 8 9 > esc.json   # read every ESC's settings, JSON on stdout
   python tools/esc_buddy/esc_buddy_run.py --passthrough --pins 6 7 8 9       # hand the ESCs to the browser configurator
   python tools/esc_buddy/esc_buddy_run.py --debug                            # the buddy's record of its last session
-  python tools/esc_buddy/esc_buddy_run.py --plan --pins 6 7 8 9 --esc 4 --set "motor KV=2220"                     # what would change
-  python tools/esc_buddy/esc_buddy_run.py --write --pins 6 7 8 9 --esc 4 --set ... --backup tmp/esc4_before.json   # change it
-  python tools/esc_buddy/esc_buddy_run.py --plan-restore BACKUP | --restore BACKUP --backup ... (with --pins, --esc)  # put a backup back
+  python tools/esc_buddy/esc_buddy_run.py --write --pins 6 7 8 9 --esc 4 --set "motor KV=7180" --backup tmp/esc4_before.json   # change settings
+  python tools/esc_buddy/esc_buddy_run.py --restore BACKUP --backup ... (with --pins, --esc)                       # put a saved block back
+  python tools/esc_buddy/esc_buddy_run.py --dump-firmware --pins 6 7 8 9 --esc 4 > tmp/esc4_firmware.json         # the ESC's firmware, JSON
+  python tools/esc_buddy/esc_buddy_run.py --flash IMAGE.hex --pins 6 7 8 9 --esc 4 --backup tmp/esc4_page.json    # flash it
 
 --read writes nothing to disk: stdout carries exactly one JSON report (progress goes to stderr), and the caller decides
 what to keep - pipe it, redirect it, or store it as a session's metadata. Exit status 1 when no ESC could be read.
@@ -18,14 +20,16 @@ what to keep - pipe it, redirect it, or store it as a session's metadata. Exit s
 --pins: the GPIO numbers of the ESC signal lines, in order = ESC 1..n (in the configurator and in the report). The
 caller knows the wiring; nothing about it is written here. The main Pico is found by its unique ID, never by COM number.
 
---read, --passthrough, --debug, --plan and --plan-restore are read-only: the buddy refuses every write, erase and settings-write
-command (esc_buddy_protocol.ALLOWED_4WAY). --write and --restore write the settings block of one ESC under the guards in
-esc_buddy_protocol.Passthrough.write_refusal, need --backup, and need the owner's go (README, "Permissions and safety rules"). Never during a motor run.
+--read, --passthrough, --debug and --dump-firmware are read-only: the buddy refuses every write, erase and settings-write
+command (esc_buddy_protocol.ALLOWED_4WAY). --write and --restore write the settings block of one ESC, and --flash the application area plus the
+boot byte, under the guards in esc_buddy_protocol.Passthrough.write_refusal / flash_refusal, need --backup, and need the owner's go (README, "Permissions and safety rules"). Never during a motor run.
 """
 
 import argparse
+import hashlib
 import json
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -38,11 +42,13 @@ import wingman_board  # noqa: E402  (MAIN_ID, mpremote())
 sys.path.insert(0, str(ROOT / "tests" / "bench" / "wingman" / "main_pico"))
 import start_line  # noqa: E402  (START_PIN: the line the wingman's spy records by)
 import esc_buddy_protocol as protocol  # noqa: E402  (this folder: the 4-way frame format and CRC)
+import esc_buddy_image  # noqa: E402
 import esc_buddy_settings  # noqa: E402
 
 BOARD_FILES = [("tools/esc_buddy/esc_buddy_protocol.py", "esc_buddy_protocol.py"),
                ("tools/esc_buddy/esc_buddy_board.py", "esc_buddy_board.py")]
 LOG_NAME = "esc_buddy_log.txt"
+IMAGE_NAME = "esc_buddy_image.bin"        # where a flash session's image goes on the Pico (esc_buddy_board.IMAGE_PATH)
 SETTINGS_ADDRESS = protocol.SETTINGS_ADDRESS
 SETTINGS_SIZE = protocol.SETTINGS_SIZE
 
@@ -112,7 +118,7 @@ def start_detached(port, code):
         link.close()
 
 
-def start(pins, quiet=False, record_writes=False, write_channel=None, restore_block=None):
+def start(pins, quiet=False, record_writes=False, write_channel=None, restore_block=None, flash_image=None):
     pins = check_pins(pins)
     port = find_main_port()
     stop_running(port)
@@ -121,10 +127,17 @@ def start(pins, quiet=False, record_writes=False, write_channel=None, restore_bl
         result = wingman_board.mpremote(port, "cp", str(ROOT / local), ":" + remote)
         if result.returncode != 0:
             sys.exit("upload of %s failed: %s" % (local, result.stderr.strip()))
+    if flash_image is not None:
+        with tempfile.TemporaryDirectory() as folder:
+            image_file = Path(folder) / IMAGE_NAME
+            image_file.write_bytes(flash_image)
+            result = wingman_board.mpremote(port, "cp", str(image_file), ":" + IMAGE_NAME)
+        if result.returncode != 0:
+            sys.exit("upload of the firmware image failed: %s" % result.stderr.strip())
     wingman_board.mpremote(port, "reset")
     time.sleep(3)
-    start_detached(find_main_port(), "import micropython\nmicropython.kbd_intr(-1)\nimport esc_buddy_board\nesc_buddy_board.main(%r, %d, %r, %r, %r)\n" % (
-        pins, start_line.START_PIN, record_writes, write_channel, restore_block))
+    start_detached(find_main_port(), "import micropython\nmicropython.kbd_intr(-1)\nimport esc_buddy_board\nesc_buddy_board.main(%r, %d, %r, %r, %r, %r)\n" % (
+        pins, start_line.START_PIN, record_writes, write_channel, restore_block, flash_image is not None))
     if quiet:
         return pins
     print("ESC buddy running on the main Pico (%s), pins %s = ESC 1..%d." % (port, pins, len(pins)))
@@ -250,22 +263,22 @@ def parse_sets(items):
     return changes
 
 
-def write_settings(pins, esc, sets, apply, backup):
-    """Change named settings on ONE ESC (esc = 1..n). Without apply it is a plan (--plan): the ESC is read and the change shown,
-    nothing is written. With apply (--write): the page is saved to `backup` first (never overwritten), the Pico writes the block - it checks the
-    protected bytes itself - and the page is read back and compared. Prints one JSON report on stdout and returns it."""
+def write_settings(pins, esc, sets, backup):
+    """Change named settings on ONE ESC (esc = 1..n). Names and values are checked, and the ESC read and its page checked, before
+    anything is sent; then the page is saved to `backup` (never overwritten), the Pico writes the block - it checks the protected bytes
+    itself - and the page is read back and compared. Prints one JSON report on stdout and returns it."""
     changes = parse_sets(sets)
     try:
         esc_buddy_settings.apply_changes(bytes(SETTINGS_SIZE), changes)      # names and values checked before anything starts
     except ValueError as error:
         sys.exit(str(error))
-    return run_write(pins, esc, changes, None, apply, backup)
+    return run_write(pins, esc, changes, None, backup)
 
 
-def restore_settings(pins, esc, saved, apply, backup):
-    """Put the settings block saved by an earlier --write back on ONE ESC (`saved` = that backup file). Plan unless apply; the
-    backup must be of this ESC (same number and GPIO) and hold a block that decodes. `backup` is where the page as it is NOW
-    is saved first, like any write."""
+def restore_settings(pins, esc, saved, backup):
+    """Put the settings block saved by an earlier --write or --flash back on ONE ESC (`saved` = that backup file). The backup must
+    be of this ESC (same number and GPIO) and hold a block that decodes. `backup` is where the page as it is NOW is saved first,
+    like any write."""
     try:
         with open(saved) as handle:
             data = json.load(handle)
@@ -280,27 +293,26 @@ def restore_settings(pins, esc, saved, apply, backup):
     if data.get("esc") != esc or data.get("gpio") != pins[esc - 1]:
         sys.exit("%s is a backup of ESC %s (GPIO %s), not of ESC %d (GPIO %d)" % (
             saved, data.get("esc"), data.get("gpio"), esc, pins[esc - 1]))
-    return run_write(pins, esc, {}, block, apply, backup)
+    return run_write(pins, esc, {}, block, backup)
 
 
-def run_write(pins, esc, changes, restore, apply, backup):
+def run_write(pins, esc, changes, restore, backup):
     """The common part of write_settings and restore_settings. restore: the exact block to put back, or None."""
     if not 1 <= esc <= len(pins):
         sys.exit("--esc %d: there are %d ESCs in --pins" % (esc, len(pins)))
-    if apply:
-        if not backup:
-            sys.exit("--write and --restore need --backup <path>: the old settings page is saved there before anything is written")
-        backup = Path(backup)
-        if backup.exists():
-            sys.exit("%s exists; the backup is never overwritten" % backup)
-        backup.parent.mkdir(parents=True, exist_ok=True)
+    if not backup:
+        sys.exit("--write and --restore need --backup <path>: the old settings page is saved there before anything is written")
+    backup = Path(backup)
+    if backup.exists():
+        sys.exit("%s exists; the backup is never overwritten" % backup)
+    backup.parent.mkdir(parents=True, exist_ok=True)
     index = esc - 1
-    pins = start(pins, quiet=True, write_channel=index if apply else None, restore_block=restore if apply else None)
+    pins = start(pins, quiet=True, write_channel=index, restore_block=restore)
     report = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "esc": esc, "gpio": pins[index], "applied": False, "ok": False}
     link = serial.Serial(find_main_port(), 115200, timeout=0.2)
     try:
         wait_until_ready(link)
-        fill_report(link, report, index, changes, apply, backup, restore)
+        fill_report(link, report, index, changes, backup, restore)
     finally:
         four_way(link, protocol.CMD_INTERFACE_EXIT, timeout_s=1.0)
         link.close()
@@ -313,8 +325,11 @@ def read_page(link, address):
     first byte, so it is what is saved, checked for blankness and compared after a write."""
     page = b""
     for part in range(4):
-        answer = four_way(link, protocol.CMD_DEVICE_READ, address + 256 * part, bytes([0]))
-        if not answer or answer[0] != protocol.ACK_OK or len(answer[1]) != 256:
+        for _ in range(3):                                  # a read changes nothing on the ESC: a failed one is asked again
+            answer = four_way(link, protocol.CMD_DEVICE_READ, address + 256 * part, bytes([0]))
+            if answer and answer[0] == protocol.ACK_OK and len(answer[1]) == 256:
+                break
+        else:
             return None
         page += answer[1]
     return page
@@ -328,7 +343,7 @@ def field_texts(block):
         return {}
 
 
-def fill_report(link, report, index, changes, apply, backup, restore=None):
+def fill_report(link, report, index, changes, backup, restore=None):
     """The body of run_write: sets report["error"] and returns at the first thing that stops it."""
     found = connect_esc(link, index)
     if found is None:
@@ -367,9 +382,6 @@ def fill_report(link, report, index, changes, apply, backup, restore=None):
     if new == old:
         report["error"] = "nothing to change: the ESC already holds these values"
         return
-    if not apply:
-        report["ok"] = True
-        return
     with open(backup, "x") as saved:                   # before anything is sent to the ESC
         json.dump({"saved_at": report["at"], "esc": report["esc"], "gpio": report["gpio"], "address": "0x%04X" % address,
                    "page_hex": page.hex(), "settings_block_hex": old.hex()}, saved, indent=1)
@@ -381,6 +393,188 @@ def fill_report(link, report, index, changes, apply, backup, restore=None):
     report["readback_block_hex"] = None if back is None else back[:SETTINGS_SIZE].hex()
     report["readback_matches"] = back == new + blank       # the block as written and nothing left in the rest of the page
     report["ok"] = report["write_ack"] == protocol.ACK_OK and report["readback_matches"]
+
+
+CHUNKS = (protocol.FLASH_END - protocol.FLASH_START) // protocol.FLASH_CHUNK
+CHUNK_TRIES = 3
+
+
+def read_chunks(link):
+    """The whole application area, one 256-byte read per chunk: a list of CHUNKS entries, each the bytes or None when that read
+    failed. The Pico compares every chunk with the image it was started with and keeps the marks that allow the boot byte back to 1."""
+    chunks = []
+    for number in range(CHUNKS):
+        chunks.append(None)
+        for _ in range(CHUNK_TRIES):                   # a read changes nothing on the ESC, so a failed one is simply asked again
+            answer = four_way(link, protocol.CMD_DEVICE_READ, protocol.FLASH_START + protocol.FLASH_CHUNK * number, bytes([0]))
+            if answer and answer[0] == protocol.ACK_OK and len(answer[1]) == protocol.FLASH_CHUNK:
+                chunks[number] = answer[1]
+                break
+        if number % 27 == 26:
+            note("read %d of %d chunks" % (number + 1, CHUNKS))
+    return chunks
+
+
+def write_boot_byte(link, address, block, report, key):
+    """Write the settings block (boot byte already set in `block`), asked again when the answer does not come: the write only ever sets
+    the boot byte and the Pico lets it through only under the flash rules, so repeating it is safe. The acknowledgements seen go into
+    report[key + "_acks"] (None = no answer). True when one was acknowledged."""
+    report[key + "_acks"] = []
+    for _ in range(CHUNK_TRIES):
+        answer = four_way(link, protocol.CMD_DEVICE_WRITE, address, block, timeout_s=10.0)
+        report[key + "_acks"].append(None if answer is None else answer[0])
+        if answer is not None and answer[0] == protocol.ACK_OK:
+            return True
+    return False
+
+
+def read_name(link):
+    """The firmware file name the ESC holds (at 0x7BE0), or None when it cannot be read or is not a name; asked up to CHUNK_TRIES times."""
+    for _ in range(CHUNK_TRIES):
+        answer = four_way(link, protocol.CMD_DEVICE_READ, protocol.FLASH_END - esc_buddy_image.NAME_LENGTH,
+                          bytes([esc_buddy_image.NAME_LENGTH]))
+        if answer and answer[0] == protocol.ACK_OK:
+            name = esc_buddy_image.firmware_name(answer[1])
+            if name is not None:
+                return name
+    return None
+
+
+def flash_firmware(pins, esc, image_path, backup):
+    """Flash the firmware image in `image_path` (an AM32 .hex or a --dump-firmware JSON for this ESC's target) onto ONE ESC (esc = 1..n).
+    The image, the ESC's target name and its settings page are checked before anything is sent; then the settings page is saved to
+    `backup` (never overwritten), then: boot byte 0, every chunk, a read-back of the whole area, and only if all of it equals the
+    image the boot byte back to 1. The Pico enforces all of that itself (esc_buddy_protocol.Passthrough.flash_refusal). One JSON report
+    on stdout; returns it."""
+    try:
+        image = esc_buddy_image.load(image_path)
+    except (OSError, ValueError) as error:
+        sys.exit("cannot use %s as a firmware image: %s" % (image_path, error))
+    if not 1 <= esc <= len(pins):
+        sys.exit("--esc %d: there are %d ESCs in --pins" % (esc, len(pins)))
+    if not backup:
+        sys.exit("--flash needs --backup <path>: the old settings page is saved there before anything is written")
+    backup = Path(backup)
+    if backup.exists():
+        sys.exit("%s exists; the backup is never overwritten" % backup)
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    index = esc - 1
+    pins = start(pins, quiet=True, write_channel=index, flash_image=image)
+    report = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "esc": esc, "gpio": pins[index], "image": str(image_path),
+              "image_sha256": hashlib.sha256(image).hexdigest(), "applied": False, "ok": False}
+    link = serial.Serial(find_main_port(), 115200, timeout=0.2)
+    try:
+        wait_until_ready(link)
+        fill_flash_report(link, report, index, image, backup)
+    finally:
+        four_way(link, protocol.CMD_INTERFACE_EXIT, timeout_s=1.0)
+        link.close()
+    print(json.dumps(report, indent=1))
+    return report
+
+
+def fill_flash_report(link, report, index, image, backup):
+    """The body of flash_firmware: sets report["error"] and returns at the first thing that stops it."""
+    found = connect_esc(link, index)
+    if found is None:
+        report["error"] = "no answer to init flash access after 10 tries"
+        return
+    if found[0] != protocol.FLASH_SIGNATURE:
+        report["error"] = "bootloader signature 0x%04X: only the F421 (0x%04X) is flashed" % (found[0], protocol.FLASH_SIGNATURE)
+        return
+    address = SETTINGS_ADDRESS[found[0]]
+    page = read_page(link, address)
+    if page is None:
+        report["error"] = "reading the settings page failed"
+        return
+    old = page[:SETTINGS_SIZE]
+    blank = b"\xff" * (len(page) - SETTINGS_SIZE)
+    report["boot_byte"] = old[protocol.BOOT_BYTE]
+    report["page_beyond_block_blank"] = page[SETTINGS_SIZE:] == blank
+    report["firmware_now"] = read_name(link)
+    report["firmware_image"] = esc_buddy_image.firmware_name(image)
+    if report["firmware_now"] != report["firmware_image"]:
+        # The name sits in the last chunk (0x7B00), in the page the chunk at 0x7800 erases: a flash this tool started and that stopped in
+        # between leaves no readable name, and its boot byte is still 0 (only this tool clears it). That ESC may be flashed again.
+        if report["firmware_now"] is not None or report["boot_byte"] != 0:
+            report["error"] = "the image is for target %s, the ESC runs target %s" % (report["firmware_image"], report["firmware_now"])
+            return
+        report["resuming_interrupted_flash"] = True
+    if not report["page_beyond_block_blank"]:
+        report["error"] = "the page holds data beyond the settings block; writing the block would erase it - not doing that"
+        return
+    with open(backup, "x") as saved:                   # before anything is sent to the ESC
+        json.dump({"saved_at": report["at"], "esc": report["esc"], "gpio": report["gpio"], "address": "0x%04X" % address,
+                   "page_hex": page.hex(), "settings_block_hex": old.hex(), "image": report["image"],
+                   "image_sha256": report["image_sha256"]}, saved, indent=1)
+    report["backup"] = str(backup)
+    report["applied"] = True
+    held = bytes([0]) + old[1:]                        # the block with the boot byte cleared: the ESC stays in its bootloader
+    report["boot_byte_cleared"] = write_boot_byte(link, address, held, report, "boot_byte_cleared")
+    if not report["boot_byte_cleared"]:
+        report["error"] = "clearing the boot byte was not acknowledged; no chunk was written"
+        return
+    for number in range(CHUNKS):
+        start_address = protocol.FLASH_START + protocol.FLASH_CHUNK * number
+        data = image[number * protocol.FLASH_CHUNK:(number + 1) * protocol.FLASH_CHUNK]
+        for _ in range(CHUNK_TRIES):
+            answer = four_way(link, protocol.CMD_DEVICE_WRITE, start_address, data, timeout_s=10.0)
+            if answer is not None and answer[0] == protocol.ACK_OK:
+                break
+        else:
+            report["error"] = "chunk %d (0x%04X) was not acknowledged after %d tries; the boot byte stays 0" % (
+                number, start_address, CHUNK_TRIES)
+            return
+        if number % 27 == 26:
+            note("wrote %d of %d chunks" % (number + 1, CHUNKS))
+    report["chunks_written"] = CHUNKS
+    chunks = read_chunks(link)
+    bad = [protocol.FLASH_START + protocol.FLASH_CHUNK * number for number, chunk in enumerate(chunks)
+           if chunk != image[number * protocol.FLASH_CHUNK:(number + 1) * protocol.FLASH_CHUNK]]
+    report["readback_mismatch"] = ["0x%04X" % bad_address for bad_address in bad]
+    if bad:
+        report["error"] = "%d chunk(s) do not read back equal to the image; the boot byte stays 0" % len(bad)
+        return
+    final = bytes([1]) + old[1:]
+    report["boot_byte_restored"] = write_boot_byte(link, address, final, report, "boot_byte_restored")
+    after = read_page(link, address)
+    report["page_after_readable"] = after is not None
+    report["page_after_matches"] = after == final + blank
+    report["ok"] = report["boot_byte_restored"] and report["page_after_matches"]
+
+
+def dump_firmware(pins, esc):
+    """Read ONE ESC's whole application area (0x1000..0x7BFF) and print it as one JSON report on stdout - the caller keeps it
+    (`> tmp/esc1_firmware.json`). Writes nothing to the ESC. The report can be given to --flash as the image."""
+    if not 1 <= esc <= len(pins):
+        sys.exit("--esc %d: there are %d ESCs in --pins" % (esc, len(pins)))
+    index = esc - 1
+    pins = start(pins, quiet=True)
+    report = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "esc": esc, "gpio": pins[index], "ok": False}
+    link = serial.Serial(find_main_port(), 115200, timeout=0.2)
+    try:
+        wait_until_ready(link)
+        found = connect_esc(link, index)
+        if found is None:
+            report["error"] = "no answer to init flash access after 10 tries"
+        else:
+            report["bootloader_signature"] = "0x%04X" % found[0]
+            chunks = read_chunks(link)
+            lost = [protocol.FLASH_START + protocol.FLASH_CHUNK * n for n, chunk in enumerate(chunks) if chunk is None]
+            if lost:
+                report["error"] = "chunks not read: %s" % ", ".join("0x%04X" % a for a in lost)
+            else:
+                image = b"".join(chunks)
+                report["firmware_name"] = esc_buddy_image.firmware_name(image)
+                report["area"] = "0x%04X..0x%04X" % (protocol.FLASH_START, protocol.FLASH_END - 1)
+                report["sha256"] = hashlib.sha256(image).hexdigest()
+                report["firmware_hex"] = image.hex()
+                report["ok"] = True
+    finally:
+        four_way(link, protocol.CMD_INTERFACE_EXIT, timeout_s=1.0)
+        link.close()
+    print(json.dumps(report, indent=1))
+    return report
 
 
 def debug():
@@ -395,57 +589,55 @@ def debug():
 
 
 def parse_args(argv=None):
-    """The command line, checked. Exactly one action; --plan / --write and --plan-restore / --restore are pairs: the first of
-    each pair only reads and shows what would change, the second writes (and then needs --backup)."""
+    """The command line, checked. Exactly one action; --write, --restore and --flash write (and then need --esc and --backup)."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--read", action="store_true", help="read every ESC's settings; one JSON report on stdout")
     action.add_argument("--passthrough", action="store_true",
                         help="hand the ESCs to the AM32 configurator (browser) until it disconnects")
-    action.add_argument("--plan", action="store_true",
-                        help="show what --write would change on ONE ESC (--esc, --set); reads, writes nothing")
     action.add_argument("--write", action="store_true",
                         help="change named settings on ONE ESC (--esc, --set); needs --backup and the owner's go")
-    action.add_argument("--plan-restore", metavar="BACKUP",
-                        help="show what --restore would change on ONE ESC (--esc); reads, writes nothing")
     action.add_argument("--restore", metavar="BACKUP",
                         help="put the settings block saved in BACKUP (by an earlier --write) back on ONE ESC (--esc); "
                              "needs --backup for the page as it is now, and the owner's go")
+    action.add_argument("--dump-firmware", action="store_true",
+                        help="read ONE ESC's firmware (--esc), JSON on stdout; usable as the image of --flash")
+    action.add_argument("--flash", metavar="IMAGE",
+                        help="flash the AM32 .hex IMAGE onto ONE ESC (--esc); needs --backup and the owner's go")
     action.add_argument("--debug", action="store_true",
                         help="print the buddy's record of its last session (plain text, stdout)")
     parser.add_argument("--record-writes", action="store_true",
                         help="with --passthrough: answer the configurator's save commands OK without sending them to "
                              "the ESC, and log them in full (--debug shows them)")
     parser.add_argument("--esc", type=int,
-                        help="with --plan, --write, --plan-restore or --restore: which ESC, 1..n in the order of --pins")
+                        help="with --write, --restore, --flash or --dump-firmware: which ESC, 1..n in the order of --pins")
     parser.add_argument("--set", nargs="+", metavar="NAME=VALUE",
-                        help="with --plan or --write: settings to change, e.g. \"motor KV=2220\" \"motor poles=12\"")
+                        help="with --write: settings to change, e.g. \"motor KV=7180\" \"motor poles=12\"")
     parser.add_argument("--backup", metavar="PATH",
-                        help="with --write or --restore: where the settings page as it is now is saved first (never "
+                        help="with --write, --restore or --flash: where the settings page as it is now is saved first (never "
                              "overwritten; created with its folder if missing)")
     parser.add_argument("--pins", type=int, nargs="+", metavar="GPIO",
                         help="ESC signal lines in order = ESC 1..n (needed by every action except --debug)")
     args = parser.parse_args(argv)
-    args.saved = args.restore if args.restore is not None else args.plan_restore       # the backup file to put back
-    args.apply = bool(args.write or args.restore is not None)                           # the actions that write
-    changing = bool(args.plan or args.write or args.saved is not None)
-    chosen = next(name for name in ("read", "passthrough", "plan", "write", "plan_restore", "restore", "debug")
+    writing = bool(args.write or args.restore is not None or args.flash is not None)       # the actions that write
+    changing = writing or args.dump_firmware
+    chosen = next(name for name in ("read", "passthrough", "write", "restore", "flash", "dump_firmware", "debug")
                   if getattr(args, name) not in (False, None))
     shown = "--" + chosen.replace("_", "-")
     if chosen != "debug" and not args.pins:
         parser.error("%s needs --pins" % shown)
     if changing and args.esc is None:
         parser.error("%s needs --esc" % shown)
-    if (args.plan or args.write) and not args.set:
+    if args.write and not args.set:
         parser.error("%s needs --set" % shown)
-    if args.set and not (args.plan or args.write):
-        parser.error("--set only goes with --plan or --write")
+    if args.set and not args.write:
+        parser.error("--set only goes with --write")
     if args.esc is not None and not changing:
-        parser.error("--esc only goes with --plan, --write, --plan-restore or --restore")
-    if args.apply and not args.backup:
+        parser.error("--esc only goes with --write, --restore, --flash or --dump-firmware")
+    if writing and not args.backup:
         parser.error("%s needs --backup <path>: the old settings page is saved there before anything is written" % shown)
-    if args.backup and not args.apply:
-        parser.error("--backup only goes with --write or --restore (a plan writes nothing, so there is nothing to back up)")
+    if args.backup and not writing:
+        parser.error("--backup only goes with --write, --restore or --flash")
     if args.record_writes and not args.passthrough:
         parser.error("--record-writes only goes with --passthrough")
     return args
@@ -453,11 +645,17 @@ def parse_args(argv=None):
 
 def main():
     args = parse_args()
-    if args.plan or args.write:
-        report = write_settings(args.pins, args.esc, args.set, args.apply, args.backup)
+    if args.write:
+        report = write_settings(args.pins, args.esc, args.set, args.backup)
         sys.exit(0 if report["ok"] else 1)
-    if args.saved is not None:
-        report = restore_settings(args.pins, args.esc, args.saved, args.apply, args.backup)
+    if args.restore is not None:
+        report = restore_settings(args.pins, args.esc, args.restore, args.backup)
+        sys.exit(0 if report["ok"] else 1)
+    if args.dump_firmware:
+        report = dump_firmware(args.pins, args.esc)
+        sys.exit(0 if report["ok"] else 1)
+    if args.flash is not None:
+        report = flash_firmware(args.pins, args.esc, args.flash, args.backup)
         sys.exit(0 if report["ok"] else 1)
     if args.read:
         read_settings(args.pins)

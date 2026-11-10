@@ -34,6 +34,7 @@ REPLY_GAP_US = 3000                        # a reply has ended when no byte came
 FIRST_TRAFFIC_TIMEOUT_S = 1800              # waiting for the configurator to connect
 IDLE_TIMEOUT_S = 300                        # silence once it has
 LOG_PATH = "esc_buddy_log.txt"
+IMAGE_PATH = "esc_buddy_image.bin"           # the firmware image of a flash session, uploaded by esc_buddy_run.py
 TX_SM = 0
 RX_SM = 1
 
@@ -156,9 +157,10 @@ class OneWireLink:
             Pin(number, Pin.OUT, value=0)
 
 
-def main(pins, start_pin=None, record_writes=False, write_channel=None, restore_block=None):
+def main(pins, start_pin=None, record_writes=False, write_channel=None, restore_block=None, flash=False):
     """write_channel: the one ESC (index from 0) whose settings block this session may write, once (esc_buddy_protocol.Passthrough);
-    None = read-only. restore_block: with it, the only block that write may carry. start_pin: the bench start line (tests/bench/wingman/main_pico/start_line.py), held high for the whole session
+    None = read-only. restore_block: with it, the only block that write may carry. flash: the session flashes the image in IMAGE_PATH
+    onto that ESC (esc_buddy_protocol.Passthrough, flash_image). start_pin: the bench start line (tests/bench/wingman/main_pico/start_line.py), held high for the whole session
     so the wingman's spy records it, low again at the end."""
     micropython.kbd_intr(-1)       # first thing: a request byte 0x03 (ESC 4's init) is Ctrl-C and would kill the program in its setup
     start_line = Pin(start_pin, Pin.OUT, value=1) if start_pin is not None else None
@@ -179,7 +181,11 @@ def main(pins, start_pin=None, record_writes=False, write_channel=None, restore_
         log_file.flush()
 
     link = OneWireLink(pins)
-    passthrough = Passthrough(link, len(pins), log, record_writes, write_channel, restore_block)
+    image = None
+    if flash:
+        with open(IMAGE_PATH, "rb") as image_file:
+            image = image_file.read()
+    passthrough = Passthrough(link, len(pins), log, record_writes, write_channel, restore_block, image)
     reader = FrameReader()
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)

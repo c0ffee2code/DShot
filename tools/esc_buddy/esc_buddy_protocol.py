@@ -59,12 +59,20 @@ BL_SUCCESS = 0x30
 
 # Where the settings block sits, per bootloader signature, for bootloaders without the v3 devinfo block (am32-configurator
 # src/mcu.ts variants). Only what this bench has met is listed; an unknown signature is refused, not guessed.
-SETTINGS_ADDRESS = {0x1F06: 0x7C00, 0x3506: 0xF800}
-SETTINGS_SIZE = 0xB8          # Mcu.LAYOUT_SIZE
-# A write must leave these bytes as the buddy last read them from that ESC: the first 17 (boot byte, layout, bootloader
-# version, firmware version and name) and the last 8. The configurator blanks the name and pads the tail when it saves.
-PROTECTED_HEAD = 17
-PROTECTED_TAIL = 8
+SETTINGS_ADDRESS = {0x1F06: 0x7C00}
+SETTINGS_SIZE = 192           # AM32 2.22 settings layout 4 (Inc/eeprom.h, a 192-byte union); the configurator's Mcu.LAYOUT_SIZE of older versions was 184
+# A settings write must leave these bytes as the buddy last read them from that ESC: the first 5 (boot byte, layout, bootloader
+# version, firmware version) and the last 16 (the CAN settings). The firmware rewrites the layout and version bytes itself on
+# its first boot after a flash. (The configurator's own save, recorded on layout 2, blanked the name and padded the tail.)
+PROTECTED_HEAD = 5
+PROTECTED_TAIL = 16
+# A firmware flash (Passthrough with flash_image) may write the application area only: the bootloader below FLASH_START is never
+# written, the settings page starts at FLASH_END. The image is flashed in chunks of this size, as the configurator does.
+FLASH_START = 0x1000
+FLASH_END = 0x7C00
+FLASH_CHUNK = 256
+FLASH_SIGNATURE = 0x1F06      # the F421 bootloader; no other MCU is flashed
+BOOT_BYTE = 0                 # settings byte 0: 1 = the bootloader may start the application, 0 = it stays in the bootloader
 BOOT_INIT = bytes([0, 0, 0, 0, 0, 0, 0, 0, 0x0D, ord("B"), ord("L"), ord("H"), ord("e"), ord("l"), ord("i"), 0xF4, 0x7D])
 # The same request with 12 leading zeros, as the configurator's direct mode sends it (direct.ts init()); the bootloader
 # accepts both (decodeInput() checks offsets 16, 20 and 40). Tried when the 17-byte form gets no answer.
@@ -217,7 +225,15 @@ class Passthrough:
     tried to write can be checked against the bootloader source); channel is None before any ESC was selected.
     record_writes: answer the write-class commands "OK" instead of "invalid command" - still nothing reaches the line."""
 
-    def __init__(self, link, esc_count, log=None, record_writes=False, write_channel=None, restore_block=None):
+    def __init__(self, link, esc_count, log=None, record_writes=False, write_channel=None, restore_block=None,
+                 flash_image=None):
+        if flash_image is not None and len(flash_image) != FLASH_END - FLASH_START:
+            raise ValueError("flash image size")
+        self.flash_image = flash_image          # the bytes FLASH_START..FLASH_END-1 that write_channel's ESC may be flashed with, or None
+        self.boot_cleared = False               # flash: the boot byte has been written 0
+        self.base_block = None                  # flash: the settings block as read before the boot byte was cleared
+        self.verified = set()                   # flash: addresses of chunks read back equal to the image since their last write
+        self.settings_writes = 0                # flash: settings writes made (two allowed: boot byte 0, then 1)
         self.record_writes = record_writes
         self.restore_block = restore_block      # put an earlier block back: the write must carry exactly this (bytes) or nothing
         self.write_channel = write_channel      # the one ESC (index from 0) that may be written, once; None = read-only
@@ -337,12 +353,72 @@ class Passthrough:
         self.log("read", self.channel, address, data[:count])
         if address == SETTINGS_ADDRESS.get(self.signatures.get(self.channel)) and count >= SETTINGS_SIZE:
             self.last_block[self.channel] = bytes(data[:SETTINGS_SIZE])
+        if self.flash_image is not None and self.channel == self.write_channel:
+            self.mark_verified(address, data[:count])
         return four_way_reply(CMD_DEVICE_READ, address, data[:count], ACK_OK)
+
+    def mark_verified(self, address, data):
+        """Flash session: every whole chunk in this read that equals the image is marked read back; one that differs loses its mark.
+        Only these marks let the boot byte be set to 1 again."""
+        if address % FLASH_CHUNK:
+            return
+        for start in range(0, len(data) - FLASH_CHUNK + 1, FLASH_CHUNK):
+            chunk_address = address + start
+            if not FLASH_START <= chunk_address < FLASH_END:
+                continue
+            offset = chunk_address - FLASH_START
+            if bytes(data[start:start + FLASH_CHUNK]) == self.flash_image[offset:offset + FLASH_CHUNK]:
+                self.verified.add(chunk_address)
+            else:
+                self.verified.discard(chunk_address)
+
+    def flash_refusal(self, address, params):
+        """write_refusal for a flash session: None when this write is allowed. Allowed, on the one granted F421 only: a chunk that
+        equals the image (after the boot byte was cleared), and the settings block with only the boot byte changed - first to 0, then
+        back to 1 once every chunk of the image has been read back equal."""
+        channel = self.channel
+        if channel is None or channel != self.write_channel:
+            return "not the ESC this session may write"
+        signature = self.signatures.get(channel)
+        if signature != FLASH_SIGNATURE:
+            return "not an F421 bootloader"
+        if address == SETTINGS_ADDRESS.get(signature):
+            return self.flash_settings_refusal(channel, params)
+        if not FLASH_START <= address < FLASH_END:
+            return "not an address this session may write"
+        if not self.boot_cleared:
+            return "boot byte not cleared yet"
+        if address % FLASH_CHUNK or len(params) != FLASH_CHUNK:
+            return "not a whole chunk"
+        offset = address - FLASH_START
+        if params != self.flash_image[offset:offset + FLASH_CHUNK]:
+            return "not the image"
+        return None
+
+    def flash_settings_refusal(self, channel, params):
+        if len(params) != SETTINGS_SIZE:
+            return "not the settings block size"
+        if self.settings_writes >= 8:                  # each one erases the settings page
+            return "no settings write left in this session"
+        base = self.base_block if self.base_block is not None else self.last_block.get(channel)
+        if base is None:
+            return "settings block not read from this ESC"
+        if params[1:] != base[1:]:
+            return "settings differ from the block read beyond the boot byte"
+        if params[BOOT_BYTE] == 0:
+            return None                                # clearing the boot byte is always safe: the ESC stays in its bootloader
+        if params[BOOT_BYTE] != 1 or not self.boot_cleared:
+            return "the boot byte must be cleared first"
+        if len(self.verified) != (FLASH_END - FLASH_START) // FLASH_CHUNK:
+            return "the image has not been read back equal"
+        return None
 
     def write_refusal(self, address, params):
         """None when this write is allowed, else why not. The only write the buddy makes: the settings block of the one
         granted ESC, once, with the protected bytes exactly as the buddy last read them from that ESC."""
         channel = self.channel
+        if self.flash_image is not None and self.write_channel is not None:
+            return self.flash_refusal(address, params)
         if self.writes_left < 1:
             return "no write left in this session"
         if channel is None or channel != self.write_channel:
@@ -360,15 +436,31 @@ class Passthrough:
             return "protected bytes differ from the block read"
         return None
 
+    def accept_flash_write(self, address, params):
+        """Bookkeeping of a flash write the guard allowed. The record keeps a chunk's checksum, not its 256 bytes."""
+        if address == SETTINGS_ADDRESS.get(self.signatures.get(self.channel)):
+            if not self.boot_cleared:
+                self.base_block = self.last_block.get(self.channel)
+                self.boot_cleared = True
+            self.settings_writes += 1
+            self.log("write", self.channel, address, params)
+        else:
+            self.verified.discard(address)       # what is on the ESC there is no longer what was read back
+            crc = crc_bootloader(params)
+            self.log("chunk", self.channel, address, bytes([crc & 0xFF, crc >> 8]))
+
     def write(self, address, params):
         params = bytes(params)
         self.refusal = self.write_refusal(address, params)
         if self.refusal is not None:
             self.log("refused", self.channel, address, bytes([CMD_DEVICE_WRITE]) + params)
             return four_way_reply(CMD_DEVICE_WRITE, address, b"\x00", ACK_I_INVALID_PARAM)
-        self.writes_left -= 1                    # one attempt per session, whatever its outcome
-        self.last_block[self.channel] = None     # the block on the ESC is no longer the one read
-        self.log("write", self.channel, address, params)
+        if self.flash_image is not None:
+            self.accept_flash_write(address, params)
+        else:
+            self.writes_left -= 1                    # one attempt per session, whatever its outcome
+            self.last_block[self.channel] = None     # the block on the ESC is no longer the one read
+            self.log("write", self.channel, address, params)
         size = len(params)
         self.link.send(bootloader_frame([BL_SET_ADDRESS, 0, address >> 8, address & 0xFF]))
         ok = self.link.receive(1, 200) == bytes([BL_SUCCESS])

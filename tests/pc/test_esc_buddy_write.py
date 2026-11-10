@@ -20,14 +20,11 @@ ADDRESS = 0x7C00
 
 
 def vendor_block():
-    """A settings block as the bench ESCs hold one: layout 2, bootloader 1, firmware 2.16 with its name, KV 2220, 14 poles,
-    and the 8 tail bytes at 0xFF."""
-    block = bytearray(p.SETTINGS_SIZE)
-    block[0:5] = bytes([1, 2, 1, 2, 16])
-    block[5:17] = b"KM55 F4".ljust(12)
-    block[26], block[27] = 55, 14
-    block[p.SETTINGS_SIZE - p.PROTECTED_TAIL:] = b"\xff" * p.PROTECTED_TAIL
-    return bytes(block)
+    """A settings block as the bench ESCs hold one after AM32 2.22: layout 4, bootloader 1, KV 7180, 14 poles, beeper volume 1,
+    and the bytes from 48 on at 0xFF (the first 48 are what the spare board's ESCs returned, read 2026-11-09)."""
+    return bytes.fromhex(
+        "0104010216a001000a64006400000000000000000101011a1864b30e0000010080808032003200000f0a0aff66060000"
+    ) + b"\xff" * (p.SETTINGS_SIZE - 48)
 
 
 class FakeBootloader:
@@ -134,8 +131,8 @@ class Encoders(unittest.TestCase):
 
     def test_poles_are_even_within_limits(self):
         self.assertEqual(settings.encode_poles("12"), 12)
-        self.assertEqual((settings.encode_poles("2"), settings.encode_poles("32")), (2, 32))
-        for text in ("13", "0", "34", "36", "38", "-2"):          # above 32 the firmware divides by 32 // poles == 0
+        self.assertEqual((settings.encode_poles("2"), settings.encode_poles("36")), (2, 36))
+        for text in ("13", "0", "38", "40", "-2"):                # the configurator's range is 2 to 36
             with self.assertRaises(ValueError):
                 settings.encode_poles(text)
 
@@ -146,8 +143,8 @@ class Encoders(unittest.TestCase):
                 settings.encode_beeper_volume(text)
 
     def test_beeper_volume_changes_only_byte_30(self):
-        new, done = settings.apply_changes(vendor_block(), {"beeper volume": "1"})
-        self.assertEqual(done, [("beeper volume", 30, 0, 1)])
+        new, done = settings.apply_changes(vendor_block(), {"beeper volume": "5"})
+        self.assertEqual(done, [("beeper volume", 30, 1, 5)])
         self.assertEqual([i for i in range(len(new)) if new[i] != vendor_block()[i]], [30])
 
     def test_every_writable_field_is_a_decoded_field_outside_the_protected_bytes(self):
@@ -162,8 +159,8 @@ class Encoders(unittest.TestCase):
             self.assertNotIn(name, settings.WRITABLE)
 
     def test_flags_are_written_as_exactly_0_or_1(self):
-        for name in ("sinusoidal startup", "variable PWM", "auto timing advance", "brake on stop", "stuck rotor protection",
-                     "stall protection", "low voltage cut off"):
+        for name in ("sinusoidal startup", "auto timing advance", "stuck rotor protection", "stall protection",
+                     "disable stick calibration"):
             encode = settings.WRITABLE[name][1]
             self.assertEqual([encode(t) for t in ("on", "ON", "1", "off", "0")], [1, 1, 1, 0, 0])
             for text in ("2", "yes", "", "255"):
@@ -171,10 +168,12 @@ class Encoders(unittest.TestCase):
                     encode(text)
 
     def test_ranges_are_those_of_the_firmware_source(self):
-        # AM32 2.16 loadEEpromSettings: (field, lowest accepted, highest accepted, stored byte of the lowest, of the highest)
-        cases = [("timing advance", 0, 3, 0, 3), ("PWM frequency", 8, 48, 8, 48), ("startup power", 50, 150, 50, 150),
+        # AM32 2.22 loadEEpromSettings: (field, lowest accepted, highest accepted, stored byte of the lowest, of the highest)
+        cases = [("timing advance steps", 0, 32, 10, 42), ("PWM frequency", 8, 144, 8, 144), ("startup power", 50, 150, 50, 150),
                  ("sine mode range", 5, 25, 5, 25), ("sine mode power", 1, 10, 1, 10), ("brake strength", 1, 10, 1, 10),
-                 ("temperature limit", 70, 140, 70, 140), ("current limit", 2, 198, 1, 99)]
+                 ("active brake power", 0, 5, 0, 5), ("current limit P gain", 0, 255, 0, 255),
+                 ("current limit I gain", 0, 255, 0, 255), ("current limit D gain", 0, 255, 0, 255),
+                 ("temperature limit", 70, 140, 70, 140), ("current limit", 2, 200, 1, 100)]
         for name, low, high, raw_low, raw_high in cases:
             encode = settings.WRITABLE[name][1]
             self.assertEqual((encode(str(low)), encode(str(high))), (raw_low, raw_high), name)
@@ -185,7 +184,7 @@ class Encoders(unittest.TestCase):
     def test_current_limit_goes_in_whole_amps_of_two(self):
         encode = settings.WRITABLE["current limit"][1]
         self.assertEqual(encode("40"), 20)
-        for text in ("41", "0", "200", "1"):
+        for text in ("41", "0", "202", "1"):
             with self.assertRaises(ValueError):
                 encode(text)
 
@@ -203,38 +202,42 @@ class Encoders(unittest.TestCase):
                 encode(text)
 
     def test_temperature_and_current_limit_can_be_switched_off_again(self):
-        # the firmware ignores a byte outside the accepted range and keeps its default of no limit (2.16 main.c), which is
-        # the 0 the vendor stored and the decoder shows as disabled
-        for name in ("temperature limit", "current limit"):
+        # the firmware replaces a temperature outside 70-140 by 255 (no limit) and ignores a current of 0 or above 100 (no limit);
+        # the temperature goes back as the 255 the firmware itself stores, the current as 0
+        for name, raw in (("temperature limit", 255), ("current limit", 0)):
             encode = settings.WRITABLE[name][1]
-            self.assertEqual((encode("disabled"), encode("OFF")), (0, 0), name)
+            self.assertEqual((encode("disabled"), encode("OFF")), (raw, raw), name)
             on, _ = settings.apply_changes(vendor_block(), {name: "100" if name == "temperature limit" else "40"})
             off, _ = settings.apply_changes(on, {name: "disabled"})
-            self.assertEqual(off, vendor_block(), name)
+            self.assertEqual(off[settings.WRITABLE[name][0]], raw)
             self.assertEqual({n: t for _, n, _, t in settings.decode(off)}[name], "disabled")
 
     def test_other_fields_do_not_accept_disabled(self):
-        for name in ("startup power", "PWM frequency", "timing advance"):
+        for name in ("startup power", "PWM frequency", "timing advance steps"):
             with self.assertRaises(ValueError):
                 settings.WRITABLE[name][1]("disabled")
 
     def test_timing_advance_decoder_agrees_with_the_encoder(self):
-        encode = settings.WRITABLE["timing advance"][1]
-        for level in range(4):
-            self.assertEqual(settings.advance(encode(str(level))), "%.1f deg" % (level * 7.5))
-        self.assertIn("firmware uses 15.0 deg", settings.advance(4))
-        self.assertIn("firmware uses 15.0 deg", settings.advance(20))
+        encode = settings.WRITABLE["timing advance steps"][1]
+        for steps in (0, 16, 32):
+            self.assertEqual(settings.advance(encode(str(steps))), "%d steps (about %.1f deg)" % (steps, steps * 30 / 32))
+        self.assertIn("firmware uses 16 steps", settings.advance(4))
+        self.assertIn("firmware uses 16 steps", settings.advance(50))
 
     def test_encoded_values_decode_back_for_every_writable_field(self):
-        asks = {"sinusoidal startup": "on", "variable PWM": "off", "timing advance": "3", "auto timing advance": "on",
-                "PWM frequency": "24", "startup power": "120", "sine mode range": "10", "sine mode power": "4",
-                "brake on stop": "on", "brake strength": "5", "stuck rotor protection": "off", "stall protection": "on",
-                "low voltage cut off": "on", "low voltage threshold": "3.2", "temperature limit": "100", "current limit": "60"}
-        shown = {"sinusoidal startup": "on", "variable PWM": "off", "timing advance": "22.5 deg", "auto timing advance": "on",
-                 "PWM frequency": "24 kHz", "startup power": "120 %", "sine mode range": "10 %", "sine mode power": "4",
-                 "brake on stop": "on", "brake strength": "5", "stuck rotor protection": "off", "stall protection": "on",
-                 "low voltage cut off": "on", "low voltage threshold": "320 (x0.01 V per cell)", "temperature limit": "100 C",
-                 "current limit": "60 A"}
+        asks = {"sinusoidal startup": "on", "PWM type": "by RPM", "timing advance steps": "24", "auto timing advance": "on",
+                "PWM frequency": "48", "startup power": "120", "sine mode range": "10", "sine mode power": "4",
+                "brake on stop": "active brake", "brake strength": "5", "stuck rotor protection": "off", "stall protection": "on",
+                "low voltage cut off": "absolute", "low voltage threshold": "3.2", "temperature limit": "100", "current limit": "60",
+                "minimum duty cycle": "10", "demag compensation": "1/32 power cut", "ramp rate": "12.5", "absolute voltage cutoff": "9.5",
+                "active brake power": "3", "disable stick calibration": "on"}
+        shown = {"sinusoidal startup": "on", "PWM type": "by RPM", "timing advance steps": "24 steps (about 22.5 deg)",
+                 "auto timing advance": "on", "PWM frequency": "48 kHz", "startup power": "120 %", "sine mode range": "10 %",
+                 "sine mode power": "4", "brake on stop": "active brake", "brake strength": "5", "stuck rotor protection": "off",
+                 "stall protection": "on", "low voltage cut off": "absolute", "low voltage threshold": "3.20 V per cell",
+                 "temperature limit": "100 C", "current limit": "60 A", "minimum duty cycle": "10.0 %",
+                 "demag compensation": "1/32 power cut", "ramp rate": "12.5 % duty cycle per ms", "absolute voltage cutoff": "9.5 V",
+                 "active brake power": "3 %", "disable stick calibration": "on"}
         new, done = settings.apply_changes(vendor_block(), asks)
         self.assertEqual(len(done), len(asks))
         decoded = {name: text for _, name, _, text in settings.decode(new)}
@@ -257,10 +260,10 @@ class Encoders(unittest.TestCase):
         new, done = settings.apply_changes(vendor_block(), {"motor KV": "7220", "motor poles": "12"})
         differ = [i for i in range(len(new)) if new[i] != vendor_block()[i]]
         self.assertEqual(differ, [26, 27])
-        self.assertEqual(done, [("motor KV", 26, 55, 180), ("motor poles", 27, 14, 12)])
+        self.assertEqual(done, [("motor KV", 26, 179, 180), ("motor poles", 27, 14, 12)])
 
     def test_nothing_else_can_be_named(self):
-        for name in ("firmware name", "bootloader version", "EEPROM layout version", "boot byte", "startup power", "motor Kv"):
+        for name in ("firmware name", "bootloader version", "EEPROM layout version", "boot byte", "brake on zero throttle", "motor Kv"):
             with self.assertRaises(ValueError):
                 settings.apply_changes(vendor_block(), {name: "1"})
 
@@ -269,8 +272,43 @@ class Encoders(unittest.TestCase):
             self.assertNotIn(offset, settings.PROTECTED, name)
             self.assertIn(name, [field for _, field, _ in settings.FIELDS])
 
-    def test_protected_bytes_are_the_first_17_and_last_8(self):
-        self.assertEqual(settings.PROTECTED, tuple(range(17)) + tuple(range(176, 184)))
+    def test_protected_bytes_are_the_first_5_and_the_last_16(self):
+        self.assertEqual(settings.PROTECTED, tuple(range(5)) + tuple(range(176, 192)))
+
+    def test_a_field_name_that_does_not_exist_in_layout_4_is_refused(self):
+        # 'timing advance' (2.16 levels of 7.5 degrees) is gone: the field is 'timing advance steps' (2.22 steps of about 0.94 degree)
+        with self.assertRaises(ValueError) as caught:
+            settings.apply_changes(vendor_block(), {"timing advance": "2"})
+        self.assertIn("timing advance steps", str(caught.exception))          # the message lists the writable names
+
+    def test_the_three_state_fields_take_a_name_or_a_number_and_nothing_else(self):
+        for name, names in (("PWM type", settings.PWM_TYPES), ("low voltage cut off", settings.LOW_VOLTAGE_MODES),
+                            ("brake on stop", settings.BRAKE_MODES), ("demag compensation", settings.DEMAG_LEVELS)):
+            encode = settings.WRITABLE[name][1]
+            for raw, text in names.items():
+                self.assertEqual((encode(text), encode(text.upper()), encode(str(raw))), (raw, raw, raw), name)
+            for bad in ("", "on", str(len(names)), "-1", "7"):
+                with self.assertRaises(ValueError, msg="%s %r" % (name, bad)):
+                    encode(bad)
+
+    def test_ramp_rate_and_absolute_voltage_ranges(self):
+        ramp = settings.WRITABLE["ramp rate"][1]
+        self.assertEqual([ramp(t) for t in ("0.1", "1", "16", "20")], [1, 10, 160, 200])
+        for text in ("0", "0.05", "20.1", "nan", "x"):
+            with self.assertRaises(ValueError, msg=text):
+                ramp(text)
+        volts = settings.WRITABLE["absolute voltage cutoff"][1]
+        self.assertEqual([volts(t) for t in ("0.5", "5", "50")], [1, 10, 100])
+        for text in ("0", "0.25", "50.5", "inf"):
+            with self.assertRaises(ValueError, msg=text):
+                volts(text)
+
+    def test_minimum_duty_cycle_is_percent_in_half_steps_up_to_25(self):
+        encode = settings.WRITABLE["minimum duty cycle"][1]
+        self.assertEqual([encode(t) for t in ("0", "0.5", "10", "25")], [0, 1, 20, 50])
+        for text in ("0.25", "-0.5", "25.5", "26", "nan", "inf", "x"):
+            with self.assertRaises(ValueError, msg=text):
+                encode(text)
 
 
 class WriteSequence(unittest.TestCase):
@@ -279,7 +317,7 @@ class WriteSequence(unittest.TestCase):
         new = changed(26, 180)
         self.assertEqual(write(passthrough, new), p.ACK_OK)
         self.assertEqual(link.sent[-4], p.bootloader_frame([p.BL_SET_ADDRESS, 0, 0x7C, 0x00]))
-        self.assertEqual(link.sent[-3], p.bootloader_frame([p.BL_SET_BUFFER, 0, 0x00, 0xB8]))
+        self.assertEqual(link.sent[-3], p.bootloader_frame([p.BL_SET_BUFFER, 0, 0x00, 0xC0]))
         self.assertEqual(link.sent[-2], p.bootloader_frame(new))
         self.assertEqual(link.sent[-1], p.bootloader_frame([p.BL_PROG_FLASH, 1]))
         self.assertEqual(bytes(link.flash), new + b"\xff" * (PAGE - len(new)))
@@ -440,12 +478,12 @@ class BackupFirst(FakeBootloader):
         super().program()
 
 
-def run_tool(flash_block, changes, apply, backup, restore=None, grant=3, **fake):
+def run_tool(flash_block, changes, backup, restore=None, grant=3, **fake):
     """fill_report against a fake ESC 4: (report, fake bootloader)."""
     link = (BackupFirst(backup, block=flash_block, **fake) if backup else FakeBootloader(flash_block, **fake))
-    passthrough = p.Passthrough(link, 4, write_channel=grant if apply else None, restore_block=restore if apply else None)
+    passthrough = p.Passthrough(link, 4, write_channel=grant, restore_block=restore)
     report = {"at": "now", "esc": 4, "gpio": 9, "applied": False, "ok": False}
-    run.fill_report(PicoOverSerial(passthrough), report, 3, changes, apply, backup, restore)
+    run.fill_report(PicoOverSerial(passthrough), report, 3, changes, backup, restore)
     return report, link
 
 
@@ -457,18 +495,17 @@ class RunTool(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.backup = Path(self.dir.name) / "tmp" / "esc4.json"
 
-    def test_a_plan_shows_the_change_and_sends_no_write(self):
-        report, link = run_tool(None, {"motor KV": "7220", "motor poles": "12"}, False, None)
-        self.assertTrue(report["ok"])
-        self.assertEqual([(c["field"], c["old"], c["new"]) for c in report["changes"]],
-                         [("motor KV", "2220", "7220"), ("motor poles", "14", "12")])
-        self.assertEqual(report["new_block_hex"], changed(27, 12, changed(26, 180)).hex())
-        self.assertNotIn(p.bootloader_frame([p.BL_PROG_FLASH, 1]), link.sent)
-        self.assertEqual(bytes(link.flash), vendor_block() + b"\xff" * (PAGE - p.SETTINGS_SIZE))
-
-    def test_apply_saves_the_page_first_writes_and_confirms_with_the_read_back(self):
+    def test_the_report_names_each_change_with_its_old_and_new_value(self):
         self.backup.parent.mkdir()
-        report, link = run_tool(None, {"motor KV": "7220"}, True, self.backup)
+        report, link = run_tool(None, {"motor KV": "7220", "motor poles": "12"}, self.backup)
+        self.assertTrue(report["ok"], report)
+        self.assertEqual([(c["field"], c["old"], c["new"]) for c in report["changes"]],
+                         [("motor KV", "7180", "7220"), ("motor poles", "14", "12")])
+        self.assertEqual(report["new_block_hex"], changed(27, 12, changed(26, 180)).hex())
+
+    def test_a_write_saves_the_page_first_writes_and_confirms_with_the_read_back(self):
+        self.backup.parent.mkdir()
+        report, link = run_tool(None, {"motor KV": "7220"}, self.backup)
         self.assertEqual((report["write_ack"], report["readback_matches"], report["ok"], report["applied"]), (0, True, True, True))
         new = changed(26, 180)
         self.assertEqual(bytes(link.flash), new + b"\xff" * (PAGE - len(new)))
@@ -480,13 +517,13 @@ class RunTool(unittest.TestCase):
 
     def test_a_program_step_that_is_not_acknowledged_is_a_failure_with_the_read_back_reported(self):
         self.backup.parent.mkdir()
-        report, _ = run_tool(None, {"motor KV": "7220"}, True, self.backup, no_prog_ack=True)
+        report, _ = run_tool(None, {"motor KV": "7220"}, self.backup, no_prog_ack=True)
         self.assertFalse(report["ok"])
         self.assertEqual(report["write_ack"], p.ACK_D_GENERAL_ERROR)
         self.assertIsNotNone(report["readback_block_hex"])
 
     def test_nothing_to_change_is_not_written(self):
-        report, link = run_tool(None, {"motor KV": "2220"}, True, self.backup)
+        report, link = run_tool(None, {"motor KV": "7180"}, self.backup)
         self.assertFalse(report["ok"])
         self.assertIn("nothing to change", report["error"])
         self.assertFalse(self.backup.exists())
@@ -494,7 +531,7 @@ class RunTool(unittest.TestCase):
 
     def test_data_beyond_the_block_in_the_page_stops_everything(self):
         flash = vendor_block() + b"\xff" * 10 + b"\x01" + b"\xff" * (PAGE - p.SETTINGS_SIZE - 11)
-        report, link = run_tool(flash, {"motor KV": "7220"}, True, self.backup)
+        report, link = run_tool(flash, {"motor KV": "7220"}, self.backup)
         self.assertFalse(report["ok"])
         self.assertIn("beyond the settings block", report["error"])
         self.assertFalse(self.backup.exists())
@@ -502,17 +539,17 @@ class RunTool(unittest.TestCase):
 
     def test_restore_puts_the_saved_block_back(self):
         self.backup.parent.mkdir()
-        run_tool(None, {"motor KV": "7220"}, True, self.backup)         # the first write, as the tool does it
+        run_tool(None, {"motor KV": "7220"}, self.backup)         # the first write, as the tool does it
         edited = changed(26, 180)
         again = Path(self.dir.name) / "tmp" / "esc4_now.json"
-        report, link = run_tool(edited, {}, True, again, restore=vendor_block())
+        report, link = run_tool(edited, {}, again, restore=vendor_block())
         self.assertTrue(report["ok"], report)
-        self.assertEqual([(c["field"], c["old"], c["new"]) for c in report["changes"]], [("motor KV", "7220", "2220")])
+        self.assertEqual([(c["field"], c["old"], c["new"]) for c in report["changes"]], [("motor KV", "7220", "7180")])
         self.assertEqual(bytes(link.flash), vendor_block() + b"\xff" * (PAGE - p.SETTINGS_SIZE))
 
     def test_restore_works_on_a_page_the_erase_left_blank(self):
         self.backup.parent.mkdir()
-        report, link = run_tool(b"\xff" * PAGE, {}, True, self.backup, restore=vendor_block())
+        report, link = run_tool(b"\xff" * PAGE, {}, self.backup, restore=vendor_block())
         self.assertTrue(report["ok"], report)
         self.assertEqual(bytes(link.flash), vendor_block() + b"\xff" * (PAGE - p.SETTINGS_SIZE))
         self.assertEqual(report["changes"][0]["old"], "unreadable")
@@ -531,19 +568,19 @@ class RunTool(unittest.TestCase):
         saved = Path(self.dir.name) / "b.json"
         saved.write_text(json.dumps({"esc": 2, "gpio": 7, "settings_block_hex": vendor_block().hex()}))
         with self.assertRaises(SystemExit) as caught:
-            run.restore_settings([6, 7, 8, 9], 4, str(saved), False, None)
+            run.restore_settings([6, 7, 8, 9], 4, str(saved), None)
         self.assertIn("not of ESC 4", str(caught.exception))
         saved.write_text("not json")
         with self.assertRaises(SystemExit):
-            run.restore_settings([6, 7, 8, 9], 4, str(saved), False, None)
-        saved.write_text(json.dumps({"esc": 4, "gpio": 9, "settings_block_hex": "ff" * 184}))     # blank: does not decode
+            run.restore_settings([6, 7, 8, 9], 4, str(saved), None)
+        saved.write_text(json.dumps({"esc": 4, "gpio": 9, "settings_block_hex": "ff" * p.SETTINGS_SIZE}))     # blank: does not decode
         with self.assertRaises(SystemExit):
-            run.restore_settings([6, 7, 8, 9], 4, str(saved), False, None)
+            run.restore_settings([6, 7, 8, 9], 4, str(saved), None)
 
 
 @unittest.skipIf(run is None, "needs pyserial")
 class CommandLine(unittest.TestCase):
-    """--plan / --plan-restore only read; --write / --restore write and need --backup. --apply no longer exists."""
+    """--write / --restore write and need --backup; --plan, --plan-restore and --apply no longer exist."""
     PINS = ["--pins", "6", "7", "8", "9"]
 
     def parse(self, *argv):
@@ -555,33 +592,28 @@ class CommandLine(unittest.TestCase):
             except SystemExit:
                 return error.getvalue() or "refused"
 
-    def test_a_plan_reads_only_and_takes_no_backup(self):
-        args = self.parse("--plan", *self.PINS, "--esc", "2", "--set", "motor KV=7180")
-        self.assertFalse(args.apply)
-        self.assertIsNone(args.backup)
-        args = self.parse("--plan-restore", "tmp/b.json", *self.PINS, "--esc", "2")
-        self.assertEqual((args.apply, args.saved), (False, "tmp/b.json"))
-        self.assertIsInstance(self.parse("--plan", *self.PINS, "--esc", "2", "--set", "motor KV=7180", "--backup", "x"), str)
+    def test_the_plan_actions_are_gone(self):
+        for argv in (["--plan", "--set", "motor KV=7180"], ["--plan-restore", "tmp/b.json"], ["--plan-flash", "a.hex"]):
+            self.assertIsInstance(self.parse(*argv, *self.PINS, "--esc", "2"), str, argv)
 
     def test_a_write_needs_a_backup_and_writes(self):
         args = self.parse("--write", *self.PINS, "--esc", "2", "--set", "motor KV=7180", "--backup", "tmp/x.json")
-        self.assertTrue(args.apply)
+        self.assertTrue(args.write)
         self.assertEqual(args.backup, "tmp/x.json")
         self.assertIn("--write needs --backup", self.parse("--write", *self.PINS, "--esc", "2", "--set", "motor KV=7180"))
 
     def test_a_restore_needs_a_backup_and_writes(self):
         args = self.parse("--restore", "tmp/b.json", *self.PINS, "--esc", "2", "--backup", "tmp/now.json")
-        self.assertEqual((args.apply, args.saved), (True, "tmp/b.json"))
+        self.assertEqual(args.restore, "tmp/b.json")
         self.assertIn("--restore needs --backup", self.parse("--restore", "tmp/b.json", *self.PINS, "--esc", "2"))
 
     def test_the_old_apply_flag_is_gone(self):
-        for argv in (["--write", "--apply"], ["--plan", "--apply"], ["--restore", "b.json", "--apply"]):
+        for argv in (["--write", "--apply"], ["--restore", "b.json", "--apply"]):
             self.assertIsInstance(self.parse(*argv, *self.PINS, "--esc", "2", "--set", "motor KV=7180", "--backup", "x"), str)
 
     def test_missing_pins_esc_or_set_is_refused(self):
-        self.assertIn("--plan needs --pins", self.parse("--plan", "--esc", "2", "--set", "motor KV=7180"))
-        self.assertIn("--plan needs --esc", self.parse("--plan", *self.PINS, "--set", "motor KV=7180"))
-        self.assertIn("--plan needs --set", self.parse("--plan", *self.PINS, "--esc", "2"))
+        self.assertIn("--write needs --pins", self.parse("--write", "--esc", "2", "--set", "motor KV=7180", "--backup", "x"))
+        self.assertIn("--write needs --esc", self.parse("--write", *self.PINS, "--set", "motor KV=7180", "--backup", "x"))
         self.assertIn("--write needs --set", self.parse("--write", *self.PINS, "--esc", "2", "--backup", "x"))
 
     def test_the_other_actions_take_none_of_the_write_options(self):
@@ -592,7 +624,7 @@ class CommandLine(unittest.TestCase):
         self.assertTrue(self.parse("--read", *self.PINS).read)
 
     def test_only_one_action_at_a_time(self):
-        self.assertIsInstance(self.parse("--plan", "--write", *self.PINS, "--esc", "2", "--set", "motor KV=7180"), str)
+        self.assertIsInstance(self.parse("--read", "--write", *self.PINS, "--esc", "2", "--set", "motor KV=7180"), str)
 
 
 if __name__ == "__main__":

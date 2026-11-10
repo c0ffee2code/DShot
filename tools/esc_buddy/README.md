@@ -1,237 +1,159 @@
 # ESC buddy
 
-Gives the **AM32 configurator** (the web app) - and Claude, through the `esc-buddy` skill - access to the
-ESCs' configuration through the **main Pico**, with no flight controller. The configurator takes the Pico for a
-Betaflight flight controller in passthrough mode; the Pico relays its requests to each ESC's bootloader on that ESC's
-signal line.
+Access to the bench ESCs' **AM32 configuration and firmware** through the **main Pico**, with no flight controller: Claude (through the
+`esc-buddy` skill) and the owner (through the AM32 web configurator) can read every ESC's settings, change a named set of them, and flash a
+new firmware image. The Pico speaks the AM32 bootloader protocol on each ESC's signal line (19200 baud, half duplex); to the configurator it
+looks like a Betaflight flight controller in passthrough mode. Why it is built this way: ADR-006 (access) and ADR-007 (flashing).
 
-**What it can do**
+## What is supported
+
+| | |
+|---|---|
+| **ESC firmware** | **AM32 2.22, settings layout 4** (192-byte settings block). The mechanism is the layout version stored in byte 1 of the block: the decoder and the write guards accept layout 4 only and refuse a block of any other layout, which `--read` reports as an error with the raw block. No older layouts or firmware versions are supported or kept working: when the bench moves to a new firmware the buddy moves with it (CLAUDE.md, "ESC buddy"). |
+| **MCU / bootloader** | AM32 bootloader on an F421 (signature `0x1F06`, settings page at `0x7C00`, application area `0x1000`-`0x7BFF`). Flashing refuses any other signature. |
+| **Wiring** | 1 to 8 ESC signal lines on the main Pico, given as `--pins` (the order is ESC 1..n in the configurator and in every report). |
+
+**Not supported:** other firmware families, other settings layouts, other MCUs, updating the bootloader, anything during a motor run (the buddy
+stops DShot on all lines), changing what the throttle means (direction, 3D mode, input type: see "Properties"), and the configurator writing
+through the passthrough (it is read-only; its saves are refused).
+
+## What it can do
 
 | Action | What | Needs the owner's go |
 |---|---|---|
-| `--read` | every ESC's firmware name and version, bootloader and all stored settings, as JSON | no |
-| `--passthrough` | the browser configurator reads the ESCs through the Pico (its saves are refused; `--record-writes` logs them) | no |
-| `--plan` | shows what `--write` would change on one ESC; reads, writes nothing | no |
-| `--write --backup PATH` | changes named settings (19 of them: motor, start-up and protection, "Writing settings") on one ESC, reads the page back | **yes, for each change** |
-| `--plan-restore BACKUP` | shows what `--restore` would change on one ESC; reads, writes nothing | no |
-| `--restore BACKUP --backup PATH` | puts a saved settings block back on one ESC | **yes, for each change** |
+| `--read` | every ESC's firmware name and version, bootloader and all settings, decoded, as JSON | no |
+| `--passthrough` | the browser configurator reads the ESCs through the Pico; its saves are refused (`--record-writes` answers them OK without sending and logs them) | no |
+| `--write --backup PATH` | changes named settings on one ESC, reads the page back | **yes, each change** |
+| `--restore BACKUP --backup PATH` | puts a saved settings block back on one ESC | **yes, each change** |
+| `--dump-firmware` | one ESC's firmware as JSON on stdout; usable as the image of the two actions below | no |
+| `--flash IMAGE --backup PATH` | flashes the image onto one ESC | **yes, each ESC** |
 | `--debug` | the buddy's record of the last session | no |
 
-It cannot flash firmware or the bootloader (see "To do"). Of the writable settings only motor KV, motor poles and beeper volume
-have been written to real ESCs; the other 16 are encoded and tested against the firmware source and a fake bootloader only.
+```
+python tools/esc_buddy/esc_buddy_run.py --read --pins 6 7 8 9 > esc.json
+python tools/esc_buddy/esc_buddy_run.py --passthrough --pins 6 7 8 9                       # then use the configurator, Disconnect, close the tab
+python tools/esc_buddy/esc_buddy_run.py --write --pins 6 7 8 9 --esc 2 --set "beeper volume=1" --backup tmp/esc2_before.json
+python tools/esc_buddy/esc_buddy_run.py --dump-firmware --pins 6 7 8 9 --esc 2 > tmp/esc2_firmware.json
+python tools/esc_buddy/esc_buddy_run.py --flash IMAGE.hex --pins 6 7 8 9 --esc 2 --backup tmp/esc2_page.json
+```
 
-What the bench ESC is and how it came from the vendor: `specification/KM55A2_DEFAULTS.md`; how it is configured now: the top-level README, "ESC settings as configured".
+Tools write no files except `--backup`: they print one JSON report on stdout and progress on stderr; the caller decides what to keep.
+Exit status 1 when nothing could be read, or the write, restore or flash did not go through (`error` in the JSON says why).
 
-**Reading and the configurator are read-only.** Only these configurator commands reach an ESC: alive check, interface name/version,
-set mode, exit, init flash access, read, reset. Write, erase, EEPROM write and verify are answered "invalid command" without
-touching the line, and logged as `refused`. The Pico builds every bootloader message itself; nothing from the PC is forwarded raw.
-The one exception is a session started for `--write` or `--restore`: it may write the settings block of the one ESC
-it was started for, once, under the guards in "Writing settings".
-Why it matters: the vendor's settings exist only in the ESC chips, and the configurator itself writes settings on its
-own in some cases (`four_way.ts`, bootloader version reads `0xFF`).
+## Properties
+
+`--read` decodes the whole block into named values (`byte`, `raw`, `value`) and keeps the raw hex. `--set "NAME=VALUE"` changes the fields
+below, one ESC per run. Every range is the one the AM32 2.22 firmware accepts (`loadEEpromSettings`; it ignores or replaces anything else),
+cross-checked with the AM32 configurator's own field definitions. Flags are written as exactly 0 or 1 (`on`/`off`); the multi-state fields
+take their name (any case) or number.
+
+**Editable (28):**
+
+| Byte | Field | Accepted values |
+|---|---|---|
+| 26 | `motor KV` | 20 to 10220 in steps of 40 (stored as (KV - 20) / 40) |
+| 27 | `motor poles` | even, 2-36 |
+| 30 | `beeper volume` | 0-11 (above 11 the firmware plays 5) |
+| 19 | `sinusoidal startup` | on / off |
+| 21 | `PWM type` | fixed / variable / by RPM |
+| 24 | `PWM frequency` | 8-144 kHz |
+| 23 | `timing advance steps` | 0-32 steps of 0.9375 deg (16 steps = 15 deg); stored plus 10 |
+| 47 | `auto timing advance` | on / off |
+| 25 | `startup power` | 50-150 % |
+| 5 | `ramp rate` | 0.1-20 % duty cycle per ms, steps of 0.1 |
+| 6 | `minimum duty cycle` | 0-25 %, steps of 0.5 |
+| 14 | `demag compensation` | off / coast only / 1/32 power cut / 1/16 power cut / 1/8 power cut (0-4) |
+| 40 | `sine mode range` | 5-25 % |
+| 45 | `sine mode power` | 1-10 |
+| 7 | `disable stick calibration` | on / off |
+| 28 | `brake on stop` | off / brake on stop / active brake |
+| 41 | `brake strength` (drag brake) | 1-10 |
+| 12 | `active brake power` | 0-5 % |
+| 22 | `stuck rotor protection` | on / off |
+| 29 | `stall protection` | on / off |
+| 36 | `low voltage cut off` | off / cell based / absolute |
+| 37 | `low voltage threshold` (cell based) | 2.50-3.50 V per cell, steps of 0.01 |
+| 8 | `absolute voltage cutoff` (absolute) | 0.5-50 V, steps of 0.5 |
+| 43 | `temperature limit` | 70-140 C, or `disabled` (stores 255, as the firmware does) |
+| 44 | `current limit` | 2-200 A, even, or `disabled` (stores 0: the firmware then applies no limit) |
+| 9, 10, 11 | `current limit P gain`, `I gain`, `D gain` | 0-255 each |
+
+**Read-only (decoded, never written):** boot byte (0), layout version (1), bootloader version (2), firmware version (3-4, stamped by the
+firmware itself at boot); `brake on zero throttle` (13: the configurator does not show it and the source gives no list of its values, so it is
+shown raw); and the fields that change what the throttle means or are outside this bench: `direction reversed` (17), `3D mode` (18),
+`complementary PWM` (20), `30 ms interval telemetry` (31), the four servo fields (32-35), `car type reverse braking` (38), `use hall sensors`
+(39), `running brake level` (42: it changes the dead time and start-up duty), `input type` (46).
+
+**Not decoded:** the reserved bytes (15-16), the startup tune (48-175) and the CAN settings (176-191). They are carried through every write
+exactly as read; bytes 0-4 and 176-191 are additionally protected by the Pico (below).
+
+## Permissions and safety rules
+
+With an ESC attached every action puts signals on its line (no throttle). The `esc-buddy` skill repeats these rules for Claude:
+
+- **No permission needed:** every action without a "yes" above (`--read`, `--passthrough`, `--debug` and `--dump-firmware`).
+  They cannot write: the Pico refuses writes, erases and settings writes except in a session started for `--write`, `--restore` or `--flash`.
+- **The owner's explicit go for each change:** `--write`, `--restore` and `--flash`. Show what changes first (which ESC, which field, old -> new, from a fresh `--read`) and give
+  `--backup tmp/<file>` (the git-ignored `tmp/` folder). Claude Code's allow-list matches the start of the command, so put the action first.
+- **Never during a motor run** (it stops DShot on all lines). The wingman must not run the ESC mock at the same time (it shares the lines).
+
+## How it works
+
+- **The Pico judges every write.** The Pico builds every bootloader frame itself and nothing from the PC is forwarded raw. Only these
+  configurator commands reach an ESC: alive check, interface name and version, set mode, exit, init flash access, read, reset. Write, erase,
+  EEPROM write and verify are answered "invalid command" without touching the line, and logged as `refused`. A session started for one ESC
+  and one action may additionally write, once and only under these guards (`Passthrough.write_refusal` / `flash_refusal`):
+  - **Settings write:** the session's one ESC, the settings address, exactly the block size, bytes 0-4 and 176-191 equal to what the Pico
+    last read from that ESC.
+  - **Restore:** only the block the session was started with.
+  - **Flash:** only 256-byte chunks equal to the image it was started with, inside `0x1000`-`0x7BFF`, after the boot byte was cleared; the
+    settings block with only the boot byte changed; and the boot byte back to 1 only after the Pico has itself seen every chunk read back
+    equal to the image.
+- **Getting an ESC into its bootloader.** A running AM32 ESC has no command for it: with no DShot on its line it reboots itself after 2 s
+  disarmed, and the bootloader stays when the line reads high. The first read of an ESC can fail until it has rebooted; the tools retry
+  (reads three times, a read of a whole area chunk by chunk, init up to ten times).
+- **Line handling copies Betaflight's:** every line idles as an input on the Pico's pull-up and is never driven while idle; a byte is driven
+  from one extra idle bit before its start bit to its last data bit. The PIO program releases the line the moment the last stop bit ends,
+  because the ESC replies 172-176 us later. Never put `sm.exec(str)` on a timing path (MicroPython assembles the string per call, 4.7 ms).
+- **Getting back to normal running.** On exit every line is driven low (the state `MotorGroup.disarm()` leaves); the bootloader starts the
+  firmware after 20 ms of low, and the ESC resumes its no-signal beeps.
+- **Startup.** The Pico's USB port belongs to the buddy while it runs (no REPL, Ctrl-C off: a request byte `0x03` would otherwise interrupt
+  the program while it starts, so the start command switches it off first and the PC tools send a harmless request until the buddy answers).
+  It returns to the REPL on Disconnect or `exit`, if the configurator does not connect within 30 min, after 5 min of silence once it has, or
+  when USB is unplugged. If it stopped before you clicked Connect, the configurator reports "invalid result": start it again.
+- **The record** (`esc_buddy_log.txt` on the Pico, shown by `--debug`): one line per event - `init` (the bootloader's device info), `read`
+  (address and bytes), `refused` (the command and its parameters; also a write the guards turned down), `write` (the settings block sent),
+  `chunk` (address and checksum of a flashed chunk) and `end`. Each session overwrites it.
+
+## Writing settings
+
+There is no dry run: `--read` shows what an ESC holds now, and `--write` checks everything it can before it sends a byte - the names and values, the
+ESC's answer, and its whole 1 KB settings page, refusing when anything beyond the 192-byte block is not `0xFF` (a block write erases the whole
+page) or when nothing would change - and its report lists each change with old and new. `--write` needs `--backup <path>` (never overwritten): the page is saved there first, then
+the Pico writes (set address, set buffer, payload with CRC, program), the tool reads the page back and compares, and the ESC restarts its
+firmware on exit. `--restore` accepts a backup made by `--write` or `--flash` of the same ESC; a backup of another layout is refused.
+
+## Flashing firmware
+
+There is no dry run here either: `--flash` checks the image, the ESC's target name and its settings page before it sends a byte. `--flash` saves the settings page (`--backup`), clears the
+boot byte (settings byte 0) so the ESC stays in its bootloader, writes all 108 chunks of 256 bytes, reads the whole area back and compares, and
+only when every chunk equals the image sets the boot byte back to 1; a settings write that gets no answer is asked again, and every
+acknowledgement is in the report. A failed flash leaves the boot byte at 0: run the same command again (also after one that stopped once the file name page was erased: an unreadable name is accepted when the boot byte is 0). The image is an AM32 `.hex` file or a
+`--dump-firmware` JSON; the tool refuses one whose file name (at `0x7BE0`) differs from the one the ESC reports, one with data outside the
+application area or that is not a firmware image, another MCU, and a page with data beyond the settings block. After the flash the ESC boots
+the new firmware, which migrates its own settings page on first boot, so run `--read` afterwards. A flash takes a few minutes per ESC.
 
 ## Files
 
 | File | Runs on | What |
 |------|---------|------|
-| `esc_buddy_protocol.py` | Pico and PC | MSP and 4-way answers, bootloader frames, the allow-list, the write guards (pure Python; tested by `tests/pc/test_esc_buddy_protocol.py`) |
+| `esc_buddy_protocol.py` | Pico and PC | MSP and 4-way answers, bootloader frames, the allow-list, the write and flash guards (pure Python; `tests/pc/test_esc_buddy_protocol.py`, `test_esc_buddy_write.py`, `test_esc_buddy_flash.py`) |
 | `esc_buddy_board.py` | main Pico | USB serial loop and the signal-line wire: two PIO programs, 19200 baud 8N1, half duplex |
-| `esc_buddy_run.py` | PC | finds the main Pico by ID, uploads and starts the buddy; one action required: `--read` (settings as JSON), `--passthrough` (browser configurator; `--record-writes` logs its save attempt), `--plan` / `--write` and `--plan-restore` / `--restore` (show, then make, a change of settings on one ESC), `--debug` (the buddy's record, plain text) |
-| `esc_buddy_settings.py` | PC | decodes a settings block (EEPROM layout 2, firmware 2.16) into named values, and encodes the writable fields (motor, start-up and protection settings, listed under "Writing settings"); tested by `tests/pc/test_esc_buddy_settings.py` against the configurator's display and `tests/pc/test_esc_buddy_write.py` |
+| `esc_buddy_run.py` | PC | finds the main Pico by ID, uploads and starts the buddy, runs the action |
+| `esc_buddy_settings.py` | PC | decodes a layout 4 settings block into named values and encodes the editable fields (`tests/pc/test_esc_buddy_settings.py`, against a block read from a bench ESC) |
+| `esc_buddy_image.py` | PC | turns an AM32 `.hex` file or a dump into the 27,648 bytes of the application area (0xFF where the file has nothing, as the configurator does) and checks it is a firmware image |
 
-## How to run
-
-1. `python tools/esc_buddy/esc_buddy_run.py --passthrough --pins 6 7 8 9` - the GPIO numbers of the ESC signal lines, in order =
-   ESC 1..n in the configurator and in the report. The only input the tool needs; the caller knows the wiring.
-2. In the AM32 configurator: select the Pico's port, Connect, read the ESCs, Disconnect.
-3. Optional: `python tools/esc_buddy/esc_buddy_run.py --debug` - prints the buddy's record of the session (plain text,
-   stdout; nothing saved).
-
-Without the configurator: `python tools/esc_buddy/esc_buddy_run.py --read --pins 6 7 8 9` starts
-the buddy, plays the configurator's read for every ESC (init flash access, firmware name, the 184-byte settings
-block), exits, and prints one JSON report on stdout; progress goes to stderr. It writes no files: the caller decides
-what to keep (`> esc.json`, a pipe, a session's metadata), Unix-style. Exit status 1 when no ESC could be read. It uses
-only commands on the read-only allow-list. The report gives, per ESC: GPIO, bootloader signature and input pin,
-firmware file name, firmware version and name, every decoded setting (`byte`, `raw`, `value`) and the whole block in
-hex; `identical` says whether all ESCs hold the same block. An ESC that did not answer has an `error` instead.
-
-While it runs, the Pico's USB port belongs to the configurator (no REPL, Ctrl-C off). It returns to the REPL on
-Disconnect, if the configurator does not connect within 30 min, after 5 min of silence once it has, or when USB is
-unplugged. If it stopped before you clicked Connect, the configurator reports "invalid result" (it reads the REPL's
-prompt instead of a reply): start it again.
-
-To change settings, see "Writing settings" below.
-
-## Permissions and safety rules
-
-With an ESC attached every action puts signals on its line (no throttle). The rules, which the `esc-buddy` skill repeats for Claude:
-
-- **No permission needed (owner, 2026-11-04):** `--read`, `--passthrough`, `--debug`, `--plan` and `--plan-restore`. They cannot write: the
-  Pico refuses writes, erases and settings writes except in a session started for `--write` or `--restore`.
-- **The owner's explicit go for each change:** `--write` and `--restore`. Show the plan first (what changes, on which ESC) and give
-  `--backup tmp/<file>` (the git-ignored `tmp/` folder).
-- **Claude Code's allow-list** (`.claude/settings.local.json`, local to the machine) runs the first group without a prompt and asks before
-  `--write` and `--restore`. It matches the start of the command, so put the action first (`esc_buddy_run.py --plan --pins ...`).
-- **Never during a motor run** (it stops DShot on all four lines); the report names the pins used. The wingman must not run the ESC mock
-  at the same time (it shares the lines).
-
-## The record (`esc_buddy_log.txt` on the Pico, shown by `--debug`)
-
-One line per event: `init` (the bootloader's 9-byte device info for that channel - pin code, flash size, protocol
-version), `read` (address and the bytes read, hex), `refused` (the command byte the configurator tried, then its
-parameters; also a write the guards turned down), `write` (the settings block a `--write` / `--restore` session sent), and `end`
-(exit or idle timeout). `ch` is the ESC index from 0, `pin` its GPIO. This is the saved copy of what each ESC holds,
-independent of what the configurator shows.
-
-## How it works, and its limits
-
-- **Getting an ESC into its bootloader.** A running AM32 ESC has no command for it: with no DShot on its line it reboots
-  itself after 2 s disarmed (AM32 `Src/main.c`), and the bootloader stays when the line reads high (AM32-bootloader
-  `checkForSignal()`). The first read of an ESC can fail until it has rebooted; the configurator and `--read` retry.
-- **Line handling copies Betaflight's** (`serial_4way.c`, `serial_4way_avrootloader.c`): every line idles as an input
-  on the Pico's pull-up and is never driven while idle; a byte is driven from one extra idle bit before its start bit to
-  its last data bit, and the pull-up holds the stop bit. What made it work is that the **PIO program releases the line
-  the moment the last stop bit ends**: the ESC replies 172-176 us later. The first buddy released from Python with
-  `sm.exec("set(pindirs, 0)")`, which MicroPython assembles at call time (about 4.7 ms on the Pico 2), so it was still
-  driving the line high through the ESC's whole reply. Isolated 2026-11-05: the idle bit, the stop-bit handling and the
-  idle level make no difference to this bootloader. Never put `sm.exec(str)` on a timing path.
-- **Getting it back to normal running.** On exit every line is driven low, the state `MotorGroup.disarm()` leaves; the
-  bootloader starts the firmware after 20 ms of low (`serialreadChar()`). Seen on the bench: the ESC resumes its
-  no-signal beeps shortly after Disconnect.
-- Modelled on [BlHeli-Passthrough (RP2040)](https://github.com/BrushlessPower/BlHeli-Passthrough/tree/main/RP2040);
-  checked against [AM32-bootloader](https://github.com/am32-firmware/AM32-bootloader) and
-  [am32-configurator](https://github.com/am32-firmware/am32-configurator).
-
-## Recording the configurator's writes (`--passthrough --record-writes`)
-
-Still read-only on the ESC. The configurator's save commands (4-way erase all `0x38`, page erase `0x39`, write `0x3B`,
-EEPROM write `0x3E`, verify `0x40`) are answered OK so it carries on, never sent to the line, and logged as `refused`
-with the whole frame: the command byte, then the parameters (the data it wanted to write), at the address given. Purpose:
-see exactly what the configurator sends on Save and check it against the AM32 bootloader source before the buddy writes
-anything itself.
-**What the configurator sent on Save (2026-11-05, two recorded sessions, GPIO 6-9, owner changed motor KV, and in the second also
-motor poles):** per ESC exactly one 4-way write (`0x3B`) at `0x7C00` carrying 184 bytes, then a fresh init and a read-back of
-`0x7C00`. No page erase, erase all or verify command. Against the 184 bytes read just before: the changed fields (byte 26 KV
-`0x37` -> `0xB4`; second session also byte 27 poles `14` -> `12`); the 12 firmware-name bytes (5-16) sent as `0xFF` instead of
-the name read; the last 8 bytes (176-183) sent as `0xFD` where the block held `0xFF`. All four ESCs got the identical frame
-(the owner's changes applied to all four). So the configurator's block is not a safe thing to forward: a write path built here
-must keep bytes 0-16 and the tail exactly as read and change only named fields.
-On the wire (the wingman's spy, 19200 baud decode of all four lines, valid recording): in the Save step each line carried only
-the init request, set address `0x7C00` and the 184-byte read-back; byte counts per line match the known frames exactly (572 per
-line over the whole session), no set-buffer, program or erase frame. Nothing reached an ESC.
-Source cross-check (AM32-bootloader master, version 19; the bench bootloader is version 1 and no public commit matches it):
-set address, set buffer (`0xFE`), payload with CRC, program (`0x01`); a write at `0x7C00` starts a 1 KB page, so the bootloader
-erases the whole page before programming (`save_flash_nolib`), and only addresses at or above the application are writable.
-The bench bootloader (version 1) follows the same sequence (first write, below).
-
-## Writing settings (`--plan`, `--write`)
-
-```
-python tools/esc_buddy/esc_buddy_run.py --plan --pins 6 7 8 9 --esc 4 --set "motor KV=2220" "motor poles=14"                 # plan: reads, writes nothing
-python tools/esc_buddy/esc_buddy_run.py --write --pins 6 7 8 9 --esc 4 --set ... --backup tmp/esc4_before.json               # write
-```
-
-(Until 2026-11-08 the plan was `--write` and the real write `--write --apply`; the records below use the spelling of their day.)
-
-One ESC per run. These fields can be named (names as `--read` shows them; every range is the one the AM32 2.16 firmware accepts, from `loadEEpromSettings`, because it ignores or replaces anything else):
-
-| Group | Field: accepted values |
-|---|---|
-| Motor | `motor KV`: steps of 40 from 20; `motor poles`: even, 2-32 (above 32 the firmware divides by zero); `beeper volume`: 0-11 (above 11 it plays 5) |
-| Start-up and running | `sinusoidal startup`, `variable PWM`, `auto timing advance`, `brake on stop`: on/off; `timing advance`: 0-3 (levels of 7.5 deg; anything else the firmware replaces by 2); `PWM frequency`: 8-48 kHz; `startup power`: 50-150 %; `sine mode range`: 5-25 %; `sine mode power`: 1-10; `brake strength` (drag brake): 1-10 |
-| Protections that can stop a running motor | `stuck rotor protection`, `stall protection`, `low voltage cut off`: on/off; `low voltage threshold`: 2.50-3.50 V per cell; `temperature limit`: 70-140 C or `disabled`; `current limit`: 2-198 A, even, or `disabled` (stores 0, which the firmware ignores, so there is no limit) |
-
-Flags are written as exactly 0 or 1 (the firmware reads any other byte as off). Not writable: direction, 3D mode, complementary PWM, hall sensors, input type, servo fields, car reverse braking (they change what the throttle means or are outside this bench) and `running brake level` (it changes the dead time and start-up duty). A wrong protection value shows up on the bench as a failed run, so read the plan before asking for the go. The plan
-reads the ESC's whole 1 KB settings page, shows old and new, and stops if anything beyond the 184-byte block is not
-`0xFF`. `--write` needs `--backup <path>` (a plan takes none): the page is saved there first (never overwritten), then the Pico writes, the
-tool reads back and compares, and the ESC restarts its firmware on exit. Output: one JSON report; exit status 1 if the
-plan or the write failed. The Pico enforces the limits itself (`Passthrough.write_refusal`): the session's one ESC, one
-write, the settings address, exactly 184 bytes, bytes 0-16 and 176-183 equal to what it last read from that ESC. The
-write sequence on the line is set address, set buffer (no ack), payload with CRC, program flash; its tests use a fake
-bootloader built from the public source (version 19), which the bench ESC's version 1 may differ from.
-
-Found 2026-11-05 while testing it: a request whose bytes include `0x03` (Ctrl-C) - ESC 4's init request is one - that
-reaches the Pico while it is still starting (importing the board file, setting up) interrupts the program, and every
-later request goes unanswered. Pico only, GPIO 10-13, nothing attached, ESC 4's init as the very first request, 6 trials
-each: the old board code 0 answered, Ctrl-C switched off first thing in `main` 5, Ctrl-C switched off in the start command
-before the import 6. The start command now does that, and the PC tools send a harmless request (interface name) until the
-buddy answers before the first real one.
-Betaflight's write (`serial_4way_avrootloader.c`, `BL_WriteA`) matches the sequence used: set address with ack, set buffer
-`FE 00 <hi> <len>` with no ack, payload with ack, then `01 01`; it waits 500 ms for the program ack (ours 2 s).
-
-`--restore <backup> --esc N --backup <new file>` puts a saved block back (`--plan-restore <backup> --esc N` shows it first; the new file saves the page as it is then): the
-Pico accepts only a write equal to that block, so it also works on a page a failed write left blank.
-
-**First write on an ESC (2026-11-05 22:21, ESC 2 on GPIO 7; owner's go for this change):** motor KV 2220 -> 7220 (byte 55 -> 180)
-and motor poles 14 -> 12, `--write --apply --backup tmp/esc2_before_kv7220_poles12.json`. Result: write acknowledged, the whole
-1 KB page read back equal to the new block plus blank (`ok` true). Wire (the wingman's spy, valid recording, 19200 baud decode):
-set address `0x7C00` acknowledged, set buffer `FE 00 00 B8` with no reply, the 184-byte block with its CRC (equal to the new block)
-acknowledged `0x30`, program `01 01` acknowledged `0x30` 9.3 ms later (page erase and programming). The bench bootloader
-(version 1) therefore follows the public sequence. Lines 6, 8 and 9 carried no bytes. Eight bytes of unknown origin
-(`09 31 21 2a 62 4a a2 f5`, twice, 0.16 s and 0.37 s into the window, before the buddy's first frame) were on line 7 before the
-buddy sent anything. The configurator, connected afterwards through passthrough, read ESC 2 as KV 7220 and 12 poles (owner); the buddy's log of that session shows ESCs 1, 3 and 4 byte-for-byte unchanged.
-
-**Restore on a real ESC (2026-11-05, ESC 2, owner's go):** `--restore tmp/esc2_before_kv7220_poles12.json --esc 2 --apply --backup tmp/esc2_before_restore.json`: KV 7220 -> 2220 and poles 12 -> 14, write acknowledged, the page read back equal to the original vendor block, same sequence on the wire.
-
-**All four ESCs set (2026-11-05, owner's go, one ESC per run, no spy):** motor KV 2220 -> 7180 (the nearest storable step below 7200:
-values go in steps of 40 from 20) and beeper volume 5 -> 1, ESC 1 to 4, each acknowledged and read back equal; a `--read` afterwards
-found all four blocks identical, differing from the vendor block only in bytes 26 and 30. Poles stay 14. Backups of the vendor
-pages: `tmp/esc<N>_before_kv7180_beep1.json` (local, git-ignored). `specification/KM55A2_DEFAULTS.md` holds the vendor values, the top-level README ("ESC settings as configured") the current ones.
-
-**Motor poles 14 -> 12, the four ESCs on GPIO 6-9 (2026-11-08, owner's go, one ESC per run):** `--write --backup tmp/esc<N>_before_poles12.json`, each acknowledged and read back equal; a `--read` afterwards found four identical blocks, KV 7180 and poles 12. Same day, `--passthrough --record-writes`: the configurator's Save sent one 184-byte write at `0x7C00` to each ESC (identical frames) with startup power 100 -> 95 and poles 14 -> 12 against the block read, the 12 name bytes as `0xFF` and the last 8 bytes as `0xFD`; the Pico's guard would refuse that frame, nothing reached an ESC.
-
-**The primary board (2026-11-05, owner's go "in same fashion, all 4"):** read first: same model as the spare (firmware 2.16
-`SKYSTARS_KM55_V2_F421`, bootloader `0x1F06` on PB4), all four blocks byte-for-byte equal to the spare's vendor block. Then the same
-two changes, ESC 1 to 4, one run each, all acknowledged and read back equal; a `--read` afterwards found four identical blocks,
-differing from the vendor block only in bytes 26 (KV 7180) and 30 (beeper volume 1). Backups: `tmp/primary_esc<N>_before_kv7180_beep1.json`.
-
-## To do
-
-- **ESC configuration as session metadata.** A session (`scripts/run_session.py`) could pipe `--read` into its own
-  record before the run, so every result carries the configuration it ran with, and the effect of a later settings
-  change can be judged by comparing sessions. Open: whether the ~30 s read and the bootloader round trip before each
-  session are acceptable, or once per batch is enough.
-- **First real write of each new field.** The 16 fields added after motor KV, poles and beeper volume are encoded and tested
-  against the firmware source and a fake bootloader only; none has been written to a real ESC yet (each needs the owner's go).
-- **Restore after a failed write on a real ESC.** `--restore` is proven on a healthy ESC and, in tests, on a blank page; not yet on
-  an ESC that a real failed write left blank.
-- **Firmware or bootloader update: a separate session (owner, 2026-11-07).** Not built: passthrough refuses every write and erase
-  (the exception is the one settings write above), so the configurator cannot flash through the buddy yet. The evidence baseline
-  is AM32 2.16, and the ESCs' only copy of the vendor firmware is in the chips (dump it first). Facts gathered for that session:
-  the F421 holds bootloader 0x0000-0x0FFF, firmware 0x1000-0x7BFF, settings page 0x7C00-0x7FFF; the official 2.16 and 2.21 images
-  for `SKYSTARS_KM55_V2_F421` (release assets) cover 0x1000 to about 0x7247 plus the 32-byte name at 0x7BE0 and nothing at
-  0x7C00 or above; 2.21 uses settings layout 4 (192 bytes), which this tool's decoder, `SETTINGS_SIZE` and protected-byte guard do
-  not handle. The public bootloader (master, not the bench's version 1) decides at reset from the line level whether to stay, and
-  jumps to the app only if settings byte 0x7C00 is 0x01 and the app's first two words are in range, so a broken app should leave
-  the bootloader reachable; unproven on this ESC. A write that does not start on a 1 KB page start does not erase that page.
-  Whether the ESC boards have SWD pads is unknown.
-
-## Verified so far
-
-### Pico only, GPIO 10-13, nothing attached (2026-11-03)
-
-- The configurator's connect sequence played from a PC script: MSP answers (Betaflight, battery state, motor count 4,
-  passthrough 4), 4-way version, init and read on ESC 1-4 twice fail cleanly with no ESC (general error), ESC 5 is an
-  invalid channel, two write attempts refused and logged, exit returns the board to the REPL, the record could be read back (now `--debug`).
-### On the bench, Skystars KM55A2 on GPIO 6-9
-
-- Real AM32 configurator in the browser, GPIO 6-9, ESC attached but not powered (2026-11-03): accepted the Pico as a
-  Betaflight FC (API 1.42.0, battery 0 V, motor count 4, passthrough); init flash on ESC 1-4, two tries each, all
-  empty (no ESC power, as expected); Disconnect ended the session (`end exit`). A first attempt failed with "invalid
-  result" because the buddy had already timed out before Connect (fixed: it now waits 30 min for the first
-  connect).
-- The first line handling (idle lines driven high, bytes back to back) got no answer from a powered ESC in four sessions; what was ruled out
-  is in ADR-006, "Approaches tried", steps 1 to 3.
-- **Betaflight-style line handling (2026-11-04): it answers.** 225 of 225 init requests answered with
-  `34 37 31 14 1F 06 06 01 30` (AM32 bootloader, input pin PB4, signature 0x1F06, protocol version 1, OK) and 75 of 75
-  keep-alives with `C1`. The buddy was switched to this line handling (Pico-only checks on GPIO 10-13:
-  18 of 18 switch loopbacks, the output driver off whenever idle, rehearsal echoes intact).
-- With it, the real configurator read all four ESCs (owner): bootloader v1 on PB4, MCU F421, EEPROM layout v2, firmware
-  `SKYSTARS_KM55_V2_F421` 2.16. The configurator's downloads (owner) and the buddy's record are byte-for-byte
-  identical, all four ESCs hold the same settings, and `--read` read the same bytes again on its own (20:34:07). The
-  settings and what they mean: `specification/KM55A2_DEFAULTS.md`.
-- **Isolation (2026-11-05, GPIO 6, wingman's recording):** Betaflight framing with one difference changed back (no idle
-  bit / driven stop bit / driven-high idle) 80 of 80 answered; the first framing 0 of 20. The first framing's own bytes
-  released by the PIO program at the end of the last stop bit 80 of 80 (pull-up or driven-high idle); the first framing
-  0 of 40. The first buddy's Python release measured 4.7-5.2 ms after the last stop bit (`sm.exec` with a string: 4.6-5.1
-  ms). Cause and record: ADR-006, "Approaches tried", step 5.
+Modelled on [BlHeli-Passthrough (RP2040)](https://github.com/BrushlessPower/BlHeli-Passthrough/tree/main/RP2040); checked against
+[AM32-bootloader](https://github.com/am32-firmware/AM32-bootloader), [AM32](https://github.com/am32-firmware/AM32) and
+[am32-configurator](https://github.com/am32-firmware/am32-configurator). The bench ESC (vendor identity, settings as shipped):
+`specification/KM55A2_DEFAULTS.md`; how it is configured now: the top-level README, "ESC settings as configured".
