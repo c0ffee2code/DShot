@@ -284,12 +284,12 @@ class UpdateOrderTest(GroupTestCase):
         log = []
         motors = [bidir(0, 6), uni(2, 7), bidir(4, 8), uni(6, 9)]
         for i, motor in enumerate(motors):
-            def send(throttle, i=i, real=motor.send_throttle_command):
+            def send(throttle, i=i, real=motor.send_unchecked):
                 log.append(("send", i))
                 real(throttle)
-            motor.send_throttle_command = send
+            motor.send_unchecked = send
             # update()'s ARMING branch sends through send_zero(), not
-            # send_throttle_command(0) (see dshot_pio.py's own note on why) -
+            # send_unchecked(0) (see dshot_pio.py's own note on why) -
             # patched the same way so "while arming" sees the same log shape
             # as "while armed".
             def send_zero(i=i, real=motor.send_zero):
@@ -407,10 +407,37 @@ class UpdateIntervalTest(GroupTestCase):
 
 
 class ThrottleTest(GroupTestCase):
-    def test_set_throttle_clamps_a_negative_value_to_zero(self):
+    def test_set_throttle_rejects_a_negative_value(self):
         group = self.make([uni(0, 6)])
-        group.set_throttle(0, -5)
-        self.assertEqual(group.get_all_throttles(), [0])
+        group.set_throttle(0, 100)
+        for value in (-1, -5, -2047):
+            with self.assertRaises(MotorGroupException):
+                group.set_throttle(0, value)
+        self.assertEqual(group.get_all_throttles(), [100])
+
+    def test_set_all_throttles_rejects_a_negative_value_without_a_partial_write(self):
+        group = self.make([uni(0, 6), uni(1, 7)])
+        group.set_all_throttles([100, 200])
+        with self.assertRaises(MotorGroupException):
+            group.set_all_throttles([60, -1])
+        self.assertEqual(group.get_all_throttles(), [100, 200])
+
+    def test_validate_throttle_returns_a_valid_value_unchanged(self):
+        group = self.make([uni(0, 6)])
+        for value in (0, 48, 100, group.THROTTLE_CEILING):
+            self.assertEqual(group.validate_throttle(value), value)
+
+    def test_update_does_not_validate_what_it_sends(self):
+        # Validation is at the set_* boundary only; the per-tick path sends the
+        # array as it stands (a value above the ceiling written straight in).
+        group = self.make([uni(0, 6)])
+        self.arm_fully(group)
+        value = group.THROTTLE_CEILING + 1
+        group.throttles[0] = value
+        group.update()
+        packet = value << 1
+        crc = (packet ^ (packet >> 4) ^ (packet >> 8)) & 0xF
+        self.assertEqual(group.motors[0].sm.sent[-1], ((packet << 4) | crc) << 16)
 
     def test_set_throttle_rejects_above_the_temporary_bench_ceiling(self):
         group = self.make([uni(0, 6)])

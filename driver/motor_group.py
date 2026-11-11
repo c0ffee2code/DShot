@@ -349,10 +349,12 @@ class MotorGroup:
             for motor in self.bidir_motors:
                 motor.drain_rx()
 
+            # No range check here: set_throttle() and set_all_throttles()
+            # validate at the boundary, so the per-tick path does not repeat it
             throttles = self.throttles
             motors = self.motors
             for i in range(self.motor_count):
-                motors[i].send_throttle_command(throttles[i])
+                motors[i].send_unchecked(throttles[i])
 
         self.last_update_ms = now
 
@@ -467,23 +469,18 @@ class MotorGroup:
 
         return motor.decode_capture(value)
 
-    def clamp_throttle(self, value):
+    def validate_throttle(self, value):
         """
-        Limit a throttle to what a motor will transmit: 0, or MIN_THROTTLE to
-        THROTTLE_CEILING. Negative values are clamped to 0. 1..MIN_THROTTLE-1 is
-        DShot's command range, which this driver does not offer, and above
-        THROTTLE_CEILING is the temporary bench ceiling; both are rejected
-        rather than clamped (BUG-005).
+        Return value unchanged if a motor will transmit it: 0 (stop), or
+        MIN_THROTTLE to THROTTLE_CEILING. Anything else raises
+        MotorGroupException: bad input is rejected, never adjusted. Below
+        MIN_THROTTLE lies DShot's command range, which this driver does not
+        offer (BUG-005); THROTTLE_CEILING is the temporary bench ceiling.
         """
-        if value < 0:
-            return 0
-        if value > self.THROTTLE_CEILING:
+        if value != 0 and not self.MIN_THROTTLE <= value <= self.THROTTLE_CEILING:
             raise MotorGroupException(
-                "Throttle above " + str(self.THROTTLE_CEILING) + " is rejected (temporary bench ceiling)"
-            )
-        if 0 < value < self.MIN_THROTTLE:
-            raise MotorGroupException(
-                "Throttle 1-47 is the DShot command range, not supported"
+                "Throttle must be 0 or " + str(self.MIN_THROTTLE) + ".." + str(self.THROTTLE_CEILING) +
+                ", got " + str(value)
             )
         return value
 
@@ -494,8 +491,8 @@ class MotorGroup:
         Args:
             motor_index: Motor index (0-based)
             value: 0 (stop) or MIN_THROTTLE-THROTTLE_CEILING (48-250, a
-                temporary bench ceiling). Negative values are clamped to 0;
-                1-47 and anything above the ceiling raise MotorGroupException.
+                temporary bench ceiling). Negative values, 1-47 and anything
+                above the ceiling raise MotorGroupException.
 
         Accepted while disarmed, but nothing is transmitted until the group is
         armed, and arm() resets all throttles to zero.
@@ -508,14 +505,16 @@ class MotorGroup:
                 "Invalid motor index: " + str(motor_index)
             )
 
-        self.throttles[motor_index] = self.clamp_throttle(value)
+        self.throttles[motor_index] = self.validate_throttle(value)
 
     def set_all_throttles(self, values):
         """
         Set throttles for all motors.
 
         Args:
-            values: List/tuple of throttle values, one per motor
+            values: List/tuple of throttle values, one per motor, each valid
+                as for set_throttle(); any invalid one raises
+                MotorGroupException and nothing is written.
 
         Each write is atomic but the batch is not atomic as a whole.
         For flight control this is acceptable (see ADR-001).
@@ -528,8 +527,8 @@ class MotorGroup:
 
         # Validate everything before writing anything, so a rejected value
         # does not leave the group half-updated.
-        clamped = [self.clamp_throttle(value) for value in values]
-        for i, value in enumerate(clamped):
+        checked = [self.validate_throttle(value) for value in values]
+        for i, value in enumerate(checked):
             self.throttles[i] = value
 
     def get_all_throttles(self):

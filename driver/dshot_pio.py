@@ -299,9 +299,10 @@ class DShotPIO:
         Args:
             throttle: Throttle value (0 to THROTTLE_CEILING, the temporary bench ceiling)
 
-        Values 1-47 are DShot commands, not throttle: AM32 executes them
-        (beep, direction, EEPROM save). This level sends them as given;
-        MotorGroup.set_throttle() is the guard that refuses them.
+        Raises InvalidThrottleException for a negative value or one above
+        THROTTLE_CEILING. Values 1-47 are DShot commands, not throttle: AM32
+        executes them (beep, direction, EEPROM save). This level sends them
+        as given; MotorGroup.set_throttle() is the guard that refuses them.
 
         Note: DShot protocol includes a telemetry request bit, but this implementation
         always sets it to 0. AM32 sends a GCR telemetry reply after every frame once
@@ -313,6 +314,20 @@ class DShotPIO:
         if throttle > THROTTLE_CEILING:
             raise InvalidThrottleException("Throttle value is too high. The temporary bench ceiling is " + str(THROTTLE_CEILING) + ".")
 
+        self.send_unchecked(throttle)
+
+    # measured win - see ADR-002's "Further hot-path tightening" section
+    @micropython.native
+    def send_unchecked(self, throttle):
+        """
+        Build the packet for a throttle and queue it, with no range check.
+
+        MotorGroup.update() sends through this every tick: the group's
+        set_throttle() and set_all_throttles() already validated what it
+        holds, so checking again per frame would only cost time. Code that
+        drives a motor without a MotorGroup uses send_throttle_command().
+        A value outside 0..2047 builds a wrong packet.
+        """
         # Build 12-bit value: 11-bit throttle shifted left, telemetry bit = 0
         packetValue = throttle << 1
 

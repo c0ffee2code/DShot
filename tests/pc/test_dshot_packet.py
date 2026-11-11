@@ -56,6 +56,19 @@ class SendThrottleCommandTest(unittest.TestCase):
         for throttle in (0, 1, 99, THROTTLE_CEILING):
             self.assertEqual((self.send(motor, throttle) >> 20) & 1, 0)
 
+    def test_send_unchecked_builds_the_same_packet_as_the_checked_send(self):
+        for make in (uni, bidir):
+            checked, unchecked = make(), make()
+            for throttle in range(THROTTLE_CEILING + 1):
+                checked.send_throttle_command(throttle)
+                unchecked.send_unchecked(throttle)
+            self.assertEqual(unchecked.sm.sent, checked.sm.sent)
+
+    def test_send_unchecked_does_not_validate(self):
+        motor = uni()
+        motor.send_unchecked(THROTTLE_CEILING + 1)
+        self.assertEqual(motor.sm.sent, [expected_word(THROTTLE_CEILING + 1, inverted=False)])
+
     def test_out_of_range_throttle_is_rejected_and_sends_nothing(self):
         motor = uni()
         for bad in (-1, THROTTLE_CEILING + 1, MAX_THROTTLE):
