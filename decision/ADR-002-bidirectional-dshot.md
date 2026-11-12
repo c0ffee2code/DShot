@@ -1,5 +1,7 @@
 # ADR-002: Bidirectional DShot Implementation
 
+**Note 2026-11-12:** the wingman's recording role, called "the spy" in entries dated before 2026-11-12, is named "the observer" since then; its recording is `signal_observation.bin` (formerly `spy.bin`), its board file `observer.py` and its PC tools `observer_*.py` (formerly `spy.py`, `spy_*.py`), and its guide `OBSERVER.md` (formerly `SPY.md`). Entries dated earlier keep the old names.
+
 **Update 2026-10-19:** the loop this report describes as "unpaced" / "maximum rate" (`UPDATE_INTERVAL_US = 0`, `update()` back to back) no longer exists. The only mode is the paced loop at 1045us, and a scenario cannot choose its own period. What follows records the earlier unpaced loop and was not re-measured on the paced one.
 
 **Status:** Accepted (2026-11-11). Bidirectional DShot is a supported capability

@@ -17,7 +17,7 @@ paused.
 
 What counts as a KPI run: a real ESC, four bidirectional motors, the scenario's propellers all KPI_PROPELLER, and a throttle step from 0 to KPI_THROTTLE on all four
 lines (so an experiment at another throttle, or a gentle ramp, is outside). A run that never reached the throttle step (it did not arm, or stopped first) is not
-silently dropped: it is counted as not_started, apart from the runs, and reported both ways (the owner decides whether it is a failure). A session whose spy
+silently dropped: it is counted as not_started, apart from the runs, and reported both ways (the owner decides whether it is a failure). A session whose observer
 recording lost data is an instrument problem, counted apart and not judged.
 
 Statistics: the lower bound is the exact one-sided 95% bound, the convention of the arming evidence (100 of 100 runs -> 97%, 104 of 104 -> 97%, 300 of 300 -> 99%).
@@ -62,7 +62,7 @@ EXCLUDED_SESSIONS = {
 
 
 def start_block(lines, propeller_names, esc_mock):
-    """The start KPI facts of one run, from the spy's per-line facts. status is in_scope (a KPI run), not_started (the intended KPI run never reached the throttle
+    """The start KPI facts of one run, from the observer's per-line facts. status is in_scope (a KPI run), not_started (the intended KPI run never reached the throttle
     step) or out_of_scope (why: outside_the_scope_because)."""
     commanded = [line for line in lines if line.get("mode") == "bidirectional" and line["facts"].get("commanded")]
     names = [name if name is not None else "not recorded" for name in propeller_names]
@@ -162,14 +162,14 @@ def percentile(sorted_values, fraction):
 
 def aggregate(summaries):
     """The KPI totals over session summaries (dicts as in summary.json). Only valid, in-scope sessions are runs; the others are counted apart: out_of_scope,
-    not_started (the intended KPI run never reached the throttle step), instrument_problem (the spy record lost data), skipped_no_start_block and
+    not_started (the intended KPI run never reached the throttle step), instrument_problem (the observer record lost data), skipped_no_start_block and
     excluded_by_owner (EXCLUDED_SESSIONS: left out before anything is counted)."""
     excluded = [s for s in summaries if s.get("session") in EXCLUDED_SESSIONS]
     all_sessions = len(summaries)
     summaries = [s for s in summaries if s.get("session") not in EXCLUDED_SESSIONS]
     skipped_old = [s for s in summaries if not s.get("start")]
     with_start = [s for s in summaries if s.get("start")]
-    instrument = [s for s in with_start if s.get("spy") and not s["spy"].get("valid", True)]
+    instrument = [s for s in with_start if s.get("observer") and not s["observer"].get("valid", True)]
     usable = [s for s in with_start if s not in instrument]
     runs = [s for s in usable if s["start"]["status"] == "in_scope"]
     not_started = sum(1 for s in usable if s["start"]["status"] == "not_started")
@@ -178,7 +178,7 @@ def aggregate(summaries):
     start_ok = sum(1 for s in runs if s["start"]["start_ok"])
     per_gpio = {}
     for s in runs:
-        for line in s["spy"]["lines"]:
+        for line in s["observer"]["lines"]:
             if line.get("mode") != "bidirectional" or not line["facts"].get("commanded"):
                 continue
             cell = per_gpio.setdefault(line["gpio"], {"starts": 0, "not_spun_up": 0, "times": []})

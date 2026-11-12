@@ -2,7 +2,7 @@
 esc_mock_fixture.py - build the ESC mock's replay fixture from a recorded session.
 
 The ESC mock (tests/bench/wingman/) replays real ESC replies. This script takes the replies the wingman
-recorded in a session's spy.bin and keeps, per line, a run of consecutive real-eRPM replies from the middle of the
+recorded in a session's signal_observation.bin and keeps, per line, a run of consecutive real-eRPM replies from the middle of the
 run (the motors are up to speed there). Every kept reply is decoded again with the driver's own decoder and must have a
 right CRC and a real speed; the script stops otherwise.
 
@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / "driver"))
 sys.path.insert(0, str(ROOT / "tests" / "bench" / "wingman" / "shared"))
 import esc_mock_format
 import gcr_decode
-import spy_edge_log
+import observer_edge_log
 
 DEFAULT_OUT = ROOT / "tests" / "bench" / "wingman" / "board" / "esc_mock_replies_dshot600.bin"
 DEFAULT_FRAMES = 1024
@@ -32,9 +32,9 @@ DEFAULT_AFTER_MS = 5000          # recording time from which replies are taken (
 
 def real_replies(edge_list, after_ms):
     """The 21-bit reply frames, in time order, of the replies after `after_ms` that are CRC-valid and carry a real
-    speed (not AM32's not-running word). edge_list: one line's edges from spy_edge_log.edges()."""
+    speed (not AM32's not-running word). edge_list: one line's edges from observer_edge_log.edges()."""
     out = []
-    for record in spy_edge_log.analyse(edge_list):
+    for record in observer_edge_log.analyse(edge_list):
         reply = record["reply"]
         if reply is None or record["start"] < after_ms * 10_000:
             continue
@@ -55,12 +55,12 @@ def provenance(session_folder, frames, after_ms, medians, built=None):
             "median_erpm_per_line": [round(m) for m in medians]}
 
 
-def build(spy_bytes, frames, after_ms):
-    """(fixture bytes, [median eRPM per line]) from a spy.bin."""
-    _, channels, _ = spy_edge_log.parse_stream(spy_bytes)
+def build(observer_bytes, frames, after_ms):
+    """(fixture bytes, [median eRPM per line]) from a signal_observation.bin."""
+    _, channels, _ = observer_edge_log.parse_stream(observer_bytes)
     lines, medians = [], []
     for channel in sorted(channels):
-        replies = real_replies(spy_edge_log.edges(channels[channel]), after_ms)
+        replies = real_replies(observer_edge_log.edges(channels[channel]), after_ms)
         if len(replies) < frames:
             raise SystemExit("line %d: only %d real replies after the cut, need %d" % (channel, len(replies), frames))
         kept = replies[:frames]
@@ -77,13 +77,13 @@ def build(spy_bytes, frames, after_ms):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("session", help="a captures/<session> folder holding spy.bin")
+    parser.add_argument("session", help="a captures/<session> folder holding signal_observation.bin")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES, help="replies kept per line (default 1024)")
     parser.add_argument("--after-ms", type=int, default=DEFAULT_AFTER_MS, help="take replies from this recording time on")
     args = parser.parse_args()
-    spy_file = Path(args.session) / "spy.bin"
-    data, medians = build(spy_file.read_bytes(), args.frames, args.after_ms)
+    observer_file = Path(args.session) / observer_edge_log.OBSERVATION_FILE
+    data, medians = build(observer_file.read_bytes(), args.frames, args.after_ms)
     Path(args.out).write_bytes(data)
     sidecar = Path(args.out).with_suffix(".json")
     sidecar.write_text(json.dumps(provenance(args.session, args.frames, args.after_ms, medians), indent=2) + "\n", encoding="utf-8")

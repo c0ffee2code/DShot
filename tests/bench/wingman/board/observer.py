@@ -1,7 +1,7 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library, and a diagnostic: nothing in the driver or the
 # command loop uses it.
 #
-# The spy: runs on the wingman (the SECOND Pico) and only watches. It records every edge of up to four lines
+# The observer: runs on the wingman (the SECOND Pico) and only watches. It records every edge of up to four lines
 # (the ESC signal wires of the bench) and streams the record to the PC over USB while a start/end line is
 # high. Nothing is ever written to a spied-on pin.
 #
@@ -13,7 +13,7 @@
 # entry: bit 15 = the level of the run that just ended (1 = it was high), bits 14..0 = 0x7FFF minus the
 # ticks counted. All lines wait on the start line in hardware, so they begin on the same clock cycle.
 # A DMA channel per line copies the entries into a ring buffer without help from either core; the core only
-# forwards what has arrived. Decoding is done on the PC (tests/bench/wingman/tools/spy_edge_log.py).
+# forwards what has arrived. Decoding is done on the PC (tests/bench/wingman/tools/observer_edge_log.py).
 #
 # Time arithmetic (the program below is exact): with the state machine at 20 MHz one instruction is 50ns.
 # The time from one detected edge to the next is (2 * ticks + 4) instructions for a run that was high and

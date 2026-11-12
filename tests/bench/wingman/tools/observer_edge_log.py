@@ -1,8 +1,8 @@
 """
-spy_edge_log.py - read the stream the wingman sends (tests/bench/wingman/board/spy.py) and turn it into edges.
+observer_edge_log.py - read the stream the wingman sends (tests/bench/wingman/board/observer.py) and turn it into edges.
 
-Pure Python, no hardware: tests/pc/test_spy_edge_log.py exercises it. The meaning of an entry and the time
-arithmetic are documented at the top of spy.py; the constants here must agree with it.
+Pure Python, no hardware: tests/pc/test_observer_edge_log.py exercises it. The meaning of an entry and the time
+arithmetic are documented at the top of observer.py; the constants here must agree with it.
 """
 
 import struct
@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "driver"))
 import gcr_decode
 import dshot_frame_decode
 
+OBSERVATION_FILE = "signal_observation.bin"      # the recording the observer makes of a session: the one place that names it
 MAGIC = 0xD5
 MARKER = 0x7FFF
 INSTR_NS = 50                       # state machine at 20 MHz
@@ -35,7 +36,7 @@ class Payload(bytearray):
 
 
 class StreamReader:
-    """Takes the spy's bytes as they arrive (feed) and keeps the start text, the per-channel payload bytes
+    """Takes the observer's bytes as they arrive (feed) and keeps the start text, the per-channel payload bytes
     and the end text. Anything before the first packet (the REPL's own 'OK') is skipped. feed() raises
     StreamError on a damaged stream; done is True once the end packet is in."""
 
@@ -118,15 +119,15 @@ def parse_end(text):
 
 
 def reconcile(channels, info):
-    """Problems found by comparing the bytes the PC received per line with the 'bytes=' the spy's end packet
-    says it sent (a mismatch means the stream lost or gained bytes on the way, which the spy cannot see
+    """Problems found by comparing the bytes the PC received per line with the 'bytes=' the observer's end packet
+    says it sent (a mismatch means the stream lost or gained bytes on the way, which the observer cannot see
     itself). Empty list = they agree."""
     problems = []
     for channel, fields in info["channels"].items():
         got = len(channels.get(channel, b""))
         sent = fields.get("bytes", 0)
         if got != sent:
-            problems.append("line %d: the spy sent %d bytes, the PC received %d" % (channel, sent, got))
+            problems.append("line %d: the observer sent %d bytes, the PC received %d" % (channel, sent, got))
     return problems
 
 

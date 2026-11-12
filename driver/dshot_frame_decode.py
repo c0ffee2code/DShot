@@ -3,7 +3,7 @@
 # counterpart of gcr_decode.py (the ESC's reply frames).
 #
 # Not used by the library at runtime. It lives in driver/ because it is pure Python (no rp2 or machine) that two
-# kinds of code need: the PC tools that read the wingman's spy recording (tests/bench/wingman/tools/spy_edge_log.py)
+# kinds of code need: the PC tools that read the wingman's observer recording (tests/bench/wingman/tools/observer_edge_log.py)
 # and the pin test that runs on the Pico (tests/bench/pio_and_cores/test_wire_frames.py, edges from pin_sampler.py),
 # the same reason gcr_decode.py and dshot_profiles.py are here. tests/pc exercises it on a PC.
 #

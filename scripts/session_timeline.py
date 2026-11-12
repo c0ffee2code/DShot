@@ -6,16 +6,16 @@ replies, every one) with the main Pico's own record laid on the same time axis.
   python scripts/session_timeline.py captures/<session> --from-ms 5000 --to-ms 5400   # zoom into a stretch
   python scripts/session_timeline.py captures/<session> --show               # interactive window: zoom and pan with the toolbar
 
-Time axis: milliseconds since the start line (GPIO 15) rose. The spy's clock starts when it sees that rise; the main
+Time axis: milliseconds since the start line (GPIO 15) rose. The observer's clock starts when it sees that rise; the main
 Pico's ticks are converted with `line_high_ticks_us`, the tick it stored just before raising the line. The two clocks are
-therefore aligned to within the spy's gate latency (not measured); the "lag" figures below show how well that holds.
+therefore aligned to within the observer's gate latency (not measured); the "lag" figures below show how well that holds.
 
 What the main Pico's record holds (tests/bench/session_recorder/bidir_capture_sink.py): one record each time Core 0 decodes
 a capture, stamped with the main Pico's tick. Core 0 decodes every `sample_every`-th capture it sees per motor, and it sees at
 most one per poll pass (`poll_ms`), so the record is sparse by design (about one stamp a second per motor at the default
 settings; the main Pico does the bare minimum of I/O while it controls motors). The wire record is the dense one.
 
-Alignment: the spy's state machines start on the same clock cycle as the start line rises; the main Pico stored its tick
+Alignment: the observer's state machines start on the same clock cycle as the start line rises; the main Pico stored its tick
 just before it raised the line, so the two clocks agree to within the few microseconds between those two points.
 
 Where a stamp's reply is on the wire: every reply the receiver publishes steps a 9-bit token (1..511, driver/capture_mailbox.py),
@@ -34,7 +34,7 @@ Panels:
   4. Time between two consecutive decode stamps of one motor.
   5. Spin-up: the ESC's real eRPM per line as a percentage of that motor's own settled speed, so all lines share one scale;
      small tick = first nonzero throttle frame, dot = where it reached 80% (the start KPI's spin-up, measured by
-     spy_start_summary.spin_up), dashed line = the 80% level. A line with no dot never settled or never got there.
+     observer_start_summary.spin_up), dashed line = the 80% level. A line with no dot never settled or never got there.
 """
 
 import argparse
@@ -48,12 +48,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bench_paths  # noqa: F401  (the wingman tools and driver/ are importable from here on)
 import gcr_decode
 import session_files
-import spy_analyze
-import spy_edge_log
-import spy_start_summary
-import spy_stats
+import observer_analyze
+import observer_edge_log
+import observer_start_summary
+import observer_stats
 
-UNIT_MS = spy_analyze.UNIT_US / 1000       # one edge unit of the wire record, in ms
+UNIT_MS = observer_analyze.UNIT_US / 1000       # one edge unit of the wire record, in ms
 TICKS_MASK = 0x3FFFFFFF                     # MicroPython ticks_us() wraps at 2**30
 EXPECTED_RECORD_FMT = "<IB4H4I"             # bidir_capture_sink.BidirCaptureSink.RECORD_FMT
 FLAG_FAILED = 0x80                          # bidir_capture_sink.FLAG_FAILED
@@ -92,7 +92,7 @@ def read_samples(path, device, line_high_ticks_us):
 
 
 def wire_replies(records):
-    """Every reply of one line from spy_edge_log.analyse, damaged ones too (the receiver publishes every word it takes):
+    """Every reply of one line from observer_edge_log.analyse, damaged ones too (the receiver publishes every word it takes):
     [{"end_ms", "status", "erpm", "frame"}] in time order. end_ms is where the last of the reply's 21 bits ends. status:
     'run' (CRC right, real eRPM), 'idle' (AM32's not-running frame), 'bad'."""
     out = []
@@ -100,8 +100,8 @@ def wire_replies(records):
         reply = record["reply"]
         if record["tx"] is None or reply is None:
             continue
-        end = (reply["start"] + spy_edge_log.REPLY_BITS * reply["bit_units"]) * UNIT_MS
-        status = spy_stats.reply_status(reply)
+        end = (reply["start"] + observer_edge_log.REPLY_BITS * reply["bit_units"]) * UNIT_MS
+        status = observer_stats.reply_status(reply)
         out.append({"end_ms": end, "status": status, "erpm": reply["erpm"] if status == "run" else None, "frame": reply["frame"]})
     return out
 
@@ -148,7 +148,7 @@ def place_samples(samples, replies, armed_ms=None):
     if not tied or not samples:
         return result
     result["offset"] = tied[0]
-    medians = [spy_stats.percentile(sorted(lags), 0.5) for lags in (agreeing_lags(o) for o in tied) if lags]
+    medians = [observer_stats.percentile(sorted(lags), 0.5) for lags in (agreeing_lags(o) for o in tied) if lags]
     if medians:
         result["tied_lag_ms"] = (min(medians), max(medians))
     for sample in samples:
@@ -190,8 +190,8 @@ def percentiles(values):
     if not values:
         return None
     ordered = sorted(values)
-    return {"n": len(ordered), "min": ordered[0], "median": spy_stats.percentile(ordered, 0.5),
-            "p99": spy_stats.percentile(ordered, 0.99), "max": ordered[-1]}
+    return {"n": len(ordered), "min": ordered[0], "median": observer_stats.percentile(ordered, 0.5),
+            "p99": observer_stats.percentile(ordered, 0.99), "max": ordered[-1]}
 
 
 def load_session(session_dir):
@@ -202,12 +202,12 @@ def load_session(session_dir):
     device = manifest["device"]
     if "line_high_ticks_us" not in device:
         raise SessionError("the Pico's record has no line_high_ticks_us: the run stopped before it raised the start line")
-    spy_path = session_dir / "spy.bin"
-    if not spy_path.is_file():
-        raise SessionError("%s has no spy.bin (the spy was not recording)" % session_dir)
+    observer_path = session_dir / observer_edge_log.OBSERVATION_FILE
+    if not observer_path.is_file():
+        raise SessionError("%s has no %s (the observer was not recording)" % (session_dir, observer_edge_log.OBSERVATION_FILE))
     scenario_path = session_dir / "scenario.json"
     scenario = json.loads(scenario_path.read_text(encoding="utf-8")) if scenario_path.is_file() else {}
-    start, channels, end = spy_edge_log.parse_stream(spy_path.read_bytes())
+    start, channels, end = observer_edge_log.parse_stream(observer_path.read_bytes())
     pins = {}
     for token in start.split():
         if token.startswith("pins="):
@@ -228,8 +228,8 @@ def build(session):
     line_high = session["line_high"]
     result = {"lines": {}, "behind": behind_events_ms(device, line_high), "session": session}
     for line, payload in sorted(session["channels"].items()):
-        records = spy_edge_log.analyse(spy_edge_log.edges(payload))
-        rows = spy_stats.frame_table(records, 0)
+        records = observer_edge_log.analyse(observer_edge_log.edges(payload))
+        rows = observer_stats.frame_table(records, 0)
         result["lines"][line] = {"rows": rows, "replies": wire_replies(records), "samples": [], "lags": [], "gaps": [], "placement": None}
     return result
 
@@ -275,7 +275,7 @@ def print_report(result, tolerance_us):
         if rows and "arm()" in marks:
             print("   first frame on the wire %.1f ms after the start line; main Pico's arm() was at %.1f ms" % (
                 rows[0]["t_ms"], marks["arm()"]))
-        hiccups = spy_stats.hiccups(rows, tolerance_us)
+        hiccups = observer_stats.hiccups(rows, tolerance_us)
         near = sum(1 for t, _ in hiccups if any(0 <= t - b <= 3 for b in behind))
         print("   frames whose spacing is more than %.0f us from the median: %d (%d of them within 3 ms after a behind-schedule event)" % (
             tolerance_us, len(hiccups), near))
@@ -289,7 +289,7 @@ def print_report(result, tolerance_us):
                 print("   NOTE: %d offsets of the first published reply fit equally well (frames repeat); the median lag could be anywhere "
                       "from %.1f to %.1f ms" % (len(placed["tied"]), placed["tied_lag_ms"][0], placed["tied_lag_ms"][1]))
             if placed["disagree"] and placed["disagree"] * 2 >= len(data["samples"]):
-                print("   NOTE: most samples carry a frame other than the wire's at their predicted place: the receiver and the spy "
+                print("   NOTE: most samples carry a frame other than the wire's at their predicted place: the receiver and the observer "
                       "disagree, or the reply counts drifted apart; the lags below are not trustworthy")
         if stats:
             print("   lag, decode stamp minus end of the reply on the wire (ms): min %.1f  median %.1f  99%% %.1f  max %.1f" % (
@@ -305,11 +305,11 @@ def print_report(result, tolerance_us):
 def plot_spin_up(ax, rows, color, inside):
     """Draw one line's eRPM as a percentage of its own settled speed, its step tick and spin-up dot; return the legend text (None when the
     line has no step). The 80% level is the same line for every motor, drawn by the caller."""
-    step = spy_start_summary.find_step(rows)
+    step = observer_start_summary.find_step(rows)
     if step is None:
         return None
     t0 = rows[step]["t_ms"]
-    spin_ms, settled = spy_start_summary.spin_up(rows, step)
+    spin_ms, settled = observer_start_summary.spin_up(rows, step)
     if inside(t0):
         ax.plot([t0], [0], "|", color=color, markersize=9, markeredgewidth=1.5, clip_on=False)
     if settled is None:
@@ -320,8 +320,8 @@ def plot_spin_up(ax, rows, color, inside):
     if spin_ms is None:
         return "settled %d, never reached 80%%" % settled
     if inside(t0 + spin_ms):
-        ax.plot([t0 + spin_ms], [100.0 * spy_start_summary.SPIN_UP_FRACTION], "o", color=color, markersize=6,
-                markeredgecolor=spy_analyze.SURFACE, markeredgewidth=0.8)
+        ax.plot([t0 + spin_ms], [100.0 * observer_start_summary.SPIN_UP_FRACTION], "o", color=color, markersize=6,
+                markeredgecolor=observer_analyze.SURFACE, markeredgewidth=0.8)
     return "%.0f ms" % spin_ms
 
 
@@ -332,7 +332,7 @@ def plot(result, out_path, title, from_ms=None, to_ms=None, show=False):
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
-    P = spy_analyze
+    P = observer_analyze
     session = result["session"]
     lines = sorted(result["lines"])
     marks = arm_marks_ms(session["device"], session["line_high"])
@@ -395,7 +395,7 @@ def plot(result, out_path, title, from_ms=None, to_ms=None, show=False):
     axes["events"].set_yticklabels(["line %d (GPIO %s)" % (line, session["pins"].get(line)) for line in lines], fontsize=8)
     axes["events"].set_ylim(-0.7, len(lines) - 0.3)
     if spacing_values:
-        median = spy_stats.percentile(sorted(spacing_values), 0.5)
+        median = observer_stats.percentile(sorted(spacing_values), 0.5)
         axes["spacing"].axhline(median, color=P.INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 3)))
     every = session["device"].get("sample_every")
     poll_ms = session["scenario"].get("poll_ms")
@@ -424,7 +424,7 @@ def plot(result, out_path, title, from_ms=None, to_ms=None, show=False):
     if spin_labels:
         axes["spinup"].annotate("spin-up: " + "; ".join(spin_labels), (0.005, 1), xycoords=("axes fraction", "axes fraction"),
                                 xytext=(0, -3), textcoords="offset points", ha="left", va="top", fontsize=8, color=P.INK_SECONDARY)
-    axes["spinup"].axhline(100.0 * spy_start_summary.SPIN_UP_FRACTION, color=P.INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 3)))
+    axes["spinup"].axhline(100.0 * observer_start_summary.SPIN_UP_FRACTION, color=P.INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 3)))
     axes["spinup"].set_ylim(-5, 125)
     axes["spinup"].set_ylabel("% of settled", color=P.INK_SECONDARY, fontsize=9)
     axes["spacing"].set_ylabel("us", color=P.INK_SECONDARY, fontsize=9)
@@ -445,7 +445,7 @@ def plot(result, out_path, title, from_ms=None, to_ms=None, show=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("session", help="a session folder holding session.json, spy.bin and capture.bin")
+    parser.add_argument("session", help="a session folder holding session.json, signal_observation.bin and capture.bin")
     parser.add_argument("--from-ms", type=float, default=None)
     parser.add_argument("--to-ms", type=float, default=None)
     parser.add_argument("--out", default=None, help="picture path (default: <session>/timeline.png)")

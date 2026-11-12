@@ -1,4 +1,4 @@
-# Tests of the start classifier in tests/bench/wingman/tools/spy_start_summary.py: a start is judged against what the throttle that was
+# Tests of the start classifier in tests/bench/wingman/tools/observer_start_summary.py: a start is judged against what the throttle that was
 # sent normally reads, not against one fixed number (throttle 60 reads about 8,400 eRPM, throttle 215 about 52,600).
 
 import sys
@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import bench_paths  # noqa: F401  (the wingman tools and driver/ are importable from here on)
 
-import spy_start_summary as start_summary
+import observer_start_summary as start_summary
 
 
 def start(throttle, median):

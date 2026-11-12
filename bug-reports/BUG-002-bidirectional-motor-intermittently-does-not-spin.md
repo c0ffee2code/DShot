@@ -2,6 +2,8 @@
 
 **Status: RESOLVED.** (BUG-009, opened afterward, is a different, still-open problem - see Related.)
 
+**Note 2026-11-12:** the wingman's recording role, called "the spy" in entries dated before 2026-11-12, is named "the observer" since then; its recording is `signal_observation.bin` (formerly `spy.bin`), its board file `observer.py` and its PC tools `observer_*.py` (formerly `spy.py`, `spy_*.py`), and its guide `OBSERVER.md` (formerly `SPY.md`). Entries dated earlier keep the old names.
+
 ## The symptom and its fix
 
 A bidirectional motor would occasionally stay silent - never spinning - while its ESC kept

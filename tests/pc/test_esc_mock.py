@@ -1,6 +1,6 @@
 # Tests of the ESC mock's fixture format (tests/bench/wingman/shared/esc_mock_format.py) and of tests/bench/wingman/tools/esc_mock_fixture.py,
-# which builds the fixture from a recorded spy.bin. The wire streams are built here from known edges, with the same
-# helpers test_spy_edge_log.py uses.
+# which builds the fixture from a recorded signal_observation.bin. The wire streams are built here from known edges, with the same
+# helpers test_observer_edge_log.py uses.
 
 import sys
 import unittest
@@ -15,7 +15,7 @@ import esc_mock_fixture
 import gcr_decode
 import run_session
 import session_summary
-import spy_check_am32
+import observer_check_am32
 from datetime import datetime
 
 
@@ -100,19 +100,19 @@ class SessionTest(unittest.TestCase):
         self.assertIsNone(real["esc_mock"])
 
     def results(self):
-        R = spy_check_am32.Result
-        return [R("first reply comes only after the bidirectional latch (101 frames)", spy_check_am32.WARN, "early", "", esc_only=True),
-                R("the ESC's arming silence comes before our first nonzero throttle", spy_check_am32.WARN, "none", "", esc_only=True),
-                R("reply integrity", spy_check_am32.FAIL, "bad crc", "")]
+        R = observer_check_am32.Result
+        return [R("first reply comes only after the bidirectional latch (101 frames)", observer_check_am32.WARN, "early", "", esc_only=True),
+                R("the ESC's arming silence comes before our first nonzero throttle", observer_check_am32.WARN, "none", "", esc_only=True),
+                R("reply integrity", observer_check_am32.FAIL, "bad crc", "")]
 
     def test_esc_behaviour_checks_do_not_apply_to_a_mock_session(self):
         summary = session_summary.check_summary(self.results(), esc_mock=True)
-        self.assertEqual(summary["counts"], {spy_check_am32.NA: 2, spy_check_am32.FAIL: 1})
+        self.assertEqual(summary["counts"], {observer_check_am32.NA: 2, observer_check_am32.FAIL: 1})
         self.assertEqual([n["check"] for n in summary["notable"]], ["reply integrity"])
 
     def test_a_real_session_still_reports_them(self):
         summary = session_summary.check_summary(self.results())
-        self.assertEqual(summary["counts"], {spy_check_am32.WARN: 2, spy_check_am32.FAIL: 1})
+        self.assertEqual(summary["counts"], {observer_check_am32.WARN: 2, observer_check_am32.FAIL: 1})
 
 
 if __name__ == "__main__":

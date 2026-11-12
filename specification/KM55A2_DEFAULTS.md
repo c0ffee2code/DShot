@@ -32,7 +32,7 @@ VERSION_MAJOR/MINOR at boot when they differ. No copy of this image is kept: the
 Not the E230 target the retailers list. The F421 target matches the ESC's bidirectional reply bit time measured earlier
 (1.280-1.285 us at DSHOT600; F421: 1.2833 us).
 
-**On the DShot wire** (recorded by the wingman's spy 2026-10-28, bidirectional, one ESC on channel 1, throttle 100,
+**On the DShot wire** (recorded by the wingman's observer 2026-10-28, bidirectional, one ESC on channel 1, throttle 100,
 DSHOT600 x2 and DSHOT300 x1): the reply starts 23.2 us (DSHOT600) / 25.8 us (DSHOT300) after our frame; reply bit time
 1.284 / 2.565 us (F421 figure 1.2833 / 2.5667 us); first reply after 104 of our frames (AM32's latch is 101); then every
 frame answered outside the arming silence, which began 1020 ms after our first frame and lasted 301 ms (the source's

@@ -1,5 +1,7 @@
 # BUG-011: Core 0's USB printing and SD-card writes make the command loop's frame spacing uneven
 
+**Note 2026-11-12:** the wingman's recording role, called "the spy" in entries dated before 2026-11-12, is named "the observer" since then; its recording is `signal_observation.bin` (formerly `spy.bin`), its board file `observer.py` and its PC tools `observer_*.py` (formerly `spy.py`, `spy_*.py`), and its guide `OBSERVER.md` (formerly `SPY.md`). Entries dated earlier keep the old names.
+
 **Status:** OPEN. Measured 2026-10-20 on the Pico with no ESC and no motor. Whether the unevenness affects
 an ESC is **not known**; this report records the measurement, not a consequence.
 

@@ -18,7 +18,7 @@ A deploy failure is retried once automatically and never counted as either
 outcome - see `scripts/run_scenarios.py`'s own docstring for exactly how
 each outcome is classified.
 
-Every attempt is a full session (`scripts/run_session.py`): its own folder with the spy's recording
+Every attempt is a full session (`scripts/run_session.py`): its own folder with the observer's recording
 and a `summary.json`, pulled from the SD card when the attempt ends. A batch of 20 leaves 20 session folders.
 
 Add `--rotate` to cycle the `--scenario` order by one position each round,

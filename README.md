@@ -60,8 +60,9 @@ motor 4. Each can carry a Gemfan 2218 3-blade prop (the current start-quality sc
 motors carried in a run is recorded per session (`--load` in `session.json`).
 
 A second Pico 2, the **wingman**, is a permanent part of the bench: wired to the same GPIO 6-9 and to the start line (GPIO 15), it
-records every edge of the four signal lines, our frames and the ESCs' replies, for every run (`tests/bench/wingman/README.md`). A run
-without its recording has no verdict.
+records every edge of the four signal lines, our frames and the ESCs' replies, for every run with an ESC (`tests/bench/wingman/README.md`): a
+scenario cannot be run without it, and a session without its recording has no verdict. A device script on the Pico alone, with no ESC, is
+recorded only when asked.
 
 ### ESC settings as configured
 
@@ -225,8 +226,8 @@ What this driver guarantees, and what it does not.
 | Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
 | Throttle range | `0` (stop) or `48`-`250`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) and, as a temporary bench ceiling, anything above `250` (`THROTTLE_CEILING` in `driver/dshot_pio.py`, mirrored in `tests/bench/throttle_profile.py`; owner, 2026-10-19: nothing higher is tested yet, raise it when higher throttles are tested) |
 | ESC firmware | AM32 only |
-| AM32 input match | Measured on the wire with a second Pico recording the signal lines, no ESC (2026-10-28, unidirectional frames, DSHOT600 and DSHOT300, `tests/bench/wingman/tools/spy_am32_table.py`): every bit reads the same under AM32's own decision rule as in our decoder (0 of 74,752 differ per run), with margins of 0.18 / 0.44 us (DSHOT600) and 0.37 / 0.88 us (DSHOT300) for the 0 and 1 bits; frame length within 2.7% of the window AM32 learns (limit 6.25%); correct CRC polarity and no command values in every frame; largest gap between frames 1.1 ms (limit 500 ms); 4 lines, 3 runs at DSHOT600 and 2 at DSHOT300, identical run to run (properties of the PIO waveform; the spy resolves 0.1 us). With one ESC attached (bidirectional, single motor, throttle 100, DSHOT600 and DSHOT300): the ESC's first reply after 104 frames (latch 101 in AM32's source), every frame answered outside its 301 ms arming silence (which starts 1020 ms after our first frame, as the source's 1.02 s gate predicts), no CRC errors in 9,309 replies per run, the start glitch `data12=2` sent by the ESC itself for 6-9 replies after the throttle step (BUG-009). Other motors, throttles and ESCs not yet covered |
-| Start quality | **Pending - not yet guaranteed.** Scope (owner, 2026-11-02): all four motors with Gemfan 2218 3-Blade props (no RPM disks, no heavier or draggier props). Target: **≥ 99%** of runs that succeed when jumped from `0` to throttle 215: all four motors spin up and hold, and the slowest spin-up is within 0.5 s (provisional limit); a drone with fewer than four motors turning does not fly. Defined in `bug-reports/BUG-009-motors-sometimes-start-rough.md` ("Current KPI"), measured from the spy's telemetry in each session's `summary.json`. Baseline 2026-11-01: all four held in 28 of 28 runs, 26 of 28 fully succeed (93%, exact one-sided 95% lower bound 79%). Second batch 2026-11-02, 32 runs: 30 of 32 fully succeed, both failures a slow GPIO 6 spin-up; the cause is not found (BUG-009 "Result 4" to "Result 6") |
+| AM32 input match | Measured on the wire with a second Pico recording the signal lines, no ESC (2026-10-28, unidirectional frames, DSHOT600 and DSHOT300, `tests/bench/wingman/tools/observer_am32_table.py`): every bit reads the same under AM32's own decision rule as in our decoder (0 of 74,752 differ per run), with margins of 0.18 / 0.44 us (DSHOT600) and 0.37 / 0.88 us (DSHOT300) for the 0 and 1 bits; frame length within 2.7% of the window AM32 learns (limit 6.25%); correct CRC polarity and no command values in every frame; largest gap between frames 1.1 ms (limit 500 ms); 4 lines, 3 runs at DSHOT600 and 2 at DSHOT300, identical run to run (properties of the PIO waveform; the observer resolves 0.1 us). With one ESC attached (bidirectional, single motor, throttle 100, DSHOT600 and DSHOT300): the ESC's first reply after 104 frames (latch 101 in AM32's source), every frame answered outside its 301 ms arming silence (which starts 1020 ms after our first frame, as the source's 1.02 s gate predicts), no CRC errors in 9,309 replies per run, the start glitch `data12=2` sent by the ESC itself for 6-9 replies after the throttle step (BUG-009). Other motors, throttles and ESCs not yet covered |
+| Start quality | **Pending - not yet guaranteed.** Scope (owner, 2026-11-02): all four motors with Gemfan 2218 3-Blade props (no RPM disks, no heavier or draggier props). Target: **≥ 99%** of runs that succeed when jumped from `0` to throttle 215: all four motors spin up and hold, and the slowest spin-up is within 0.5 s (provisional limit); a drone with fewer than four motors turning does not fly. Defined in `bug-reports/BUG-009-motors-sometimes-start-rough.md` ("Current KPI"), measured from the observer's telemetry in each session's `summary.json`. Baseline 2026-11-01: all four held in 28 of 28 runs, 26 of 28 fully succeed (93%, exact one-sided 95% lower bound 79%). Second batch 2026-11-02, 32 runs: 30 of 32 fully succeed, both failures a slow GPIO 6 spin-up; the cause is not found (BUG-009 "Result 4" to "Result 6") |
 
 All figures here were measured with AM32 2.16; the bench ESCs run AM32 2.22 since 2026-11-10 and nothing below has been re-measured on it
 (`decision/ADR-007-esc-firmware-flash.md`). The baseline for the arming and start-quality figures restarts on 2.22 (owner, 2026-11-10); runs on 2.16
@@ -240,7 +241,7 @@ arming.
 needed an ESC reboot (4.06 s or more) across 698 archived bench sessions (mostly earlier code); that archive justifies the
 bound, not the rate. The 99% rate has **no supporting evidence on the current code yet**: about 300 clean runs are needed
 (exact one-sided 95% bound), and the long batch waits to be scheduled (backlog W35). The ESC-side figures of the input-match
-row (reply timing, bit time) are on `specification/KM55A2_DEFAULTS.md`; how the spy measures them: `tests/bench/wingman/SPY.md`.
+row (reply timing, bit time) are on `specification/KM55A2_DEFAULTS.md`; how the observer measures them: `tests/bench/wingman/OBSERVER.md`.
 
 **Status of the measurement:** in progress.
 
@@ -291,7 +292,7 @@ that the motor is actually armed and spinning.
 │       ├── session_recorder/        # SD-card session recorder
 │       ├── dshot_protocol/          # scenario runner + JSON scenarios, single-motor ESC probes
 │       ├── pio_and_cores/           # PIO and two-core checks (Pico only, no ESC)
-│       ├── wingman/                 # the second Pico: records every wire edge (spy), plays the ESC (ESC mock)
+│       ├── wingman/                 # the second Pico: records every wire edge (observer), plays the ESC (ESC mock)
 ├── tools/
 │   └── esc_buddy/                   # ESC configuration access through the main Pico (--read / --passthrough / --debug)
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder

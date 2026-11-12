@@ -1,4 +1,4 @@
-# Tests of scripts/session_timeline.py: the main Pico's decode stamps laid on the spy's wire record.
+# Tests of scripts/session_timeline.py: the main Pico's decode stamps laid on the observer's wire record.
 # No real recording exists for this tool yet, so the session here is built from known edges and a known clock offset,
 # and the checks are that the lag and the alignment come back as built.
 
@@ -16,8 +16,8 @@ import bench_paths  # noqa: F401  (the wingman tools and driver/ are importable 
 
 import gcr_decode
 import session_timeline
-import spy_edge_log
-from test_spy_edge_log import edge_payload, packets, tx_frame_edges
+import observer_edge_log
+from test_observer_edge_log import edge_payload, packets, tx_frame_edges
 
 FRAME_US = 1045
 INSTR_PER_FRAME = FRAME_US * 20                      # one instruction is 50 ns
@@ -25,7 +25,7 @@ LINE_HIGH_TICKS = (1 << 30) - 5_000                  # close to the wrap, so the
 
 
 def reply_levels(data12):
-    """The 21 line levels of a running reply with this 12-bit value (as test_spy_edge_log builds them)."""
+    """The 21 line levels of a running reply with this 12-bit value (as test_observer_edge_log builds them)."""
     number = (data12 << 4) | gcr_decode.crc_inverted(data12)
     symbols = 0
     for shift in (12, 8, 4, 0):
@@ -183,7 +183,7 @@ class WholeSessionTests(unittest.TestCase):
             reply_start = start + 16 * 34 + 500
             edges += reply_edges_instr(frame, reply_start)
             reply_ends_ms[k] = (reply_start + gcr_decode.FRAME_LENGTH_BITS * 26.667) * 50e-6
-        (directory / "spy.bin").write_bytes(packets({0: edge_payload(edges)}, start="first_pin=6 pins=6 marker=v2"))
+        (directory / "signal_observation.bin").write_bytes(packets({0: edge_payload(edges)}, start="first_pin=6 pins=6 marker=v2"))
         records = []
         for k in range(self.FIRST, self.FRAMES, 10):
             ticks = (LINE_HIGH_TICKS + round((reply_ends_ms[k] + self.LAG_MS) * 1000)) & session_timeline.TICKS_MASK

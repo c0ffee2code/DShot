@@ -1,16 +1,16 @@
 """
-spy_analyze.py - what the wingman saw on the ESC signal wires.
+observer_analyze.py - what the wingman saw on the ESC signal wires.
 
-  python tests/bench/wingman/tools/spy_analyze.py captures/<session>/spy.bin
-  python tests/bench/wingman/tools/spy_analyze.py <file> --plot                       # also write <file>.png
-  python tests/bench/wingman/tools/spy_analyze.py <file> --plot --from-ms 1200 --to-ms 1500   # zoom into a stretch
-  python tests/bench/wingman/tools/spy_analyze.py <file> --lines 0,2                  # only some lines (index in the recording)
+  python tests/bench/wingman/tools/observer_analyze.py captures/<session>/signal_observation.bin
+  python tests/bench/wingman/tools/observer_analyze.py <file> --plot                       # also write <file>.png
+  python tests/bench/wingman/tools/observer_analyze.py <file> --plot --from-ms 1200 --to-ms 1500   # zoom into a stretch
+  python tests/bench/wingman/tools/observer_analyze.py <file> --lines 0,2                  # only some lines (index in the recording)
 
 For every recorded line: the frames we sent (throttle value, CRC) and the ESC replies that followed them, read
 from the edges alone. Prints the throttle runs, how many frames got a reply, then min / 1% / median / 99% /
 max / mean / std of the frame spacing, the bit timing, the frame length, the pulse lengths and the reply delay and eRPM, the frames whose spacing
 is off the median by more than --tolerance-us (hiccups), and a timeline in --bucket-ms steps. Time zero is the
-moment the start line went high, which is just before arming. A recording the spy marked invalid (lost
+moment the start line went high, which is just before arming. A recording the observer marked invalid (lost
 data) is reported as such and still analysed, so the loss is visible next to the numbers.
 
 --plot draws the same as time series (every frame is a point, so a stall shows as a spike): the throttle we
@@ -24,8 +24,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import spy_edge_log
-import spy_stats
+import observer_edge_log
+import observer_stats
 
 UNIT_US = 0.1
 
@@ -73,18 +73,18 @@ def timeline(rows, bucket_ms):
 
 def print_summaries(rows):
     print("   %-40s %6s %9s %9s %9s %9s %9s %9s %8s" % ("", "n", "min", "1%", "median", "99%", "max", "mean", "std"))
-    for label, s in spy_stats.summaries(rows):
+    for label, s in observer_stats.summaries(rows):
         print("   %-40s %6d %9.2f %9.2f %9.2f %9.2f %9.2f %9.2f %8.3f" % (
             label, s["n"], s["min"], s["p1"], s["median"], s["p99"], s["max"], s["mean"], s["std"]))
 
 
 def print_hiccups(rows, tolerance_us, limit=12):
-    found = spy_stats.hiccups(rows, tolerance_us)
+    found = observer_stats.hiccups(rows, tolerance_us)
     spacings = sorted(r["spacing_us"] for r in rows if r["spacing_us"] is not None)
     if not found:
         print("   frame spacing: no frame is more than %d us from the median" % tolerance_us)
         return
-    median = spy_stats.percentile(spacings, 0.5)
+    median = observer_stats.percentile(spacings, 0.5)
     found.sort(key=lambda x: -abs(x[1] - median))
     print("   frame spacing: %d frames more than %d us from the median (%.1f us); the largest:" % (len(found), tolerance_us, median))
     for t, spacing in found[:limit]:
@@ -96,8 +96,8 @@ def robust_range(values, min_half):
     ordered = sorted(values)
     if not ordered:
         return (0, 1)
-    median = spy_stats.percentile(ordered, 0.5)
-    half = max(min_half, 1.5 * (spy_stats.percentile(ordered, 0.99) - spy_stats.percentile(ordered, 0.01)))
+    median = observer_stats.percentile(ordered, 0.5)
+    half = max(min_half, 1.5 * (observer_stats.percentile(ordered, 0.99) - observer_stats.percentile(ordered, 0.01)))
     return (median - half, median + half)
 
 
@@ -147,7 +147,7 @@ def plot_pulses(pulse_sets, labels, out_path, title):
     ax.annotate("", xy=(mean_one, top * 0.55), xytext=(mean_threshold, top * 0.55),
                 arrowprops={"arrowstyle": "<->", "color": INK_SECONDARY, "linewidth": 0.8})
     ax.text((mean_one + mean_threshold) / 2, top * 0.58, "%.2f us" % (mean_one - mean_threshold), ha="center", fontsize=9, color=INK_SECONDARY)
-    ax.set_xlabel("pulse length (us) - one pulse reads +-0.1 us on this spy", color=INK_SECONDARY, fontsize=9)
+    ax.set_xlabel("pulse length (us) - one pulse reads +-0.1 us on this observer", color=INK_SECONDARY, fontsize=9)
     ax.set_ylabel("bits", color=INK_SECONDARY, fontsize=9)
     ax.set_title("%s - every bit's pulse against AM32's threshold, %d line%s" % (
         title, len(labels), "" if len(labels) == 1 else "s"), loc="left", fontsize=10, color=INK)
@@ -210,7 +210,7 @@ def plot(tables, labels, out_path, title):
     axes["bits"].set_ylabel("us", color=INK_SECONDARY, fontsize=9)
     spacings = sorted(r["spacing_us"] for r in all_rows if r["spacing_us"] is not None)
     if spacings:
-        median = spy_stats.percentile(spacings, 0.5)
+        median = observer_stats.percentile(spacings, 0.5)
         axes["spacing"].axhline(median, color=INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 3)))
         axes["spacing"].annotate("median %.1f us" % median, (0.005, 1), xycoords=("axes fraction", "axes fraction"),
                                  xytext=(0, -3), textcoords="offset points", ha="left", va="top", fontsize=8,
@@ -274,8 +274,8 @@ def main():
     parser.add_argument("--lines", default=None, help="comma-separated line indexes to show (default all)")
     parser.add_argument("--tolerance-us", type=float, default=50, help="a frame spacing this far from the median is a hiccup (default 50)")
     args = parser.parse_args()
-    start, channels, end = spy_edge_log.parse_stream(Path(args.file).read_bytes())
-    info = spy_edge_log.parse_end(end)
+    start, channels, end = observer_edge_log.parse_stream(Path(args.file).read_bytes())
+    info = observer_edge_log.parse_end(end)
     pins = {}
     for token in start.split():
         if token.startswith("pins="):
@@ -283,7 +283,7 @@ def main():
     print("start: %s" % start)
     print("end:   %s" % end)
     if not info["valid"]:
-        print("WARNING: the spy reports lost data - gaps below may be the recorder's, not the line's")
+        print("WARNING: the observer reports lost data - gaps below may be the recorder's, not the line's")
     wanted = sorted(channels) if args.lines is None else [int(x) for x in args.lines.split(",")]
     tables = []
     labels = []
@@ -291,22 +291,22 @@ def main():
     analysed = {}
     for channel in wanted:
         if channel in channels:
-            analysed[channel] = spy_edge_log.analyse(spy_edge_log.edges(channels[channel], invert=args.unidirectional), args.unidirectional)
+            analysed[channel] = observer_edge_log.analyse(observer_edge_log.edges(channels[channel], invert=args.unidirectional), args.unidirectional)
     firsts = [next((r["start"] for r in recs if r["tx"] is not None), None) for recs in analysed.values()]
     firsts = [x for x in firsts if x is not None]
     origin = min(firsts) if firsts else 0
     if origin * UNIT_US / 1000 > 200:
-        print("NOTE: the recording holds %.0f ms of quiet line before the first frame of ours (the spy's gate opened early); "
+        print("NOTE: the recording holds %.0f ms of quiet line before the first frame of ours (the observer's gate opened early); "
               "all times below count from the first frame" % (origin * UNIT_US / 1000))
     for channel in wanted:
         if channel not in channels:
             continue
         records = analysed[channel]
-        rows = spy_stats.window(spy_stats.frame_table(records, origin), args.from_ms, args.to_ms)
+        rows = observer_stats.window(observer_stats.frame_table(records, origin), args.from_ms, args.to_ms)
         label = "line %d (GPIO %d)" % (channel, pins[channel]) if channel in pins else "line %d" % channel
         tables.append(rows)
         labels.append(label)
-        pulse_sets.append(spy_stats.pulse_data(records))
+        pulse_sets.append(observer_stats.pulse_data(records))
         with_tx = [r for r in records if r["tx"] is not None]
         print("\n%s: %d groups, %d with a complete frame of ours, %d with a reply" % (
             label, len(records), len(with_tx), sum(1 for r in with_tx if r["reply"] is not None)))

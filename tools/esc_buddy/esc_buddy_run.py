@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "bench" / "wingman" / "tools"))
 import wingman_board  # noqa: E402  (MAIN_ID, mpremote())
 sys.path.insert(0, str(ROOT / "tests" / "bench" / "wingman" / "main_pico"))
-import start_line  # noqa: E402  (START_PIN: the line the wingman's spy records by)
+import start_line  # noqa: E402  (START_PIN: the line the wingman's observer records by)
 import esc_buddy_protocol as protocol  # noqa: E402  (this folder: the 4-way frame format and CRC)
 import esc_buddy_image  # noqa: E402
 import esc_buddy_settings  # noqa: E402
@@ -146,7 +146,7 @@ def start(pins, quiet=False, record_writes=False, write_channel=None, restore_bl
         print("Its read-back will show the old settings, so the configurator may report a failed save - expected.")
     else:
         print("Read-only: writes, erases and settings writes are refused.")
-    print("Start line GPIO %d is high for the session (the wingman's spy records while it is)." % start_line.START_PIN)
+    print("Start line GPIO %d is high for the session (the wingman's observer records while it is)." % start_line.START_PIN)
     print("Now: AM32 configurator -> select this port -> Connect -> read the ESCs -> Disconnect.")
     print("Connect within 30 min. It returns to the REPL on Disconnect, or after 5 min of silence once connected.")
     print("Afterwards, the buddy's own record: python tools/esc_buddy/esc_buddy_run.py --debug")

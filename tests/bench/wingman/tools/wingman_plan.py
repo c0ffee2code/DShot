@@ -7,7 +7,7 @@ for the wingman. It works on the raw JSON dict and needs only the `motors` / `pi
 it stays independent of the loader that runs on the main Pico.
 
 Where each thing comes from:
-  spy lines          motors[].pin, in list order (the order session_summary uses)
+  observer lines          motors[].pin, in list order (the order session_summary uses)
   line direction     motors[].bidirectional (the ESC mock answers only on bidirectional lines)
   start line         start_line.START_PIN (tests/bench/wingman/main_pico/start_line.py), the pin the main Pico drives
   DSHOT speed        top-level dshot_speed (selects the ESC mock's recorded replies)
@@ -29,7 +29,7 @@ import esc_mock_format
 import start_line
 
 BOARD_DIR = HERE.parent / "board"
-MAX_LINES = 4                       # the spy's state machines: one per line, one PIO block
+MAX_LINES = 4                       # the observer's state machines: one per line, one PIO block
 KNOWN_SPEEDS = ("DSHOT300", "DSHOT600")
 # The recorded ESC replies, per DSHOT speed. Only DSHOT600 was ever recorded, so the ESC mock serves nothing else (its timing was
 # measured at DSHOT600 as well). A speed is added here together with a fixture recorded and timed at that speed.
@@ -52,8 +52,8 @@ class MockPlan:
 
 
 class WingmanPlan:
-    def __init__(self, spy_pins, bidirectional, start_line_pin, dshot_speed, run_seconds, mock=None):
-        self.spy_pins = spy_pins
+    def __init__(self, observer_pins, bidirectional, start_line_pin, dshot_speed, run_seconds, mock=None):
+        self.observer_pins = observer_pins
         self.bidirectional = bidirectional
         self.start_line_pin = start_line_pin
         self.dshot_speed = dshot_speed

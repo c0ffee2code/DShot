@@ -173,7 +173,7 @@ def start(pins, fixture, lines):
 
 
 def guard(pins):
-    """A tick() for spy.run(): on its first call it raises unless every mocked pin still belongs to PIO
+    """A tick() for observer.run(): on its first call it raises unless every mocked pin still belongs to PIO
     block 0, so a mock that lost its pins cannot produce a session that looks fine."""
     state = {"checked": False}
 

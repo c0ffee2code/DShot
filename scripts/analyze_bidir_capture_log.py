@@ -11,9 +11,9 @@ With no argument, analyzes the most recently pulled session under captures/.
 What the log is: one record each time the Pico decoded a reply (every `decode_every`-th capture of a motor, the
 "sampled" decode): the time, the four throttles, each motor's latest raw capture (21-bit reply frame with a 9-bit publish
 token above it) and a flag byte naming the motor that was decoded and whether that decode failed on the Pico. The
-Pico writes nothing per reply; every reply on the wire is in spy.bin. So this script checks the decoder:
+Pico writes nothing per reply; every reply on the wire is in signal_observation.bin. So this script checks the decoder:
 each sampled word is decoded here, the per-motor tally must equal the Pico's, and every failed flag must agree with the
-decode here. The words carry their token, so any of them can be found on the spy's recording.
+decode here. The words carry their token, so any of them can be found on the observer's recording.
 
 Refuses a session whose meta does not say capture_kind=sampled (an older per-pass log is not read) and one whose outcome is
 not completed. Judges no threshold: the session verdict is scripts/session_summary.py's, from the wire recording

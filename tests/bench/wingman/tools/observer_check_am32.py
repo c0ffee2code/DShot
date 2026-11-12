@@ -1,7 +1,7 @@
 """
-spy_check_am32.py - does what the spy recorded on the wire match what AM32's firmware needs?
+observer_check_am32.py - does what the observer recorded on the wire match what AM32's firmware needs?
 
-  python tests/bench/wingman/tools/spy_check_am32.py captures/<session>/spy.bin [--unidirectional] [--from-first-frame]
+  python tests/bench/wingman/tools/observer_check_am32.py captures/<session>/signal_observation.bin [--unidirectional] [--from-first-frame]
 
 Each check is derived from AM32's source (pinned commit 55c96847, the same one specification/AM32.md cites:
 Src/dshot.c computeDshotDMA, Src/signal.c detectInput / checkDshot / the frame-time window, Src/main.c
@@ -18,7 +18,7 @@ arming, as tests/bench/wingman/tools/wingman_run.py's real runs do); without it 
 saw (arming gate, the 101-frame latch) can only say INFO.
 
 The reply-side checks were first run on recordings with an ESC attached on 2026-10-28; their synthetic tests are in
-tests/pc/test_spy_check_am32.py. The input-side checks read our own frames.
+tests/pc/test_observer_check_am32.py. The input-side checks read our own frames.
 
 F421 is the only MCU family supported (owner, 2026-11-05): the bench ESC is an F421 (AM32 2.16, target
 SKYSTARS_KM55_V2_F421, read from the ESCs with tools/esc_buddy on 2026-11-04, specification/KM55A2_DEFAULTS.md). The
@@ -33,15 +33,15 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import spy_edge_log
-import spy_stats
+import observer_edge_log
+import observer_stats
 
 UNIT_US = 0.1
 MCU = "F421"                        # the only supported family (see the docstring)
 # capture-clock tick while the speed is classified: Mcu/f421/Src/IO.c, 120 MHz / (ic_timer_prescaler 17 + 1) = 6.667 MHz
 # (checked at AM32 v2.16, the bench ESC's firmware: CPU_FREQUENCY_MHZ 120, ic_timer_prescaler = 120 / 7)
 IC_TICK_US = 18 / 120
-RESOLUTION_US = 0.1                 # the spy's edge resolution
+RESOLUTION_US = 0.1                 # the observer's edge resolution
 CLASSIFY_FRAMES = 8                 # the speed is classified on the first frames AM32 captures
 LATCH_FRAMES = 101                  # high_pin_count > 100
 ARMING_GATE_MS = 1020               # armed_timeout_count > 20000 at ~19.6 kHz
@@ -63,7 +63,7 @@ class Result:
         self.status = status
         self.detail = detail
         self.source = source
-        self.values = values or {}         # the numbers behind the verdict, for tests/bench/wingman/tools/spy_am32_table.py
+        self.values = values or {}         # the numbers behind the verdict, for tests/bench/wingman/tools/observer_am32_table.py
         self.esc_only = esc_only           # about the real ESC's own behaviour: does not apply when the ESC mock played the ESC
 
 
@@ -94,7 +94,7 @@ def check_bit_threshold(frames):
     margin_one = mean_one - mean_threshold if ones else None
     margin_zero = mean_threshold - mean_zero if zeros else None
     detail = ("%d frames; AM32's threshold %.2f-%.2f us; mean 1-bit pulse %.3f us (%.2f us above it), mean 0-bit pulse %.3f us "
-              "(%.2f us below it); one pulse reads +-%.1f us on this spy, so a single frame's own margin is only known to that") % (
+              "(%.2f us below it); one pulse reads +-%.1f us on this observer, so a single frame's own margin is only known to that") % (
         len(frames), min(thresholds) * UNIT_US, max(thresholds) * UNIT_US, mean_one, margin_one or 0,
         mean_zero, margin_zero or 0, RESOLUTION_US)
     values = {"frames": len(frames), "mismatches": mismatches, "threshold_us": mean_threshold, "margin_one_us": margin_one,
@@ -103,7 +103,7 @@ def check_bit_threshold(frames):
         return Result(name, FAIL, "%d bits would be read differently by AM32 than by our decoder (%s)" % (mismatches, detail), source, values)
     margins = [m for m in (margin_one, margin_zero) if m is not None]
     if margins and min(margins) < RESOLUTION_US:
-        return Result(name, WARN, "margin under the spy's resolution: " + detail, source, values)
+        return Result(name, WARN, "margin under the observer's resolution: " + detail, source, values)
     return Result(name, PASS, detail, source, values)
 
 
@@ -178,7 +178,7 @@ def check_speed_band(frames):
     if worst - RESOLUTION_US >= high_us or best + RESOLUTION_US <= low_us or max(averages) >= average_limit:
         return Result(name, FAIL, detail, source, values)
     if worst + RESOLUTION_US >= high_us or best - RESOLUTION_US <= low_us:
-        return Result(name, WARN, detail + ": within the spy's resolution of the band edge", source, values)
+        return Result(name, WARN, detail + ": within the observer's resolution of the band edge", source, values)
     return Result(name, PASS, detail, source, values)
 
 
@@ -230,7 +230,7 @@ def check_arming_gate(frames, from_first_frame):
 
 
 def reply_rows(records):
-    return spy_stats.frame_table(records)
+    return observer_stats.frame_table(records)
 
 
 def check_latch(rows, from_first_frame):
@@ -436,17 +436,17 @@ def main():
                         help="the recording began when our frames began (the start line rose before arming)")
     parser.add_argument("--lines", default=None, help="comma-separated line indexes (default all)")
     args = parser.parse_args()
-    start, channels, end = spy_edge_log.parse_stream(Path(args.file).read_bytes())
-    info = spy_edge_log.parse_end(end)
+    start, channels, end = observer_edge_log.parse_stream(Path(args.file).read_bytes())
+    info = observer_edge_log.parse_end(end)
     print("recording: %s" % start)
     if not info["valid"]:
-        print("WARNING: the spy reports lost data - %s" % end)
+        print("WARNING: the observer reports lost data - %s" % end)
     failed = 0
     wanted = sorted(channels) if args.lines is None else [int(x) for x in args.lines.split(",")]
     for channel in wanted:
         if channel not in channels:
             continue
-        records = spy_edge_log.analyse(spy_edge_log.edges(channels[channel], invert=args.unidirectional), args.unidirectional)
+        records = observer_edge_log.analyse(observer_edge_log.edges(channels[channel], invert=args.unidirectional), args.unidirectional)
         print("\nline %d" % channel)
         for result in run_checks(records, args.unidirectional, args.from_first_frame):
             print("  [%-4s] %s" % (result.status, result.name))

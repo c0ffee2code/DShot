@@ -120,10 +120,52 @@ class BatchFailureTest(unittest.TestCase):
 
     def test_a_run_session_that_gives_up_is_an_error_not_a_crash(self):
         def give_up(*a, **k):
-            raise SystemExit("the spy never reported that it is recording")
+            raise SystemExit("the observer never reported that it is recording")
         outcome, session, output, verdict = self.patch_session(give_up).run_once("x.json")
         self.assertEqual("error", outcome)
-        self.assertIn("spy never reported", output)
+        self.assertIn("observer never reported", output)
+
+    def test_a_wingman_that_did_not_start_is_an_error_not_a_deploy_failure_and_is_not_retried(self):
+        calls = []
+
+        def wingman_missing(*a, **k):
+            calls.append(1)
+            return "s1", "the observer never reported that it is recording\n", 1, {
+                "verdict": "fail", "start_failure": {"who": "wingman", "message": "x"}}
+        run_scenarios = self.patch_session(wingman_missing)
+        outcome, session, output, verdict = run_scenarios.run_attempt("x.json")
+        self.assertEqual(("error", "s1", "fail"), (outcome, session, verdict))
+        self.assertEqual(1, len(calls))
+
+    def test_a_main_pico_that_did_not_start_keeps_its_deploy_classification(self):
+        def upload_failed(*a, **k):
+            return "s1", "Uploaded 0, failed 17.\n", 1, {"verdict": "fail", "start_failure": {"who": "main_pico", "message": "x"}}
+        outcome, _, _, verdict = self.patch_session(upload_failed).run_once("x.json")
+        self.assertEqual(("deploy_failed", "fail"), (outcome, verdict))
+
+    def test_the_batch_reports_such_attempts_as_failed_sessions_not_as_no_session(self):
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, folder, True)
+        (folder / "s1").mkdir()
+        (folder / "s1" / "summary.json").write_text(json.dumps({"verdict": "fail"}), encoding="utf-8")
+        run_scenarios = self.patch_session(lambda *a, **k: ("s1", "no wingman\n", 1, {
+            "verdict": "fail", "start_failure": {"who": "wingman", "message": "x"}}))
+        self.addCleanup(setattr, run_scenarios.run_session, "CAPTURES", run_scenarios.run_session.CAPTURES)
+        run_scenarios.run_session.CAPTURES = folder
+        old = sys.argv
+        sys.argv = ["run_scenarios.py", "--scenario", str(Path(__file__)), "--rounds", "2", "--load", "none"]
+        self.addCleanup(setattr, sys, "argv", old)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            run_scenarios.main()
+        text = out.getvalue()
+        self.assertIn("outcome=error session=s1", text)
+        self.assertIn("session_verdict=fail", text)
+        self.assertIn("SESSION_VERDICTS runs=2 pass=0 fail=2 unknown=0 no_session=0", text)
 
     def test_the_batch_stops_after_repeated_problems(self):
         import io

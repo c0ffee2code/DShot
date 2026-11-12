@@ -1,5 +1,7 @@
 # BUG-008: Harness health checks cannot see a silent ESC, a Core 1 stall, or "commanded but not running"
 
+**Note 2026-11-12:** the wingman's recording role, called "the spy" in entries dated before 2026-11-12, is named "the observer" since then; its recording is `signal_observation.bin` (formerly `spy.bin`), its board file `observer.py` and its PC tools `observer_*.py` (formerly `spy.py`, `spy_*.py`), and its guide `OBSERVER.md` (formerly `SPY.md`). Entries dated earlier keep the old names.
+
 **Status:** PARTLY FIXED 2026-10-13 (items 2 and 3 done; healthy path bench-verified on two scenarios, failing path unit-tested only; items 1 and 5 still open - see "Update 2026-10-13"; since 2026-11-11 they are application work in the harness, not driver work - see "Update 2026-11-11")
 **Severity:** Medium (diagnostics). BUG-002-type failures pass the harness's own checks and are
 found only by reading logs afterwards.
@@ -264,16 +266,19 @@ the harness, and this amendment places it on the PC alone.
   `before_step` (replies, bad CRC, early starts) and `from_step` per bidirectional line, and a
   note lists a line whose arming phase had bad-CRC or early replies. A commanded line with no
   step on the wire has its thresholds `not shown`.
-- A session without `spy.bin` names the reason in its note: run with the spy off, or the wingman
-  started but no `spy.bin` arrived. `run_session.py` already started the wingman by default for a
-  scenario and stopped before the main Pico ran anything when the wingman was not connected.
+- A session without `signal_observation.bin` names the reason in its note: the wingman started but no `signal_observation.bin`
+  arrived, or a device script run on the Pico alone. `run_session.py` starts the wingman for every
+  scenario and stops before the main Pico runs anything when the wingman is not connected; since
+  2026-11-12 a scenario cannot be run without it (the `--no-spy` option is removed, ADR-008 decision 2).
 - The gap and rate thresholds (`max_gap_ms`, `min_record_rate_hz`) stay as bail-outs on the Pico;
   they measure the main Pico's own polling, not the ESC.
 - Bench runs of 2026-11-11 (five runs with the runner that reports and does not judge, plus an aborted run with the ESC power
   switched off and a refused arming with the ESCs unpowered): all five completed runs armed (2659, 2113, 2112, 2112, 2112 ms),
   printed `Outcome: completed` / `=== Run completed ===` and had a passing session verdict with six proofs shown; the aborted
-  and refused runs printed `=== Run aborted ===` and had failing verdicts. Not exercised: a run without the wingman's recording,
+  and refused runs printed `=== Run aborted ===` and had failing verdicts. Not exercised: a session whose recording did not arrive,
   Ctrl-C, a loop that does not stop before `disarm()`.
+- Since 2026-11-12 the verdict also covers a session in which the wingman or the main Pico did not start: it is `fail`, with the
+  reason, and the folder has a `summary.json` (ADR-008, amendment 2026-11-12 (2)).
 
 ## Fix plan
 

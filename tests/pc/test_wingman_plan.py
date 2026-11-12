@@ -1,5 +1,5 @@
 # Tests of tests/bench/wingman/tools/wingman_plan.py, which reads a scenario and says what the wingman has to
-# do: which lines to spy on, which to play the ESC on, which start line, how long to wait. The real scenario files are test input.
+# do: which lines to observer on, which to play the ESC on, which start line, how long to wait. The real scenario files are test input.
 
 import copy
 import json
@@ -31,7 +31,7 @@ def scenario(pins=(6, 7, 8, 9), bidirectional=(True, True, True, True), speed="D
 class PlanFromRealScenariosTest(unittest.TestCase):
     def test_the_bidirectional_scenario(self):
         plan = wingman_plan.plan_from_scenario(load("four_channel_bidirectional_600.json"), esc_mock=True)
-        self.assertEqual([6, 7, 8, 9], plan.spy_pins)
+        self.assertEqual([6, 7, 8, 9], plan.observer_pins)
         self.assertEqual([True] * 4, plan.bidirectional)
         self.assertEqual(start_line.START_PIN, plan.start_line_pin)
         self.assertEqual("DSHOT600", plan.dshot_speed)
@@ -43,7 +43,7 @@ class PlanFromRealScenariosTest(unittest.TestCase):
     def test_the_unidirectional_scenario_is_spied_but_not_mocked(self):
         data = load("four_channel_unidirectional_600.json")
         plan = wingman_plan.plan_from_scenario(data)
-        self.assertEqual([6, 7, 8, 9], plan.spy_pins)
+        self.assertEqual([6, 7, 8, 9], plan.observer_pins)
         self.assertEqual([False] * 4, plan.bidirectional)
         self.assertIsNone(plan.mock)
         with self.assertRaisesRegex(ValueError, "none"):
@@ -75,16 +75,16 @@ class FixtureProvenanceTest(unittest.TestCase):
 class PinsComeFromTheScenarioTest(unittest.TestCase):
     def test_other_pins_are_followed(self):
         plan = wingman_plan.plan_from_scenario(scenario(pins=(10, 11, 12, 13)), esc_mock=True)
-        self.assertEqual([10, 11, 12, 13], plan.spy_pins)
+        self.assertEqual([10, 11, 12, 13], plan.observer_pins)
         self.assertEqual([10, 11, 12, 13], plan.mock.pins)
 
     def test_fewer_motors_fewer_lines(self):
         plan = wingman_plan.plan_from_scenario(scenario(pins=(6, 9), bidirectional=(True, True)))
-        self.assertEqual([6, 9], plan.spy_pins)
+        self.assertEqual([6, 9], plan.observer_pins)
 
     def test_the_mock_plays_only_the_bidirectional_lines_and_keeps_their_positions(self):
         plan = wingman_plan.plan_from_scenario(scenario(bidirectional=(False, True, False, True)), esc_mock=True)
-        self.assertEqual([6, 7, 8, 9], plan.spy_pins)                 # the spy watches every line
+        self.assertEqual([6, 7, 8, 9], plan.observer_pins)                 # the observer watches every line
         self.assertEqual([7, 9], plan.mock.pins)
         self.assertEqual([1, 3], plan.mock.lines)                      # motor 1 plays fixture line 1, motor 3 line 3
 

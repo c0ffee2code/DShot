@@ -1,9 +1,9 @@
 """
-wingman_run.py - run the wingman for one test: the spy records the ESC signal lines, and with --esc-mock the wingman also
+wingman_run.py - run the wingman for one test: the observer records the ESC signal lines, and with --esc-mock the wingman also
 answers the main Pico's frames with recorded ESC replies.
 
-The spy records the ESC signal wires while the start line (GPIO 15, the same number on both boards) is high and streams the
-edges to this PC over USB (tests/bench/wingman/board/spy.py); spy_edge_log.py reads them. No SD card is involved: the stream
+The observer records the ESC signal wires while the start line (GPIO 15, the same number on both boards) is high and streams the
+edges to this PC over USB (tests/bench/wingman/board/observer.py); observer_edge_log.py reads them. No SD card is involved: the stream
 is the record. Run the recorded test on the main Pico afterwards or in parallel; this script waits up to --wait seconds for the
 start line. scripts/run_session.py calls this for every session.
 
@@ -24,14 +24,14 @@ from pathlib import Path
 import serial
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import spy_edge_log
+import observer_edge_log
 import wingman_board
 import wingman_plan
 
 sys.stdout.reconfigure(line_buffering=True)
 
 ROOT = wingman_board.ROOT
-SPY_FILES = [("tests/bench/wingman/board/spy.py", "spy.py")]
+OBSERVER_FILES = [("tests/bench/wingman/board/observer.py", "observer.py")]
 ESC_MOCK_FILES = [("tests/bench/wingman/board/esc_mock.py", "esc_mock.py"),
                   ("tests/bench/wingman/shared/esc_mock_format.py", "esc_mock_format.py")]     # plus the plan's fixture
 
@@ -41,24 +41,24 @@ def tup(numbers):
     return "(" + "".join("%d," % n for n in numbers) + ")"
 
 
-def spy_code(plan):
+def observer_code(plan):
     """The board program that only spies."""
-    return "import spy; spy.run(pins=%s, sync_pin=%d, wait_ms=%d)" % (tup(plan.spy_pins), plan.start_line_pin, plan.run_seconds * 1000)
+    return "import observer; observer.run(pins=%s, sync_pin=%d, wait_ms=%d)" % (tup(plan.observer_pins), plan.start_line_pin, plan.run_seconds * 1000)
 
 
 def esc_mock_code(plan):
-    """The board program with the ESC mock: the mock starts first and plays only the plan's bidirectional lines; the spy must not
+    """The board program with the ESC mock: the mock starts first and plays only the plan's bidirectional lines; the observer must not
     take the pins back (configure_pins=False), so every other spied pin and the start line are made inputs here; the mock stops in a
-    finally, and the spy's first tick checks that the mock's pins are still the mock's."""
+    finally, and the observer's first tick checks that the mock's pins are still the mock's."""
     mock = plan.mock
-    others = [pin for pin in plan.spy_pins if pin not in mock.pins] + [plan.start_line_pin]
-    lines = ["import esc_mock, spy",
+    others = [pin for pin in plan.observer_pins if pin not in mock.pins] + [plan.start_line_pin]
+    lines = ["import esc_mock, observer",
              "from machine import Pin",
              "mock = esc_mock.start(pins=%s, fixture=%r, lines=%s)" % (tup(mock.pins), mock.fixture, tup(mock.lines)),
              "try:"]
     lines += ["    Pin(%d, Pin.IN)" % pin for pin in others]
-    lines += ["    spy.run(pins=%s, sync_pin=%d, wait_ms=%d, configure_pins=False, tick=esc_mock.guard(%s))" % (
-                  tup(plan.spy_pins), plan.start_line_pin, plan.run_seconds * 1000, tup(mock.pins)),
+    lines += ["    observer.run(pins=%s, sync_pin=%d, wait_ms=%d, configure_pins=False, tick=esc_mock.guard(%s))" % (
+                  tup(plan.observer_pins), plan.start_line_pin, plan.run_seconds * 1000, tup(mock.pins)),
               "finally:",
               "    mock.stop()"]
     return "\n".join(lines)
@@ -75,7 +75,7 @@ def stream(port, code, wait_s, out_path):
         time.sleep(0.2)
         link.read_all()
         link.write(code.encode() + b"\x04")
-        reader = spy_edge_log.StreamReader()
+        reader = observer_edge_log.StreamReader()
         raw = bytearray()
         deadline = time.time() + wait_s
         while not reader.done and time.time() < deadline:
@@ -84,7 +84,7 @@ def stream(port, code, wait_s, out_path):
                 raw.extend(chunk)
                 try:
                     reader.feed(chunk)
-                except spy_edge_log.StreamError as error:
+                except observer_edge_log.StreamError as error:
                     reader.damage = str(error)
                     break
         link.write(b"\x03")
@@ -104,7 +104,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenario", required=True, help="the scenario the main Pico runs: the wingman reads the wiring and settings from it")
     parser.add_argument("--out", default=None)
-    parser.add_argument("--session", default=None, help="session folder name under captures/ to put spy.bin in (default: the current time)")
+    parser.add_argument("--session", default=None, help="session folder name under captures/ to put signal_observation.bin in (default: the current time)")
     parser.add_argument("--no-upload", action="store_true")
     parser.add_argument("--esc-mock", action="store_true",
                         help="also play the ESC on the wingman (tests/bench/wingman/): the ESC must be disconnected from the signal lines")
@@ -119,13 +119,13 @@ def main():
         sys.exit("The wingman Pico (ID %s) is not connected." % wingman_board.WINGMAN_ID)
     print("Wingman on %s" % port)
     wingman_board.check_board(port)
-    code = esc_mock_code(plan) if args.esc_mock else spy_code(plan)
+    code = esc_mock_code(plan) if args.esc_mock else observer_code(plan)
     session = args.session or time.strftime("%Y-%m-%d_%H-%M-%S")
-    out = Path(args.out) if args.out else ROOT / "captures" / session / "spy.bin"
+    out = Path(args.out) if args.out else ROOT / "captures" / session / observer_edge_log.OBSERVATION_FILE
     out.parent.mkdir(parents=True, exist_ok=True)
     wait = plan.run_seconds + 10
     if not args.no_upload:
-        files = SPY_FILES
+        files = OBSERVER_FILES
         if args.esc_mock:
             files = files + ESC_MOCK_FILES + [("tests/bench/wingman/board/" + plan.mock.fixture, plan.mock.fixture)]
         wingman_board.upload(port, files)
@@ -138,8 +138,8 @@ def main():
     finally:
         if args.esc_mock:
             wingman_board.reset(port)     # the mock must not outlive the run: a board left mocking would answer on the signal lines
-    info = spy_edge_log.parse_end(reader.end)
-    problems = spy_edge_log.reconcile(reader.channels, info)
+    info = observer_edge_log.parse_end(reader.end)
+    problems = observer_edge_log.reconcile(reader.channels, info)
     if problems:
         info["valid"] = False
         for line in problems:

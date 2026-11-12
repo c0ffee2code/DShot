@@ -1,7 +1,7 @@
 """
-spy_start_summary.py - what each recorded line did after its throttle step, read from the wire.
+observer_start_summary.py - what each recorded line did after its throttle step, read from the wire.
 
-  python tests/bench/wingman/tools/spy_start_summary.py captures/<session>/spy.bin [more.bin ...] [--lines 0,1]
+  python tests/bench/wingman/tools/observer_start_summary.py captures/<session>/signal_observation.bin [more.bin ...] [--lines 0,1]
 
 For every line that carries replies (a bidirectional motor): when the first nonzero throttle went out, the replies
 right after it (the data12=2 start glitch), the median eRPM in windows after the step, whether and when the ESC went
@@ -17,8 +17,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import spy_edge_log
-import spy_stats
+import observer_edge_log
+import observer_stats
 
 WINDOWS = ((0, 100), (100, 500), (500, 1500), (1500, 2500), (2500, 4000), (4000, 6000))
 # what a normal start of this bench's motor reads once settled, by throttle (eRPM). 60 and 100: measured 2026-10-28 on channels 1-3.
@@ -105,7 +105,7 @@ def final_cut_after_ms(rows, step):
 
 def summarize(records):
     frames = [r for r in records if r["tx"] is not None]
-    rows = spy_stats.frame_table(records)
+    rows = observer_stats.frame_table(records)
     step = find_step(rows)
     if step is None or not any(r["reply"] != "none" for r in rows):
         return None
@@ -173,7 +173,7 @@ def derail(records, throttle=None):
     not-running word, a data12=2 glitch, or more than TOLERANCE off the normal eRPM for the throttle. None when the
     throttle has no known normal reading."""
     frames = [r for r in records if r["tx"] is not None]
-    rows = spy_stats.frame_table(records)
+    rows = observer_stats.frame_table(records)
     step = find_step(rows)
     if step is None:
         return None
@@ -233,15 +233,15 @@ def table(paths, wanted):
     print("%-26s %4s %6s %8s %9s %14s %10s %9s %12s %22s %s" % ("recording", "line", "class", "data12=2", "eRPM .5-1.5s", "back to idle", "final cut", "spin up", "to 4 s", "ms outside / first at", "first replies after the step"))
     counts = {}
     for path in paths:
-        start, channels, end = spy_edge_log.parse_stream(Path(path).read_bytes())
+        start, channels, end = observer_edge_log.parse_stream(Path(path).read_bytes())
         for line in sorted(channels) if wanted is None else wanted:
             if line not in channels:
                 continue
-            s = summarize(spy_edge_log.analyse(spy_edge_log.edges(channels[line])))
+            s = summarize(observer_edge_log.analyse(observer_edge_log.edges(channels[line])))
             if s is None:
                 continue
             window = next(w for w in s["windows"] if w[0] == 500)
-            d = derail(spy_edge_log.analyse(spy_edge_log.edges(channels[line])))
+            d = derail(observer_edge_log.analyse(observer_edge_log.edges(channels[line])))
             kind = verdict(d)
             counts.setdefault(line, {}).setdefault(kind, []).append(s["glitch"])
             print("%-26s %4d %6s %8d %12s %14s %10s %9s %12s %22s %s" % (
@@ -271,11 +271,11 @@ def reference(paths, wanted):
     """(throttle, normal eRPM) when every start in paths used one throttle that NORMAL_ERPM knows, else (None, None)."""
     throttles = set()
     for path in paths:
-        start, channels, end = spy_edge_log.parse_stream(Path(path).read_bytes())
+        start, channels, end = observer_edge_log.parse_stream(Path(path).read_bytes())
         for line in sorted(channels) if wanted is None else wanted:
             if line not in channels:
                 continue
-            rows = spy_stats.frame_table(spy_edge_log.analyse(spy_edge_log.edges(channels[line])))
+            rows = observer_stats.frame_table(observer_edge_log.analyse(observer_edge_log.edges(channels[line])))
             step = find_step(rows)
             if step is not None and any(r['reply'] != 'none' for r in rows):
                 throttles.add(rows[step]['throttle'])
@@ -299,12 +299,12 @@ def plot(paths, wanted, out_path):
     cap = CAP if ref_normal is None else int(round(1.5 * ref_normal, -3))       # the top edge: 1.5 x what a normal start reads
     used = set()
     for path in paths:
-        start, channels, end = spy_edge_log.parse_stream(Path(path).read_bytes())
+        start, channels, end = observer_edge_log.parse_stream(Path(path).read_bytes())
         for line in sorted(channels) if wanted is None else wanted:
             if line not in channels:
                 continue
-            records = spy_edge_log.analyse(spy_edge_log.edges(channels[line]))
-            rows = spy_stats.frame_table(records)
+            records = observer_edge_log.analyse(observer_edge_log.edges(channels[line]))
+            rows = observer_stats.frame_table(records)
             step_index = find_step(rows)
             step = None if step_index is None else rows[step_index]
             if step is None or not any(r["reply"] != "none" for r in rows):
@@ -375,12 +375,12 @@ def main():
     if args.plot:
         return
     for path in args.files:
-        start, channels, end = spy_edge_log.parse_stream(Path(path).read_bytes())
+        start, channels, end = observer_edge_log.parse_stream(Path(path).read_bytes())
         wanted = sorted(channels) if args.lines is None else [int(x) for x in args.lines.split(",")]
         for line in wanted:
             if line not in channels:
                 continue
-            records = spy_edge_log.analyse(spy_edge_log.edges(channels[line]))
+            records = observer_edge_log.analyse(observer_edge_log.edges(channels[line]))
             s = summarize(records)
             if s is not None:
                 show(Path(path).stem, line, s)

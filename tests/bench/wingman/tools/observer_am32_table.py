@@ -1,14 +1,14 @@
 """
-spy_am32_table.py - how closely does what we put on the wire match what AM32 expects? One table per DSHOT speed,
+observer_am32_table.py - how closely does what we put on the wire match what AM32 expects? One table per DSHOT speed,
 one column per recording, one row per measure, the worst of the recorded lines in each cell.
 
-  python tests/bench/wingman/tools/spy_am32_table.py [--unidirectional] captures/<session>/spy.bin ...
+  python tests/bench/wingman/tools/observer_am32_table.py [--unidirectional] captures/<session>/signal_observation.bin ...
 
-Every row is a measure of tests/bench/wingman/tools/spy_check_am32.py (see its docstring for where in AM32's source each
+Every row is a measure of tests/bench/wingman/tools/observer_check_am32.py (see its docstring for where in AM32's source each
 condition comes from) with the limit AM32 imposes next to it, so repeated runs can be laid side by side and the
-spread between them read off directly. This is the input side only: it reads our own frames on the spy, no
-ESC is involved. It describes the wire as the spy (+-0.1 us per edge) saw it; the tick-based limits are the F421
-ones, the only family supported (see spy_check_am32.py). The last block (frame spacing) is our own pace, not an AM32 condition: AM32 does not measure
+spread between them read off directly. This is the input side only: it reads our own frames on the observer, no
+ESC is involved. It describes the wire as the observer (+-0.1 us per edge) saw it; the tick-based limits are the F421
+ones, the only family supported (see observer_check_am32.py). The last block (frame spacing) is our own pace, not an AM32 condition: AM32 does not measure
 the time between frames.
 """
 
@@ -17,9 +17,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import spy_check_am32 as check
-import spy_edge_log
-import spy_stats
+import observer_check_am32 as check
+import observer_edge_log
+import observer_stats
 
 ORDER = {check.FAIL: 3, check.WARN: 2, check.INFO: 1, check.PASS: 0, check.NA: -1}
 
@@ -44,7 +44,7 @@ def reply_metrics(results, records):
     start = find(results, "stuck-rotor")
     frames = [r for r in records if r["tx"] is not None]
     glitch = sum(1 for r in frames if r["reply"] is not None and r["reply"]["crc_ok"] and r["reply"]["data12"] == 2)
-    rows = spy_stats.frame_table(records)
+    rows = observer_stats.frame_table(records)
     step = next((r for r in rows if r["throttle"] >= 48), None)
     steady = [r["erpm"] for r in rows if step is not None and r["erpm"] and 1000 < r["t_ms"] - step["t_ms"]]
     return {
@@ -60,7 +60,7 @@ def reply_metrics(results, records):
         "delay_us": timing.values.get("delay_us"),
         "first_running_ms": start.values.get("first_running_ms"),
         "glitch_replies": glitch,
-        "steady_erpm": spy_stats.percentile(sorted(steady), 0.5) if steady else None,
+        "steady_erpm": observer_stats.percentile(sorted(steady), 0.5) if steady else None,
         "status": {"latch": latch.status, "coverage": coverage.status, "silence": silence.status, "integrity": integrity.status},
     }
 
@@ -74,7 +74,7 @@ def line_metrics(records, unidirectional):
     crc = find(results, "CRC polarity")
     throttle = find(results, "throttle values")
     gap = find(results, "no gap")
-    rows = spy_stats.frame_table(records)
+    rows = observer_stats.frame_table(records)
     return {
         "speed": band.values.get("speed"),
         "frames": bit.values["frames"],
@@ -103,7 +103,7 @@ def combine(lines):
     """One recording's cell values: the worst over its lines (the pooled spacings for the pace block)."""
     spacings = sorted(s for m in lines for s in m["spacings"])
     pct = [m["worst_pct"] for m in lines if m["worst_pct"] is not None]
-    summary = spy_stats.summary(spacings)
+    summary = observer_stats.summary(spacings)
     return {
         "speed": lines[0]["speed"],
         "lines": len(lines),
@@ -135,8 +135,8 @@ def f(value, fmt):
 # (label, value of a cell, limit AM32 imposes, status key)
 ROWS = (
     ("bits AM32 would read differently from ours", lambda c: "%d of %d" % (c["mismatches"], c["bits"]), "0", "bit"),
-    ("0-bit pulse below AM32's threshold (us)", lambda c: f(c["margin_zero"], "%.2f"), "> 0 (spy +-0.1)", "bit"),
-    ("1-bit pulse above AM32's threshold (us)", lambda c: f(c["margin_one"], "%.2f"), "> 0 (spy +-0.1)", "bit"),
+    ("0-bit pulse below AM32's threshold (us)", lambda c: f(c["margin_zero"], "%.2f"), "> 0 (observer +-0.1)", "bit"),
+    ("1-bit pulse above AM32's threshold (us)", lambda c: f(c["margin_one"], "%.2f"), "> 0 (observer +-0.1)", "bit"),
     ("worst frame length off the learned one (%)", lambda c: f(c["worst_pct"], "%.1f"), "< 6.25", "window"),
     ("frames outside the learned window", lambda c: str(c["outside"]), "0", "window"),
     ("shortest edge interval, first 8 frames (us)",
@@ -214,11 +214,11 @@ def main():
     args = parser.parse_args()
     by_speed = {}
     for path in sorted(args.files):
-        start, channels, end = spy_edge_log.parse_stream(Path(path).read_bytes())
-        if not spy_edge_log.parse_end(end)["valid"]:
-            print("WARNING: %s: the spy reports lost data (%s)" % (path, end))
+        start, channels, end = observer_edge_log.parse_stream(Path(path).read_bytes())
+        if not observer_edge_log.parse_end(end)["valid"]:
+            print("WARNING: %s: the observer reports lost data (%s)" % (path, end))
         wanted = sorted(channels) if args.lines is None else [int(x) for x in args.lines.split(",")]
-        lines = [line_metrics(spy_edge_log.analyse(spy_edge_log.edges(channels[c], invert=args.unidirectional), args.unidirectional),
+        lines = [line_metrics(observer_edge_log.analyse(observer_edge_log.edges(channels[c], invert=args.unidirectional), args.unidirectional),
                               args.unidirectional) for c in wanted if c in channels]
         cell = combine(lines)
         by_speed.setdefault(cell["speed"], []).append((Path(path).stem, cell))

@@ -27,16 +27,16 @@ class SessionFilesTest(unittest.TestCase):
         self.assertTrue(session_files.is_session(folder))
 
     def test_folder_without_the_pico_record_is_not_a_session(self):
-        self.assertFalse(session_files.is_session(self.folder({"spy.bin": "x"})))
+        self.assertFalse(session_files.is_session(self.folder({"signal_observation.bin": "x"})))
         self.assertFalse(session_files.is_session(self.folder({"session.json": json.dumps({"session": "s"})})))
-        self.assertEqual({}, session_files.load_device_meta(self.folder({"spy.bin": "x"})))
+        self.assertEqual({}, session_files.load_device_meta(self.folder({"signal_observation.bin": "x"})))
 
     def test_an_esc_mock_session_is_not_evidence(self):
         mock = self.folder({"session.json": json.dumps({"session": "s", "esc_mock": {"fixture": "f.bin"}, "device": {}})})
         real = self.folder({"session.json": json.dumps({"session": "s", "esc_mock": None, "device": {}})})
         self.assertFalse(session_files.is_evidence(mock))
         self.assertTrue(session_files.is_evidence(real))
-        self.assertTrue(session_files.is_evidence(self.folder({"spy.bin": "x"})))      # no session.json: nothing marks it a mock
+        self.assertTrue(session_files.is_evidence(self.folder({"signal_observation.bin": "x"})))      # no session.json: nothing marks it a mock
 
     def test_a_leftover_meta_txt_is_not_read(self):
         folder = self.folder({"meta.txt": "outcome=completed\n"})
@@ -49,11 +49,11 @@ class SessionFilesTest(unittest.TestCase):
         self.assertFalse(session_files.is_session(folder))
 
     def test_fold_moves_meta_txt_into_the_existing_manifest(self):
-        folder = self.folder({"session.json": json.dumps({"session": "s", "spy": True}), "meta.txt": "outcome=completed\nx=1\n"})
+        folder = self.folder({"session.json": json.dumps({"session": "s", "observer": True}), "meta.txt": "outcome=completed\nx=1\n"})
         self.assertTrue(session_files.fold_device_meta(folder))
         manifest = json.loads((folder / "session.json").read_text())
         self.assertEqual({"outcome": "completed", "x": "1"}, manifest["device"])
-        self.assertTrue(manifest["spy"])
+        self.assertTrue(manifest["observer"])
         self.assertFalse((folder / "meta.txt").exists())
 
     def test_fold_creates_a_manifest_when_there_is_none(self):

@@ -6,6 +6,8 @@
 read them)
 **Later:** [ADR-007](ADR-007-esc-firmware-flash.md) (flashing; the ESCs now run AM32 2.22 and the buddy speaks settings layout 4)
 
+**Note 2026-11-12:** the wingman's recording role, called "the spy" in entries dated before 2026-11-12, is named "the observer" since then; its recording is `signal_observation.bin` (formerly `spy.bin`), its board file `observer.py` and its PC tools `observer_*.py` (formerly `spy.py`, `spy_*.py`), and its guide `OBSERVER.md` (formerly `SPY.md`). Entries dated earlier keep the old names.
+
 ## Context
 
 Every result on this bench depends on how the ESCs are configured - motor KV and pole count, startup power, timing

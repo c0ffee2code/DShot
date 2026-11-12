@@ -1,6 +1,6 @@
-# Tests of tests/bench/wingman/tools/spy_check_am32.py: every check must pass on a well-formed recording and fail
+# Tests of tests/bench/wingman/tools/observer_check_am32.py: every check must pass on a well-formed recording and fail
 # when the thing it guards is broken. Recordings are built here as edge lists (units of 0.1us) and put
-# through spy_edge_log.analyse, exactly as a real one is.
+# through observer_edge_log.analyse, exactly as a real one is.
 
 import sys
 import unittest
@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import bench_paths  # noqa: F401  (the wingman tools and driver/ are importable from here on)
 
-import spy_check_am32 as check
-import spy_edge_log
+import observer_check_am32 as check
+import observer_edge_log
 import gcr_decode
 
 PERIOD = 16.667
@@ -60,7 +60,7 @@ def recording(throttles, starts=None, replies=None, mutate=None):
         edges += frame_edges(throttle, start, **((mutate or {}).get(i, {})))
         if replies and i in replies:
             edges += reply_edges(replies[i], start + 16 * PERIOD + 300)
-    return spy_edge_log.analyse(edges)
+    return observer_edge_log.analyse(edges)
 
 
 def by_name(results):

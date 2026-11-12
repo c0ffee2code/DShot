@@ -214,7 +214,7 @@ def arm_group(group, scenario, runner, arm_times):
 def run_scenario():
     print("=== Scenario Capture ===")
 
-    # The start/end line for the wingman (tests/bench/wingman/tools/wingman_run.py): driven low first thing, so the spy can tell the line
+    # The start/end line for the wingman (tests/bench/wingman/tools/wingman_run.py): driven low first thing, so the observer can tell the line
     # was low before the test, then high from just before arming until the motors are stopped. One pin write each way;
     # with no wingman connected it changes nothing.
     line = start_line.make()
@@ -246,7 +246,7 @@ def run_scenario():
     largest_gap_us = 0
     # How the run ended, a fact for the PC: "completed", or "aborted: <reason>" (set by the except clauses below)
     outcome = ABORTED + "ended without a reason recorded"
-    line_high_us = None       # ticks_us when the start line rose, for mapping onto the spy's recording
+    line_high_us = None       # ticks_us when the start line rose, for mapping onto the observer's recording
     arm_times = [None, None]  # ticks_us of arm() and of ARMED, filled in by arm_group()
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
@@ -442,8 +442,8 @@ def run_scenario():
         if arm_times[1] is not None:
             extra["armed_ticks_us"] = arm_times[1]
         if line_high_us is not None:
-            # The Pico tick at which the start line rose: the spy records that edge, so this maps every
-            # tick in capture.bin onto the spy's time
+            # The Pico tick at which the start line rose: the observer records that edge, so this maps every
+            # tick in capture.bin onto the observer's time
             extra["line_high_ticks_us"] = line_high_us
         sink.finalize(outcome, total_records, samples_written, samples_failed, missed, largest_gap_us,
                       published_by_motor, tallies, extra)

@@ -1,5 +1,7 @@
 # BUG-009: Motors sometimes start rough
 
+**Note 2026-11-12:** the wingman's recording role, called "the spy" in entries dated before 2026-11-12, is named "the observer" since then; its recording is `signal_observation.bin` (formerly `spy.bin`), its board file `observer.py` and its PC tools `observer_*.py` (formerly `spy.py`, `spy_*.py`), and its guide `OBSERVER.md` (formerly `SPY.md`). Entries dated earlier keep the old names.
+
 **Status:** OPEN. One specific telemetry artifact has a candidate mechanism, not yet fully
 reconciled with the bench data. The mechanical question (does the motor actually turn unevenly,
 separate from telemetry) is untouched.

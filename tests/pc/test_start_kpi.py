@@ -27,7 +27,7 @@ def block(lines=None, props=None, esc_mock=False):
 
 def summary(lines=None, props=None, esc_mock=False, valid=True):
     lines = GOOD if lines is None else lines
-    return {"start": block(lines, props, esc_mock), "spy": {"valid": valid, "lines": lines}}
+    return {"start": block(lines, props, esc_mock), "observer": {"valid": valid, "lines": lines}}
 
 
 class StartBlockTest(unittest.TestCase):

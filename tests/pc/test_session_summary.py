@@ -8,11 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import bench_paths  # noqa: F401  (the wingman tools and driver/ are importable from here on)
 import session_files
 import session_summary
-import spy_check_am32
+import observer_check_am32
 
 
 def record(start, throttle, reply=None, crc_ok=True):
-    """A spy_edge_log.analyse() record with just the fields spy_stats.frame_table() reads."""
+    """An observer_edge_log.analyse() record with just the fields observer_stats.frame_table() reads."""
     bits = [1, 0] * 8
     return {"start": start, "edges": 32, "tx_edges": None, "reply": reply,
             "tx": {"throttle": throttle, "crc_ok": crc_ok, "bits": bits, "lows": [12] * 16, "periods": [17] * 16}}
@@ -32,7 +32,7 @@ ARMED_LOG = "Armed after 2000ms.\n"
 
 def wire_line(line=0, gpio=6, mode="bidirectional", commanded=True, frames_reasons=(), spin_reasons=(), notes=(), expect=None,
               scenario_max_throttle=None, **facts):
-    """A spy_summary() line as the proofs read it: a healthy commanded line unless a fact says otherwise."""
+    """An observer_summary() line as the proofs read it: a healthy commanded line unless a fact says otherwise."""
     base = {"commanded": commanded, "frames": 100, "answered_pct": 100.0, "replies_real_erpm": 90, "replies_not_running": 0,
             "not_running_after_first_real_erpm": 0, "early_replies": 0, "slow_gaps": 0, "last_throttle": 0, "stop_commanded": True}
     base.update(facts)
@@ -42,11 +42,11 @@ def wire_line(line=0, gpio=6, mode="bidirectional", commanded=True, frames_reaso
 
 
 def stand_in_wire(test, valid, mode="bidirectional", reasons=(), lines=None, missing_pins=()):
-    """Replace the spy.bin analysis with one commanded line (or the given lines), so a folder needs only a placeholder spy.bin."""
-    real = session_summary.spy_summary
-    session_summary.spy_summary = lambda *a, **k: {"valid": valid, "missing_pins": list(missing_pins),
+    """Replace the signal_observation.bin analysis with one commanded line (or the given lines), so a folder needs only a placeholder signal_observation.bin."""
+    real = session_summary.observer_summary
+    session_summary.observer_summary = lambda *a, **k: {"valid": valid, "missing_pins": list(missing_pins),
                                                    "lines": lines if lines is not None else [wire_line(mode=mode, spin_reasons=reasons)]}
-    test.addCleanup(setattr, session_summary, "spy_summary", real)
+    test.addCleanup(setattr, session_summary, "observer_summary", real)
 
 
 class ParseTest(unittest.TestCase):
@@ -161,8 +161,8 @@ class ReasonTest(unittest.TestCase):
         self.assertEqual(1, len(session_summary.line_reasons(self.line(real=5, lost=session_summary.LOST_SPIN_FRAMES))))
 
     def test_a_failed_am32_check_is_a_reason_a_warning_is_not(self):
-        fail = spy_check_am32.Result("crc", spy_check_am32.FAIL, "bad", "")
-        warn = spy_check_am32.Result("late", spy_check_am32.WARN, "slow", "")
+        fail = observer_check_am32.Result("crc", observer_check_am32.FAIL, "bad", "")
+        warn = observer_check_am32.Result("late", observer_check_am32.WARN, "slow", "")
         self.assertEqual(1, len(session_summary.line_reasons(self.line(real=5, lost=0, checks=[fail, warn]))))
 
     def test_unidirectional_line_needs_no_eRPM(self):
@@ -236,7 +236,7 @@ class ArmingPhaseTest(unittest.TestCase):
         folder.mkdir()
         (folder / "session.json").write_text(DEVICE_COMPLETED, encoding="utf-8")
         (folder / "run.log").write_text(ARMED_LOG, encoding="utf-8")
-        (folder / "spy.bin").write_bytes(b"x")
+        (folder / "signal_observation.bin").write_bytes(b"x")
         summary = session_summary.summarize(folder)
         self.assertEqual("pass", summary["verdict"])
         self.assertEqual(1, len(summary["notes"]))
@@ -246,30 +246,30 @@ class ArmingPhaseTest(unittest.TestCase):
         self.assertIn("note (not judged, not a failure): " + note, session_summary.table(summary))
 
     def test_end_to_end_the_scenarios_thresholds_reach_the_window_and_the_session_passes_with_the_note(self):
-        # the real spy_summary() and summarize() on a folder with a scenario.json; only the spy.bin parsing is stood in for
-        import spy_edge_log
+        # the real observer_summary() and summarize() on a folder with a scenario.json; only the signal_observation.bin parsing is stood in for
+        import observer_edge_log
         records = self.records()
         patches = {"parse_stream": lambda b: ("pins=6 sync_pin=15", {0: b"a"}, "end"),
                    "parse_end": lambda e: {"valid": True}, "reconcile": lambda c, i: [],
                    "edges": lambda c, invert=False: [(0, 0)], "analyse": lambda e, u: records}
         for name, fn in patches.items():
-            self.addCleanup(setattr, spy_edge_log, name, getattr(spy_edge_log, name))
-            setattr(spy_edge_log, name, fn)
-        self.addCleanup(setattr, spy_check_am32, "run_checks", spy_check_am32.run_checks)
-        spy_check_am32.run_checks = lambda records, unidirectional, from_first_frame: []
+            self.addCleanup(setattr, observer_edge_log, name, getattr(observer_edge_log, name))
+            setattr(observer_edge_log, name, fn)
+        self.addCleanup(setattr, observer_check_am32, "run_checks", observer_check_am32.run_checks)
+        observer_check_am32.run_checks = lambda records, unidirectional, from_first_frame: []
         scenario = {"expect": {"min_crc_valid_pct": {"0": 99.0}, "min_median_erpm": {"0": 10000}},
                     "motors": [{"pin": 6, "bidirectional": True, "profile": [{"type": "hold", "throttle": 215, "duration_ms": 1000}]}]}
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         folder = Path(tmp.name) / "2026-11-11_09-00-00"
         folder.mkdir()
-        (folder / "session.json").write_text(json.dumps({"spy": True, "device": {"outcome": "completed"}}), encoding="utf-8")
+        (folder / "session.json").write_text(json.dumps({"observer": True, "device": {"outcome": "completed"}}), encoding="utf-8")
         (folder / "scenario.json").write_text(json.dumps(scenario), encoding="utf-8")
         (folder / "run.log").write_text("Armed after 2636ms.\n", encoding="utf-8")
-        (folder / "spy.bin").write_bytes(b"x")
+        (folder / "signal_observation.bin").write_bytes(b"x")
         summary = session_summary.summarize(folder)
         self.assertEqual("pass", summary["verdict"], summary["reasons"])
-        line = summary["spy"]["lines"][0]
+        line = summary["observer"]["lines"][0]
         self.assertEqual({"min_crc_valid_pct": 99.0, "min_median_erpm": 10000}, line["expect"])
         self.assertEqual(100, line["facts"]["before_step"]["replies_bad_crc"])
         self.assertIn("and met the scenario's 2 decode threshold(s)", [p for p in summary["proofs"] if p["name"] == "motors spun as specified"][0]["detail"])
@@ -309,28 +309,28 @@ class SummarizeFolderTest(unittest.TestCase):
         self.assertIn("completed on the Pico", summary["notes"][0])
         self.assertIn("UNKNOWN", session_summary.table(summary))
         self.assertEqual(2000, summary["device"]["armed_ms"])
-        self.assertIsNone(summary["spy"])
+        self.assertIsNone(summary["observer"])
         self.assertEqual(["session.json", "session.json:device", "run.log"], summary["sources"])
 
     def test_a_completed_run_with_a_valid_recording_passes_and_with_an_invalid_one_fails(self):
         stand_in_wire(self, True)
-        summary = session_summary.summarize(self.folder({"session.json": DEVICE_COMPLETED, "spy.bin": "x", "run.log": ARMED_LOG}))
+        summary = session_summary.summarize(self.folder({"session.json": DEVICE_COMPLETED, "signal_observation.bin": "x", "run.log": ARMED_LOG}))
         self.assertEqual("pass", summary["verdict"])
         self.assertEqual([], summary["notes"])
         stand_in_wire(self, False)
-        summary = session_summary.summarize(self.folder({"session.json": DEVICE_COMPLETED, "spy.bin": "x", "run.log": ARMED_LOG}))
+        summary = session_summary.summarize(self.folder({"session.json": DEVICE_COMPLETED, "signal_observation.bin": "x", "run.log": ARMED_LOG}))
         self.assertEqual("fail", summary["verdict"])
         self.assertIn("cannot be trusted", summary["reasons"][0])
 
     def test_unidirectional_lines_only_pass_on_a_valid_recording_without_replies(self):
         stand_in_wire(self, True, mode="unidirectional")
-        summary = session_summary.summarize(self.folder({"session.json": DEVICE_COMPLETED, "spy.bin": "x", "run.log": ARMED_LOG}))
+        summary = session_summary.summarize(self.folder({"session.json": DEVICE_COMPLETED, "signal_observation.bin": "x", "run.log": ARMED_LOG}))
         self.assertEqual("pass", summary["verdict"])
         self.assertEqual([], summary["reasons"])
 
     def test_a_failed_outcome_fails_with_or_without_a_recording(self):
         stand_in_wire(self, True)
-        with_wire = session_summary.summarize(self.folder({"session.json": DEVICE_ABORTED, "spy.bin": "x"}))
+        with_wire = session_summary.summarize(self.folder({"session.json": DEVICE_ABORTED, "signal_observation.bin": "x"}))
         without = session_summary.summarize(self.folder({"session.json": DEVICE_ABORTED}))
         self.assertEqual(["fail", "fail"], [with_wire["verdict"], without["verdict"]])
         self.assertIn("no wire recording", without["notes"][0])
@@ -344,14 +344,15 @@ class SummarizeFolderTest(unittest.TestCase):
         self.assertIn("arming did not complete", armed["detail"])
 
     def test_a_missing_recording_names_why_it_is_missing(self):
-        without = session_summary.summarize(self.folder({"session.json": json.dumps({"spy": False, "device": {"outcome": "completed"}})}))
+        # a device script run on the Pico alone has no recording by design; a recording that failed to arrive is told apart
+        without = session_summary.summarize(self.folder({"session.json": json.dumps({"observer": False, "device": {"outcome": "completed"}})}))
         self.assertEqual("unknown", without["verdict"])
-        self.assertIn("run without the wingman", without["notes"][0])
-        lost = session_summary.summarize(self.folder({"session.json": json.dumps({"spy": True, "device": {"outcome": "completed"}})}))
+        self.assertIn("this device script was run on the Pico alone, without the wingman", without["notes"][0])
+        lost = session_summary.summarize(self.folder({"session.json": json.dumps({"observer": True, "device": {"outcome": "completed"}})}))
         self.assertEqual("unknown", lost["verdict"])
-        self.assertIn("the wingman was started for this session but no spy.bin arrived", lost["notes"][0])
+        self.assertIn("the wingman was started for this session but no signal_observation.bin arrived", lost["notes"][0])
         detail = [p["detail"] for p in lost["proofs"] if p["name"] == "wire recording complete"][0]
-        self.assertIn("no spy.bin arrived", detail)
+        self.assertIn("no signal_observation.bin arrived", detail)
 
     def test_a_folder_with_nothing_to_judge_is_unknown(self):
         self.assertEqual("unknown", session_summary.summarize(self.folder({"session.json": "{}"}))["verdict"])
@@ -366,25 +367,25 @@ class SummarizeFolderTest(unittest.TestCase):
         # stand-in wire summaries: one commanded line that kept answering, one run that never commanded anything
         def with_wire(commanded):
             stand_in_wire(self, True, lines=[wire_line(commanded=commanded)])
-            return session_summary.summarize(self.folder({"session.json": json.dumps({"command": ["test_x.py"]}), "spy.bin": "x"}))
+            return session_summary.summarize(self.folder({"session.json": json.dumps({"command": ["test_x.py"]}), "signal_observation.bin": "x"}))
         self.assertEqual("pass", with_wire(True)["verdict"])
         self.assertEqual("fail", with_wire(False)["verdict"])
         self.assertIn("no line was commanded", with_wire(False)["reasons"][0])
 
     def test_a_line_the_scenario_does_not_use_and_nothing_was_sent_on_is_not_driven(self):
-        import spy_edge_log
+        import observer_edge_log
         patches = {"parse_stream": lambda b: ("pins=6,7 sync_pin=15", {0: b"a", 1: b"b"}, "end"),
                    "parse_end": lambda e: {"valid": True}, "reconcile": lambda c, i: [],
                    "edges": lambda c, invert=False: [(0, 0)],
                    "analyse": lambda e, u: [record(0, 100)] if e is not None and self.calls.pop() else []}
         self.calls = [False, True]            # line 0 gets a frame, line 1 none
         for name, fn in patches.items():
-            self.addCleanup(setattr, spy_edge_log, name, getattr(spy_edge_log, name))
-            setattr(spy_edge_log, name, fn)
-        self.addCleanup(setattr, spy_check_am32, "run_checks", spy_check_am32.run_checks)
-        spy_check_am32.run_checks = lambda records, unidirectional, from_first_frame: []
+            self.addCleanup(setattr, observer_edge_log, name, getattr(observer_edge_log, name))
+            setattr(observer_edge_log, name, fn)
+        self.addCleanup(setattr, observer_check_am32, "run_checks", observer_check_am32.run_checks)
+        observer_check_am32.run_checks = lambda records, unidirectional, from_first_frame: []
         scenario = {"motors": [{"pin": 6, "bidirectional": False}]}
-        lines = session_summary.spy_summary(b"x", scenario)["lines"]
+        lines = session_summary.observer_summary(b"x", scenario)["lines"]
         self.assertEqual(["unidirectional", "not driven"], [line["mode"] for line in lines])
         self.assertEqual([], lines[1]["reasons"])
         self.assertEqual({}, lines[1]["checks"]["counts"])
@@ -400,16 +401,65 @@ class SummarizeFolderTest(unittest.TestCase):
         self.assertIn("the Pico aborted the run", text)
 
 
+class StartFailureTest(unittest.TestCase):
+    """A session that did not start (session.json "start_failure") is failed with the reason; its other proofs are not shown."""
+
+    def folder(self, who, message, extra=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name) / "2026-11-12_09-00-00"
+        folder.mkdir()
+        files = {"session.json": json.dumps({"start_failure": {"who": who, "message": message}, "device": {"outcome": "completed"}}),
+                 "run.log": "Armed after 2000ms.\n"}
+        files.update(extra or {})
+        for name, text in files.items():
+            (folder / name).write_text(text, encoding="utf-8")
+        return folder
+
+    def test_a_wingman_that_did_not_start_fails_the_session_with_its_reason(self):
+        summary = session_summary.summarize(self.folder("wingman", "the wingman Pico (ID 5d70) is not connected"))
+        self.assertEqual("fail", summary["verdict"])
+        self.assertEqual(["the wingman did not start: the wingman Pico (ID 5d70) is not connected"], summary["reasons"])
+        self.assertEqual({"who": "wingman", "message": "the wingman Pico (ID 5d70) is not connected"}, summary["start_failure"])
+
+    def test_a_main_pico_that_did_not_start_names_the_main_pico(self):
+        summary = session_summary.summarize(self.folder("main_pico", "the upload to it did not complete"))
+        self.assertEqual("fail", summary["verdict"])
+        self.assertEqual(["the main Pico did not start: the upload to it did not complete"], summary["reasons"])
+
+    def test_the_other_proofs_are_not_shown_and_nothing_cascades(self):
+        summary = session_summary.summarize(self.folder("wingman", "x"))
+        self.assertEqual(["failed"] + ["not shown"] * 5, [p["status"] for p in summary["proofs"]])
+        self.assertEqual("run finished cleanly", summary["proofs"][0]["name"])
+        self.assertEqual([], summary["notes"])
+        self.assertIsNone(summary["observer"])
+        self.assertIsNone(summary["device"]["armed_ms"])        # run.log is not read as the record of a run
+        self.assertIsNone(summary["device"]["outcome"])
+        self.assertIn("did not start", session_summary.table(summary))
+
+    def test_a_recording_left_in_the_folder_is_not_read(self):
+        summary = session_summary.summarize(self.folder("main_pico", "x", {"signal_observation.bin": "not a stream"}))
+        self.assertIsNone(summary["observer"])
+        self.assertEqual("fail", summary["verdict"])
+
+    def test_re_running_on_the_folder_gives_the_same_verdict(self):
+        folder = self.folder("wingman", "x")
+        first = session_summary.write_summary(folder)
+        again = session_summary.summarize(folder)
+        self.assertEqual((first["verdict"], first["reasons"], first["proofs"]), (again["verdict"], again["reasons"], again["proofs"]))
+        self.assertEqual("fail", json.loads((folder / "summary.json").read_text())["verdict"])
+
+
 class ProofTest(unittest.TestCase):
     """The verdict is built from required proofs: pass needs every applicable one shown."""
 
     def summary(self, files=None, scenario=None, manifest=None, **wire):
-        files = {"run.log": ARMED_LOG, "spy.bin": "x"} if files is None else dict(files)
+        files = {"run.log": ARMED_LOG, "signal_observation.bin": "x"} if files is None else dict(files)
         manifest = {"device": {"outcome": "completed"}, **(manifest or {})}
         files["session.json"] = json.dumps(manifest)
         if scenario is not None:
             files["scenario.json"] = json.dumps(scenario)
-        if "spy.bin" in files:
+        if "signal_observation.bin" in files:
             stand_in_wire(self, **{"valid": True, **wire})
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -423,6 +473,7 @@ class ProofTest(unittest.TestCase):
         return {p["name"]: p["status"] for p in summary["proofs"]}[name]
 
     def test_a_healthy_run_shows_all_six_proofs(self):
+        self.assertIsNone(self.summary()["start_failure"])
         summary = self.summary()
         self.assertEqual("pass", summary["verdict"])
         self.assertEqual(6, len(summary["proofs"]))
@@ -434,7 +485,7 @@ class ProofTest(unittest.TestCase):
         late = "Armed after %dms.\n" % session_summary.CLEAN_ARM_THRESHOLD_MS
         cases = {
             "run finished cleanly": dict(manifest={"device": {"outcome": "aborted: Core 1 loop did not stop before disarm()"}}),
-            "armed within the bound": dict(files={"run.log": late, "spy.bin": "x"}),
+            "armed within the bound": dict(files={"run.log": late, "signal_observation.bin": "x"}),
             "wire recording complete": dict(valid=False),
             "our frames were correct": dict(lines=[wire_line(frames_reasons=["line 0 (channel 1): AM32 check failed: CRC"])]),
             "motors spun as specified": dict(lines=[wire_line(spin_reasons=["line 0 (channel 1): commanded to spin but never reported a real eRPM"])]),
@@ -450,7 +501,7 @@ class ProofTest(unittest.TestCase):
     def test_every_proof_can_be_not_shown_and_then_the_verdict_is_unknown(self):
         cases = {
             "run finished cleanly": dict(manifest={"device": None}),
-            "armed within the bound": dict(files={"spy.bin": "x"}),
+            "armed within the bound": dict(files={"signal_observation.bin": "x"}),
             "wire recording complete": dict(files={"run.log": ARMED_LOG}),
             "our frames were correct": dict(files={"run.log": ARMED_LOG}),
             "motors spun as specified": dict(files={"run.log": ARMED_LOG}),
@@ -464,14 +515,14 @@ class ProofTest(unittest.TestCase):
                 self.assertEqual([], summary["reasons"])
 
     def test_a_missing_arming_time_is_unknown_and_a_late_one_is_a_failure(self):
-        missing = self.summary(files={"spy.bin": "x"})
+        missing = self.summary(files={"signal_observation.bin": "x"})
         self.assertEqual("unknown", missing["verdict"])
         self.assertIn("no arming time", missing["notes"][0])
-        late = self.summary(files={"run.log": "Armed after 4600ms.\n", "spy.bin": "x"})
+        late = self.summary(files={"run.log": "Armed after 4600ms.\n", "signal_observation.bin": "x"})
         self.assertEqual("fail", late["verdict"])
         self.assertIn("4600 ms", late["reasons"][0])
         on_the_bound = "Armed after %dms.\n" % session_summary.CLEAN_ARM_THRESHOLD_MS
-        self.assertEqual("fail", self.summary(files={"run.log": on_the_bound, "spy.bin": "x"})["verdict"])
+        self.assertEqual("fail", self.summary(files={"run.log": on_the_bound, "signal_observation.bin": "x"})["verdict"])
 
     def test_the_bound_is_the_one_run_scenarios_uses(self):
         import arming_bound
@@ -545,33 +596,33 @@ class ProofTest(unittest.TestCase):
         self.assertFalse(session_summary.line_facts([record(0, 0, None)], False)["stop_commanded"])
 
     def test_the_esc_mock_makes_arming_and_spin_not_shown_so_the_verdict_is_unknown_and_keeps_the_note(self):
-        summary = self.summary(files={"spy.bin": "x"}, manifest={"esc_mock": {"replays": "x"}})
+        summary = self.summary(files={"signal_observation.bin": "x"}, manifest={"esc_mock": {"replays": "x"}})
         self.assertEqual("not shown", self.status(summary, "armed within the bound"))
         self.assertEqual("not shown", self.status(summary, "motors spun as specified"))
         self.assertEqual("unknown", summary["verdict"])
         self.assertIn("ESC mock", summary["notes"][0])
 
     def test_an_esc_mock_session_with_a_real_failure_still_fails(self):
-        summary = self.summary(files={"spy.bin": "x"}, manifest={"esc_mock": {"replays": "x"}, "device": {"outcome": ARMING_REFUSED}})
+        summary = self.summary(files={"signal_observation.bin": "x"}, manifest={"esc_mock": {"replays": "x"}, "device": {"outcome": ARMING_REFUSED}})
         self.assertEqual("fail", summary["verdict"])
 
     def test_a_device_script_is_judged_from_the_wire(self):
         manifest = {"command": ["test_x.py"], "device": None}
-        summary = self.summary(files={"spy.bin": "x"}, manifest=manifest, lines=[wire_line(mode="unknown")])
+        summary = self.summary(files={"signal_observation.bin": "x"}, manifest=manifest, lines=[wire_line(mode="unknown")])
         self.assertEqual("not applicable", self.status(summary, "run finished cleanly"))
         self.assertEqual("not applicable", self.status(summary, "armed within the bound"))
         self.assertEqual("pass", summary["verdict"])
         self.assertIn("no scenario says", summary["limitations"][0])
-        idle = self.summary(files={"spy.bin": "x"}, manifest=manifest, lines=[wire_line(mode="unknown", commanded=False)])
+        idle = self.summary(files={"signal_observation.bin": "x"}, manifest=manifest, lines=[wire_line(mode="unknown", commanded=False)])
         self.assertEqual("fail", idle["verdict"])
         self.assertIn("no line was commanded", idle["reasons"][0])
 
     def test_a_script_that_reports_an_arming_time_over_the_bound_fails(self):
-        late = self.summary(files={"run.log": "Armed after 5000ms.\n", "spy.bin": "x"}, manifest={"command": ["t.py"], "device": None})
+        late = self.summary(files={"run.log": "Armed after 5000ms.\n", "signal_observation.bin": "x"}, manifest={"command": ["t.py"], "device": None})
         self.assertEqual("fail", late["verdict"])
 
     def test_an_aborted_run_is_a_fail_with_or_without_a_recording(self):
-        for files in ({"spy.bin": "x"}, {}):
+        for files in ({"signal_observation.bin": "x"}, {}):
             summary = self.summary(files=files, manifest={"device": {"outcome": "aborted: motor 0 throttle=215: no real eRPM for 2004ms > limit=2000ms"}})
             self.assertEqual("fail", summary["verdict"])
             self.assertIn("no real eRPM for 2004ms", summary["reasons"][0])
@@ -581,18 +632,18 @@ class ProofTest(unittest.TestCase):
         self.assertEqual("failed", self.status(summary, "run finished cleanly"))
         self.assertIn("does not say the run completed (outcome: running", summary["reasons"][0])
 
-    def test_missing_pins_are_reported_by_spy_summary(self):
-        import spy_edge_log
+    def test_missing_pins_are_reported_by_observer_summary(self):
+        import observer_edge_log
         patches = {"parse_stream": lambda b: ("pins=6 sync_pin=15", {0: b"a"}, "end"),
                    "parse_end": lambda e: {"valid": True}, "reconcile": lambda c, i: [],
                    "edges": lambda c, invert=False: [(0, 0)], "analyse": lambda e, u: [record(0, 100)]}
         for name, fn in patches.items():
-            self.addCleanup(setattr, spy_edge_log, name, getattr(spy_edge_log, name))
-            setattr(spy_edge_log, name, fn)
-        self.addCleanup(setattr, spy_check_am32, "run_checks", spy_check_am32.run_checks)
-        spy_check_am32.run_checks = lambda records, unidirectional, from_first_frame: []
+            self.addCleanup(setattr, observer_edge_log, name, getattr(observer_edge_log, name))
+            setattr(observer_edge_log, name, fn)
+        self.addCleanup(setattr, observer_check_am32, "run_checks", observer_check_am32.run_checks)
+        observer_check_am32.run_checks = lambda records, unidirectional, from_first_frame: []
         scenario = {"motors": [{"pin": 6, "bidirectional": False}, {"pin": 7, "bidirectional": False}]}
-        self.assertEqual([7], session_summary.spy_summary(b"x", scenario)["missing_pins"])
+        self.assertEqual([7], session_summary.observer_summary(b"x", scenario)["missing_pins"])
 
 
 class PropellersTest(unittest.TestCase):

@@ -1,6 +1,6 @@
 # ESC mock
 
-The wingman's second role (the first is the spy, `SPY.md`): **replays recorded ESC replies, so the main Pico's reply path runs with
+The wingman's second role (the first is the observer, `OBSERVER.md`): **replays recorded ESC replies, so the main Pico's reply path runs with
 no ESC and no motor.** It tests our side of the link (receiver state machine, FIFO drain, mailbox, Core 0 decoding, the scenario
 mechanics). It says nothing about an ESC, a motor, AM32's behaviour or arming on real hardware.
 
@@ -16,7 +16,7 @@ mechanics). It says nothing about an ESC, a motor, AM32's behaviour or arming on
 
 **The ESC must be disconnected from the signal lines.** The mock drives the scenario's bidirectional motor pins on
 the wingman while it answers; a connected ESC would be driven against. Wiring is the wingman's convention (README.md): the same GPIO
-numbers on both boards plus a shared ground. `run_session.py --esc-mock` starts the mock and the recorder together on the spy
+numbers on both boards plus a shared ground. `run_session.py --esc-mock` starts the mock and the recorder together on the observer
 board (the recorder keeps recording the true wire, so the mock's timing is verified from the recording), runs the
 scenario on the main Pico, and resets the wingman afterwards so it cannot keep answering. The session's
 `session.json` carries `esc_mock`, and `summary.json` notes that the replies were replayed.
@@ -43,7 +43,7 @@ again in its own `finally` for every `--esc-mock` session (a killed launcher run
 
 ## Fixture provenance
 
-`esc_mock_replies_dshot600.bin` was built on 2026-11-01 from `captures/2026-11-01_11-36-52/spy.bin` (four-channel bidirectional
+`esc_mock_replies_dshot600.bin` was built on 2026-11-01 from `captures/2026-11-01_11-36-52/signal_observation.bin` (four-channel bidirectional
 DSHOT600, throttle 215, Gemfan D2.2 props, git commit `02e08c8`), the first 1024 CRC-valid real-eRPM replies per line
 after 5 s: median eRPM 52,632 / 53,004 / 52,265 / 52,632. `captures/` is deleted from time to time, so the fixture is
 committed; rebuild it with `tests/bench/wingman/tools/esc_mock_fixture.py` from any session of the same kind.
@@ -70,6 +70,6 @@ carries it under `esc_mock.source`, so a mock session says which recorded replie
 - `four_channel_bidirectional_600.json` with the mock: ARMED 2003 ms, 34 decodes per motor, all CRC ok, PASS (same as before).
 - A mixed scenario (motor 1 bidirectional, motors 2-4 unidirectional): the mock answered line 1 only; ARMED 2003 ms, 36 decodes on motor 1,
   and the three unidirectional lines were recorded and judged as unidirectional with no replies on them. PASS.
-- `four_channel_unidirectional_600.json`, spy only: completed, four lines recorded, PASS.
+- `four_channel_unidirectional_600.json`, observer only: completed, four lines recorded, PASS.
 - Refused before any session folder or hardware was touched: `--esc-mock` with a scenario that has no bidirectional motor, `--esc-mock`
-  with `dshot_speed` DSHOT300 (recorded replies exist for DSHOT600 only), `--spy` on a device script without a config.
+  with `dshot_speed` DSHOT300 (recorded replies exist for DSHOT600 only), `--observe` on a device script without a config.

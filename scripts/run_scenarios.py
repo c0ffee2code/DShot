@@ -13,7 +13,7 @@ Run from project root:
       JSON - for interleaving a diagnostic tool against a real scenario under
       the exact same deploy/reset path (see run_once()'s own docstring)
   every attempt is a full session (scripts/run_session.py): its own captures/<session>/ folder with the
-      spy's recording and a summary.json, pulled from the SD card as the attempt ends; the RUN line
+      observer's recording and a summary.json, pulled from the SD card as the attempt ends; the RUN line
       names it (session=) and carries its verdict (session_verdict=). Use scripts/session_summary.py on any of
       them to see its table.
   add --rotate to cycle the --scenario order by one position each round
@@ -58,9 +58,13 @@ safe to retry:
                  scenario's own (generous, research-mode) timeout.
   error          deploy succeeded but none of the above appeared - any
                  other "Outcome: aborted: <reason>" (a bail-out of the Pico,
-                 decision/ADR-008) or an unexpected crash. Always reported
+                 decision/ADR-008) or an unexpected crash, and an attempt whose
+                 wingman did not start (nothing ran on the main Pico, so it is
+                 not a deploy failure and is not retried). Always reported
                  with its full output, never silently dropped into another
-                 bucket.
+                 bucket. Every such attempt still has its session folder with
+                 a summary.json (verdict fail: ADR-008, amendment 2026-11-12
+                 (2)), so SESSION_VERDICTS counts it as fail, not no_session.
 
 Output is line-oriented key=value, one fact per field, so a long batch can be
 filtered with grep or loaded into a table without parsing prose:
@@ -211,7 +215,7 @@ def session_verdict_totals(verdicts):
 
 def run_once(scenario_path, load=None):
     """
-    Run one scenario once as a full session (scripts/run_session.py: session folder, spy, summary.json),
+    Run one scenario once as a full session (scripts/run_session.py: session folder, observer, summary.json),
     no retry (see run_attempt()).
     Returns (outcome, session_name, output, session_verdict); outcome is one of
     "deploy_failed", "clean", "reboot", "refused", "error"; session_verdict is the verdict of the session's own
@@ -224,9 +228,12 @@ def run_once(scenario_path, load=None):
     """
     try:
         session_name, output, _, summary = run_session.run_session(scenario_path, echo=False, argv=[str(scenario_path)], load=load)
-    except SystemExit as stop:          # run_session gives up with a message (the spy never started, ...)
+    except SystemExit as stop:          # run_session gives up with a message before it makes a session folder (no such scenario, ...)
         return "error", None, "run_session stopped: %s" % stop.code, None
     session_verdict = summary["verdict"]
+    failure = summary.get("start_failure")
+    if failure and failure.get("who") == "wingman":     # nothing ran on the main Pico: not a deploy failure, so no retry; the session is failed
+        return "error", session_name, output, session_verdict
 
     if not DEPLOY_OK_RE.search(output):
         return "deploy_failed", session_name, output, session_verdict

@@ -1,11 +1,11 @@
 """
-spy_stats.py - numbers and per-frame series from a spy recording (tests/bench/wingman/tools/spy_edge_log.py records).
+observer_stats.py - numbers and per-frame series from an observer recording (tests/bench/wingman/tools/observer_edge_log.py records).
 
-Pure Python, no plotting: tests/pc/test_spy_stats.py exercises it; tests/bench/wingman/tools/spy_analyze.py prints and
+Pure Python, no plotting: tests/pc/test_observer_stats.py exercises it; tests/bench/wingman/tools/observer_analyze.py prints and
 plots what it returns. Times are milliseconds from the origin given to frame_table (by default the start of the recording), durations microseconds.
 """
 
-UNIT_US = 0.1                       # spy_edge_log times are in units of 0.1us
+UNIT_US = 0.1                       # observer_edge_log times are in units of 0.1us
 
 
 def percentile(sorted_values, fraction):

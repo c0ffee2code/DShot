@@ -88,18 +88,18 @@ class EscMockCodeTest(unittest.TestCase):
         code = wingman_run.esc_mock_code(plan())
         ast.parse(code)
         self.assertIn("esc_mock.start(pins=(6,7,8,9,), fixture='esc_mock_replies_dshot600.bin', lines=(0,1,2,3,))", code)
-        self.assertIn("configure_pins=False", code)             # the spy must not hand the pins back to plain GPIO
+        self.assertIn("configure_pins=False", code)             # the observer must not hand the pins back to plain GPIO
         self.assertIn("tick=esc_mock.guard((6,7,8,9,))", code)
-        self.assertLess(code.index("esc_mock.start"), code.index("spy.run"))     # the mock first
+        self.assertLess(code.index("esc_mock.start"), code.index("observer.run"))     # the mock first
         self.assertTrue(code.rstrip().endswith("mock.stop()"))
-        self.assertLess(code.index("finally:"), code.index("mock.stop()"))      # stopped even if the spy raises
+        self.assertLess(code.index("finally:"), code.index("mock.stop()"))      # stopped even if the observer raises
 
     def test_a_mixed_scenario_mocks_only_the_bidirectional_line_and_spies_on_all(self):
         code = wingman_run.esc_mock_code(plan(bidirectional=(True, False, False, False)))
         ast.parse(code)
         self.assertIn("esc_mock.start(pins=(6,), fixture=", code)
         self.assertIn("lines=(0,))", code)
-        self.assertIn("spy.run(pins=(6,7,8,9,), sync_pin=15", code)
+        self.assertIn("observer.run(pins=(6,7,8,9,), sync_pin=15", code)
         self.assertIn("tick=esc_mock.guard((6,))", code)
         for pin in (7, 8, 9, 15):                                    # lines the mock does not play are made inputs by hand
             self.assertIn("    Pin(%d, Pin.IN)" % pin, code)
@@ -110,10 +110,10 @@ class EscMockCodeTest(unittest.TestCase):
         self.assertIn("pins=(10,11,12,13,)", code)
         self.assertNotIn("6,7,8,9", code)
 
-    def test_the_spy_only_program(self):
-        code = wingman_run.spy_code(plan(esc_mock=False, pins=(7, 9), bidirectional=(False, False)))
+    def test_the_observer_only_program(self):
+        code = wingman_run.observer_code(plan(esc_mock=False, pins=(7, 9), bidirectional=(False, False)))
         ast.parse(code)
-        self.assertIn("spy.run(pins=(7,9,), sync_pin=15, wait_ms=150000)", code)
+        self.assertIn("observer.run(pins=(7,9,), sync_pin=15, wait_ms=150000)", code)
         self.assertNotIn("esc_mock", code)
 
 
@@ -152,21 +152,21 @@ class MockSessionEndsBadlyTest(PatchedTest):
         self.process = FakeProcess(running=True)
         self.resets = []
         self.patch(run_session, "CAPTURES", Path(tmp.name) / "captures")
-        self.patch(run_session, "start_spy", lambda *a, **k: (self.process, []))
+        self.patch(run_session, "start_observer", lambda *a, **k: (self.process, []))
         self.patch(run_session.time, "sleep", lambda s: None)
         self.patch(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="Uploaded 3, failed 2.", stderr=""))
         self.patch(run_session, "collect_sd_session", lambda *a, **k: False)
         self.patch(run_session.session_summary, "write_summary", lambda folder: {"verdict": "unknown"})
         self.patch(run_session.wingman_board, "find_port", lambda: "COM7")
         self.patch(run_session.wingman_board, "reset", lambda port: self.resets.append(port))
-        run_session.run_session(scenario, spy=True, echo=False, esc_mock=esc_mock)
+        run_session.run_session(scenario, observer=True, echo=False, esc_mock=esc_mock)
 
     def test_the_board_is_reset_after_a_mock_session_whose_launcher_was_killed(self):
         self.run_it(esc_mock=True)
         self.assertTrue(self.process.killed)
         self.assertEqual(["COM7"], self.resets)
 
-    def test_a_plain_spy_session_does_not_reset_the_board(self):
+    def test_a_plain_observer_session_does_not_reset_the_board(self):
         self.run_it(esc_mock=False)
         self.assertEqual([], self.resets)
 

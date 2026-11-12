@@ -1,7 +1,7 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library, and a diagnostic.
 #
-# The start/end line to the wingman (tests/bench/wingman/board/spy.py): a recorded test holds this GPIO
-# high from just before it arms until the motors are stopped, and the spy records the ESC signal wires
+# The start/end line to the wingman (tests/bench/wingman/board/observer.py): a recorded test holds this GPIO
+# high from just before it arms until the motors are stopped, and the observer records the ESC signal wires
 # exactly while it is high. One output, nothing else; with no wingman connected it drives an unconnected
 # pin and changes nothing.
 #

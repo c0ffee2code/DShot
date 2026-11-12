@@ -9,7 +9,7 @@
 A bench run involves three machines. The **main Pico** runs a scenario (`tests/bench/dshot_protocol/run_scenario.py`): it
 arms the ESCs through `MotorGroup`, follows each motor's throttle profile and polls the telemetry. The **wingman**, a second
 Pico 2, records every edge of the signal lines and the start line (`tests/bench/wingman/`), so every frame sent and every
-reply received is on its recording (`spy.bin`). The **PC** names the session, collects both records and computes
+reply received is on its recording (`signal_observation.bin`). The **PC** names the session, collects both records and computes
 `summary.json` (`scripts/session_summary.py`), whose verdict is built from required proofs (BUG-008, amendment (2) of
 2026-11-11).
 
@@ -51,12 +51,15 @@ Decided 2026-11-11.
      with zero, so a caller still sees a run that stopped early.
    - The verdict of a session (`pass`, `fail`, `unknown`) is made on the PC only, by `scripts/session_summary.py`. The PC has
      every reply on the wire, not a sample, and the computing capacity to judge as many dimensions as needed.
-2. **The wingman is a permanent part of the DShot test bench.** Every bench run is recorded by it. A run without its
-   recording has not been judged: its verdict is `unknown`.
+2. **The wingman is a permanent part of the DShot test bench.** Every bench run with an ESC is recorded by it, and no
+   scenario can be run without it. A session whose recording is missing has not been judged: its verdict is `unknown`.
+   (Amendment 2026-11-12: the option that ran a scenario without the wingman is removed. Motivation: the wingman is an
+   integral part of the quality assurance of the DShot driver, and no bench test with an ESC is run without it. A device
+   script on the Pico alone, with no ESC, is not such a test and is recorded only when asked.)
 3. **The scenario's decode thresholds are judged from the throttle step onward.** `expect.min_crc_valid_pct` and
    `expect.min_median_erpm` are judged on the PC, per line, on the replies from the first frame carrying a throttle of 48 or
    more, which is what "the motors spun as specified" means. On the wire that frame is located as the first of three
-   consecutive frames of ours with the same throttle of 48 or more (`spy_start_summary.find_step`, the step the spin-up figure
+   consecutive frames of ours with the same throttle of 48 or more (`observer_start_summary.find_step`, the step the spin-up figure
    is measured from), so a single frame garbled by an overlapping reply cannot move the boundary. Replies before the step
    (the arming phase) are counted and reported per line as facts (`before_step`: replies, replies with a bad CRC, replies
    starting less than 10 us after our frame) and printed as a note when any had a bad CRC or started early; they are not
@@ -100,11 +103,11 @@ on the bench the main Pico is the application of the library, and it in turn rep
   checks only that agreement and exits non-zero on a disagreement).
 - `expect.max_gap_ms` and `expect.min_record_rate_hz` remain bail-outs on the Pico. They measure how well the main Pico's own
   polling keeps up with the captures (harness health), not the ESC.
-- A session without a wire recording has the verdict `unknown`; the note names the reason (run with the spy off, or the
-  wingman started but no `spy.bin` arrived). `scripts/run_session.py` starts the wingman by default for a scenario and stops
-  before the main Pico runs anything when the wingman is not connected. `--no-spy` remains for a run that is knowingly not
-  judged. A device script run on unused pins with no ESC (CLAUDE.md, "Pico-only runs need no permission") is not a bench
-  run with ESCs and keeps the spy off by default.
+- A session without a wire recording has the verdict `unknown`; the note names the reason (the wingman started but no
+  `signal_observation.bin` arrived, or a device script run on the Pico alone). `scripts/run_session.py` always starts the wingman for a
+  scenario and stops before the main Pico runs anything when the wingman is not connected or does not start recording; a
+  scenario cannot be run without it. A device script run on unused pins with no ESC (CLAUDE.md, "Pico-only runs need no
+  permission") is not a bench run with ESCs and is recorded only with `--observe`.
 - `summary.json` carries per bidirectional line `step_ms`, `before_step` and `from_step` next to the whole-recording counts.
   A commanded line with no step on the wire has its thresholds `not shown`, with a note.
 - Proof "run finished cleanly" fails with the Pico's reason when the outcome is `aborted: ...`, and fails on any other
@@ -139,7 +142,47 @@ on the bench the main Pico is the application of the library, and it in turn rep
 - Refinement after those runs (PC tests only): the "armed within the bound" proof reads failed, not "not shown", when the Pico
   reports that arming did not complete. The phrase is `ARMING_REFUSED_TEXT` in `scripts/arming_bound.py`, read by
   `scripts/run_scenarios.py` and `scripts/session_summary.py`; it was checked against the retained record of the refused run.
-- Not exercised on the bench: the process exit status of an aborted run (only the batch runner's classification was seen); a run without the wingman's recording (verdict "unknown"); the bail-outs for `max_gap_ms`,
+- Not exercised on the bench: the process exit status of an aborted run (only the batch runner's classification was seen); a session whose recording did not arrive (verdict "unknown"); the bail-outs for `max_gap_ms`,
   `min_record_rate_hz`, over-speed and a Core 1 error; Ctrl-C; a command loop that does not stop before `disarm()`.
 - Whether the arming-phase activity observed on 2026-11-11 recurs, and its cause, are open; with this decision it is
   reported, not judged.
+
+## Amendment 2026-11-12: the wingman's recording role is named the observer
+
+**Decision.** The wingman's recording role, called "the spy" until now, is named "the observer". Its recording is
+`signal_observation.bin` (formerly `spy.bin`), written under that name by `wingman_run.py` and read by `scripts/session_summary.py`,
+`scripts/session_timeline.py` and `esc_mock_fixture.py`; the name is held in one place, `OBSERVATION_FILE` in
+`tests/bench/wingman/tools/observer_edge_log.py`. The command-line flag `--spy` is `--observe`, the keys `"spy"` and `"spy_end"` in
+`session.json` and `summary.json` are `"observer"` and `"observer_end"`, the board file `spy.py` is `observer.py`, the PC tools `spy_*.py` are
+`observer_*.py`, and `SPY.md` is `OBSERVER.md`. The ESC mock keeps its name.
+
+**Motivation.** A wingman does not spy: it observes what its partner does and reports it. The word also says what the role does, in line with
+decision 1: it reports facts, the PC judges.
+
+**Consequences.** Pure rename, no change of behaviour. No alias and no reader of the old names is kept (decision 4): a session folder
+that holds `spy.bin` or a `session.json` with the key `"spy"` is not read. Records dated before 2026-11-12 keep the old word.
+
+## Amendment 2026-11-12 (2): a session that did not start is a failed session
+
+**Decision.** When the wingman does not start (not connected, never reports that it is recording, cannot serve the scenario) or the main
+Pico does not start (the upload to it failed, or a scenario's console never shows its first line), the session is failed and still ends with
+the standard output: `scripts/run_session.py` writes the fact to `session.json` as `start_failure` (`who`: `wingman` or `main_pico`,
+`message`: why), puts the explaining text in `run.log`, and `scripts/session_summary.py` fails the proof "run finished cleanly" with
+`the wingman did not start: <message>` or `the main Pico did not start: <message>`; the other proofs are `not shown`. The verdict is `fail`
+and the command line exits 1. When the wingman does not start, nothing is uploaded to or run on the main Pico.
+
+**Motivation.** A wingman that was not connected stopped `run_session.py` with a message after the session folder existed, leaving a folder
+with `session.json` only and no verdict; a main Pico that did not start could read `unknown`, as if the run had started and its record
+had gone missing. A run that never started is a failure of the session, not an unjudged run, and every attempted session has a
+`summary.json` that says what happened.
+
+**Consequences.**
+
+- `session_summary.py` stays a function of the folder: it reads `start_failure` from `session.json`, so the verdict is the same when it is
+  re-run. For a session that did not start it reads neither the Pico's record nor `signal_observation.bin`.
+- A main Pico that started (its console shows `=== Scenario Capture ===`) but left no record is not a start failure; it keeps the verdict
+  rules of decision 3.
+- `run_scenarios.py`: a wingman start failure is an `error` attempt and is not retried; a failed upload keeps the classification
+  `deploy_failed`, with its single retry; the closing `SESSION_VERDICTS` counts both as `fail` (before, the first stopped the attempt with
+  no session summary and counted as `no_session`).
+- Not exercised on the bench: the wingman unplugged, and an upload to an unconnected main Pico (PC tests use stand-ins).

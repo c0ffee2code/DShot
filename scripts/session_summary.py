@@ -12,11 +12,11 @@ This is the only judge of a session (decision/ADR-008): the main Pico reports fa
 What goes in (each source is optional; what is missing is left out and named under "sources"):
   - copied from the Pico, not recomputed: how the run ended, "completed" or "aborted: <reason>" (the "outcome" of the "device" section of
     session.json), the arming time and the last error line (run.log);
-  - computed from spy.bin, per line: the line's mode (the scenario says which motors are bidirectional), frames,
+  - computed from signal_observation.bin, per line: the line's mode (the scenario says which motors are bidirectional), frames,
     how many were answered, replies with a bad CRC, replies reporting a real eRPM, replies reporting "not running" (and how many
     of those came after the line had reported a real eRPM), replies that started within 10 us of our frame, the intervals of 40-400 us between edges ("slow gaps": not
-    frames, not replies), and the verdicts of tests/bench/wingman/tools/spy_check_am32.py; per bidirectional line commanded to spin, the
-    reply counts split at the throttle step (the first of three equal frames with a throttle of 48 or more, spy_start_summary.find_step):
+    frames, not replies), and the verdicts of tests/bench/wingman/tools/observer_check_am32.py; per bidirectional line commanded to spin, the
+    reply counts split at the throttle step (the first of three equal frames with a throttle of 48 or more, observer_start_summary.find_step):
     "before_step" (the arming phase: replies, bad CRC, early starts) and "from_step" (the window the decode thresholds are judged on).
 
 The verdict is built from required proofs, not from the absence of failures. Each proof has a name, a status and a one-line detail
@@ -27,9 +27,12 @@ The verdict is built from required proofs, not from the absence of failures. Eac
   not applicable   it does not apply to this session (see below)
 The verdict is "fail" when any proof failed, "pass" only when every applicable proof is shown, and "unknown" otherwise. The proofs:
   1. run finished cleanly         the Pico's outcome is "completed" (this includes the command loop having stopped before disarm()); an
-                                  outcome "aborted: <reason>" fails it with that reason
+                                  outcome "aborted: <reason>" fails it with that reason; a session that did not start (session.json
+                                  "start_failure": who and message, written by run_session.py) fails it with "the wingman / the main
+                                  Pico did not start: <message>", and then every other proof is "not shown" ("the session did not
+                                  start"): nothing ran, so the folder's record of a run is not read
   2. armed within the bound       "Armed after N ms" in run.log is known and below CLEAN_ARM_THRESHOLD_MS (scripts/arming_bound.py)
-  3. wire recording complete      spy.bin exists, lost no data, and every motor pin of the scenario is a recorded line with a complete frame of ours
+  3. wire recording complete      signal_observation.bin exists, lost no data, and every motor pin of the scenario is a recorded line with a complete frame of ours
   4. our frames were correct      no AM32 check failed on any line, and no stray activity (40-400 us intervals) on the wires
   5. motors spun as specified     every bidirectional motor the scenario commands to spin reached a real eRPM, kept reporting one
                                   (LOST_SPIN_FRAMES) and kept answering (LOST_REPLY_FRAMES), and met the scenario's min_crc_valid_pct and
@@ -46,8 +49,8 @@ Special cases: a session played with the ESC mock is not evidence about an ESC, 
 its verdict is never "pass" (it is "unknown" when nothing failed, "fail" when something did; a note says so). A device script run through run_session.py has no scenario
 outcome: proof 1 is not applicable, proof 2 is judged only if run.log has an arming time, proof 5 needs a commanded line (the wire alone
 decides; with no scenario the motors' modes are unknown, so replies are not judged). An aborted run is "fail" with or without a
-recording; no recording at all is "unknown" with a note that names why there is none (run without the wingman, or the wingman delivered no
-spy.bin). "reasons" lists why a run failed, "notes" what was not shown and other remarks.
+recording; no recording at all is "unknown" with a note that names why there is none (a device script run on the Pico alone, or the wingman delivered no
+signal_observation.bin). "reasons" lists why a run failed, "notes" what was not shown and other remarks.
 Only the session format the current scenario runner writes is read; folders written by an older runner are not supported (ADR-008).
 """
 
@@ -63,11 +66,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bench_paths  # noqa: F401  (the wingman tools and driver/ are importable from here on)
 import session_files
-import spy_check_am32
-import spy_edge_log
-import spy_start_summary
+import observer_check_am32
+import observer_edge_log
+import observer_start_summary
 import start_kpi
-import spy_stats
+import observer_stats
 from arming_bound import ARMING_REFUSED_TEXT, CLEAN_ARM_THRESHOLD_MS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,7 +108,7 @@ def motors_by_pin(scenario):
 
 
 def pins_of_stream(start_text):
-    """The spy's start text 'pins=6,7,8,9 ...' -> {line index: GPIO}."""
+    """The observer's start text 'pins=6,7,8,9 ...' -> {line index: GPIO}."""
     for token in start_text.split():
         if token.startswith("pins="):
             return dict(enumerate(int(p) for p in token[5:].split(",")))
@@ -113,8 +116,8 @@ def pins_of_stream(start_text):
 
 
 def line_facts(records, bidirectional):
-    """The numbers about one line, from spy_edge_log.analyse() records."""
-    rows = spy_stats.frame_table(records)
+    """The numbers about one line, from observer_edge_log.analyse() records."""
+    rows = observer_stats.frame_table(records)
     frames = len(rows)
     throttles = [row["throttle"] for row in rows]
     facts = {
@@ -149,11 +152,11 @@ def line_facts(records, bidirectional):
         "median_erpm": round(statistics.median(erpms)) if erpms else None,
     })
     # spin-up: ms from the first nonzero throttle frame to 80% of the motor's own settled speed (reported, not judged: no limit is set yet)
-    step = spy_start_summary.find_step(rows) if facts["commanded"] else None
+    step = observer_start_summary.find_step(rows) if facts["commanded"] else None
     facts.update(split_at_step(rows, step))
-    spin_up_ms, settled_erpm = spy_start_summary.spin_up(rows, step) if step is not None else (None, None)
-    cut_after_ms = spy_start_summary.final_cut_after_ms(rows, step) if step is not None else None
-    hold_outside = spy_start_summary.hold_outside_pct(rows, step, spin_up_ms, settled_erpm) if step is not None else None
+    spin_up_ms, settled_erpm = observer_start_summary.spin_up(rows, step) if step is not None else (None, None)
+    cut_after_ms = observer_start_summary.final_cut_after_ms(rows, step) if step is not None else None
+    hold_outside = observer_start_summary.hold_outside_pct(rows, step, spin_up_ms, settled_erpm) if step is not None else None
     facts.update({"spin_up_ms": None if spin_up_ms is None else round(spin_up_ms, 1), "settled_erpm": settled_erpm,
                   "cut_after_ms": None if cut_after_ms is None else round(cut_after_ms, 1),
                   "step_throttle": rows[step]["throttle"] if step is not None else None,
@@ -208,10 +211,10 @@ def check_summary(results, esc_mock=False):
     notable = []
     for result in results:
         if esc_mock and result.esc_only:        # about the real ESC's own behaviour; the ESC mock answers from the first frame, with no arming silence
-            counts[spy_check_am32.NA] = counts.get(spy_check_am32.NA, 0) + 1
+            counts[observer_check_am32.NA] = counts.get(observer_check_am32.NA, 0) + 1
             continue
         counts[result.status] = counts.get(result.status, 0) + 1
-        if result.status in (spy_check_am32.FAIL, spy_check_am32.WARN):
+        if result.status in (observer_check_am32.FAIL, observer_check_am32.WARN):
             notable.append({"status": result.status, "check": result.name, "detail": result.detail})
     return {"counts": counts, "notable": notable}
 
@@ -224,7 +227,7 @@ def frame_reasons(line):
     """What makes proof 4 (our frames were correct) fail on one line: a failed AM32 check, or stray activity on the wire."""
     reasons = []
     for item in line["checks"]["notable"]:
-        if item["status"] == spy_check_am32.FAIL:
+        if item["status"] == observer_check_am32.FAIL:
             reasons.append("%s: AM32 check failed: %s" % (where_of(line), item["check"]))
     slow = line["facts"].get("slow_gaps", 0)
     if slow >= SLOW_GAPS_FLAGGED:
@@ -272,7 +275,7 @@ def expect_for(scenario, key, index):
 
 
 def judge_expect(line, min_crc_valid_pct, min_median_erpm):
-    """(reasons, notes): the scenario's decode thresholds judged on the replies the spy saw from the throttle step onward (facts
+    """(reasons, notes): the scenario's decode thresholds judged on the replies the observer saw from the throttle step onward (facts
     "from_step"), for a commanded bidirectional line; the arming phase before it is not judged (ADR-008). Too few replies to judge a
     threshold, or no step on the wire, is a note, never a failure."""
     reasons, notes = [], []
@@ -307,11 +310,11 @@ def judge_expect(line, min_crc_valid_pct, min_median_erpm):
     return reasons, notes
 
 
-def spy_summary(spy_bytes, scenario, from_first_frame=True, esc_mock=False):
-    """The wire part of the summary from the bytes of spy.bin and the scenario dict (None when unknown)."""
-    start, channels, end = spy_edge_log.parse_stream(spy_bytes)
-    info = spy_edge_log.parse_end(end)
-    problems = spy_edge_log.reconcile(channels, info)
+def observer_summary(observer_bytes, scenario, from_first_frame=True, esc_mock=False):
+    """The wire part of the summary from the bytes of signal_observation.bin and the scenario dict (None when unknown)."""
+    start, channels, end = observer_edge_log.parse_stream(observer_bytes)
+    info = observer_edge_log.parse_end(end)
+    problems = observer_edge_log.reconcile(channels, info)
     pins = pins_of_stream(start)
     by_pin = motors_by_pin(scenario) if scenario else {}
     index_of_pin = {motor["pin"]: i for i, motor in enumerate((scenario or {}).get("motors", []))}
@@ -324,15 +327,15 @@ def spy_summary(spy_bytes, scenario, from_first_frame=True, esc_mock=False):
         else:
             mode = "bidirectional" if motor.get("bidirectional") else "unidirectional"
         unidirectional = mode == "unidirectional"
-        edge_list = spy_edge_log.edges(channels[index], invert=unidirectional)
-        records = spy_edge_log.analyse(edge_list, unidirectional)
+        edge_list = observer_edge_log.edges(channels[index], invert=unidirectional)
+        records = observer_edge_log.analyse(edge_list, unidirectional)
         facts = line_facts(records, mode == "bidirectional")
         facts["slow_gaps"] = slow_gaps(edge_list)
         if mode == "unknown" and not facts["frames"]:
             mode = "not driven"         # a line the scenario does not use and nothing was sent on: nothing to judge
             checks = check_summary([])
         else:
-            checks = check_summary(spy_check_am32.run_checks(records, unidirectional, from_first_frame), esc_mock)
+            checks = check_summary(observer_check_am32.run_checks(records, unidirectional, from_first_frame), esc_mock)
         line = {"line": index, "gpio": pin, "mode": mode, "facts": facts, "checks": checks,
                 "scenario_max_throttle": scenario_max_throttle(motor)}
         line["frame_reasons"] = frame_reasons(line)
@@ -348,7 +351,7 @@ def spy_summary(spy_bytes, scenario, from_first_frame=True, esc_mock=False):
         lines.append(line)
     recorded = {line["gpio"] for line in lines}
     return {"valid": bool(info["valid"]) and not problems, "stream_problems": problems, "recording": start,
-            "spy_end": end, "lines": lines, "missing_pins": sorted(pin for pin in by_pin if pin not in recorded)}
+            "observer_end": end, "lines": lines, "missing_pins": sorted(pin for pin in by_pin if pin not in recorded)}
 
 
 def proof(name, status, detail, reasons=(), notes=()):
@@ -403,29 +406,30 @@ def proof_armed(device, is_script, esc_mock, bound_ms=CLEAN_ARM_THRESHOLD_MS):
     return proof(name, SHOWN, "armed after %d ms, under the %d ms bound" % (armed, bound_ms))
 
 
-def driven_lines(spy):
+def driven_lines(observer):
     """The lines that carry a motor: not the ones the scenario does not use and nothing was sent on."""
-    return [line for line in spy["lines"] if line["mode"] != "not driven"]
+    return [line for line in observer["lines"] if line["mode"] != "not driven"]
 
 
 def missing_recording(manifest):
-    """Why a session has no spy.bin, from what session.json says about the wingman."""
-    if manifest.get("spy") is False:
-        return "there is no wire recording: the session was run without the wingman (spy off)"
-    if manifest.get("spy"):
-        return "there is no wire recording: the wingman was started for this session but no spy.bin arrived"
-    return "there is no wire recording (spy.bin)"
+    """Why a session has no signal_observation.bin, from what session.json says about the wingman. A scenario session is always recorded, so
+    only a device script (Pico alone, recorded on request) can have been run without the wingman."""
+    if manifest.get("observer") is False:
+        return "there is no wire recording: this device script was run on the Pico alone, without the wingman"
+    if manifest.get("observer"):
+        return "there is no wire recording: the wingman was started for this session but no signal_observation.bin arrived"
+    return "there is no wire recording (signal_observation.bin)"
 
 
-def proof_recording(spy, scenario, manifest=None):
+def proof_recording(observer, scenario, manifest=None):
     name = "wire recording complete"
-    if spy is None:
+    if observer is None:
         text = missing_recording(manifest or {})
         return proof(name, NOT_SHOWN, text, notes=[text])
-    if not spy["valid"]:
-        return judge(name, ["the spy lost data or the byte counts disagree: the wire record cannot be trusted"], [], "")
-    reasons = ["GPIO %s of the scenario is not a recorded line" % pin for pin in spy.get("missing_pins", [])]
-    lines = driven_lines(spy)
+    if not observer["valid"]:
+        return judge(name, ["the observer lost data or the byte counts disagree: the wire record cannot be trusted"], [], "")
+    reasons = ["GPIO %s of the scenario is not a recorded line" % pin for pin in observer.get("missing_pins", [])]
+    lines = driven_lines(observer)
     if scenario is not None:
         pins = set(motors_by_pin(scenario))
         reasons += ["GPIO %s of the scenario has no complete frame of ours on the wire" % line["gpio"]
@@ -436,30 +440,30 @@ def proof_recording(spy, scenario, manifest=None):
         1 for line in lines if line["facts"]["frames"]))
 
 
-def wire_proof(name, spy, reasons, notes, shown_detail):
+def wire_proof(name, observer, reasons, notes, shown_detail):
     """A proof read from the lines of the recording: failed on any reason, not shown without a valid recording."""
     if reasons:
         return judge(name, reasons, [], "")
-    if spy is None:
+    if observer is None:
         return proof(name, NOT_SHOWN, "there is no wire recording")
-    if not spy["valid"]:
+    if not observer["valid"]:
         return proof(name, NOT_SHOWN, "the wire recording is not valid")
     return judge(name, [], notes, shown_detail)
 
 
-def proof_frames(spy):
-    reasons = [] if spy is None else [reason for line in spy["lines"] for reason in line.get("frame_reasons", [])]
-    count = 0 if spy is None else len(driven_lines(spy))
-    return wire_proof("our frames were correct", spy, reasons, [], "no AM32 check failed and no stray activity on %d line(s)" % count)
+def proof_frames(observer):
+    reasons = [] if observer is None else [reason for line in observer["lines"] for reason in line.get("frame_reasons", [])]
+    count = 0 if observer is None else len(driven_lines(observer))
+    return wire_proof("our frames were correct", observer, reasons, [], "no AM32 check failed and no stray activity on %d line(s)" % count)
 
 
-def proof_spin(spy, device, esc_mock):
+def proof_spin(observer, device, esc_mock):
     name = "motors spun as specified"
     if esc_mock:
         return proof(name, NOT_SHOWN, "the replies came from the ESC mock, not an ESC: they are not evidence that a motor spun")
-    if spy is None:
-        return wire_proof(name, spy, [], [], "")
-    lines = driven_lines(spy)
+    if observer is None:
+        return wire_proof(name, observer, [], [], "")
+    lines = driven_lines(observer)
     spinning = [line for line in lines if line["mode"] == "bidirectional"
                 and (line["facts"]["commanded"] or (line.get("scenario_max_throttle") or 0) >= COMMANDED_MIN)]
     reasons = [reason for line in spinning for reason in line.get("spin_reasons", [])]
@@ -474,26 +478,26 @@ def proof_spin(spy, device, esc_mock):
             if any(line["mode"] == "unknown" for line in lines) else ""))
     notes = [note for line in spinning for note in line.get("notes", [])]
     thresholds = sum(len(line.get("expect", {})) for line in spinning)
-    return wire_proof(name, spy, reasons, notes, "%d bidirectional motor(s) reached a real eRPM, kept reporting it and answering%s" % (
+    return wire_proof(name, observer, reasons, notes, "%d bidirectional motor(s) reached a real eRPM, kept reporting it and answering%s" % (
         len(spinning), ", and met the scenario's %d decode threshold(s)" % thresholds if thresholds else ""))
 
 
-def proof_stopped(spy):
+def proof_stopped(observer):
     name = "motors stopped at the end"
-    lines = [] if spy is None else [line for line in driven_lines(spy) if line["facts"]["frames"]]
+    lines = [] if observer is None else [line for line in driven_lines(observer) if line["facts"]["frames"]]
     reasons = ["%s: the last %d frames do not all carry throttle 0 (the last one carries %s): no stop was commanded" % (
         where_of(line), STOP_TAIL_FRAMES, line["facts"].get("last_throttle")) for line in lines if not line["facts"].get("stop_commanded")]
-    if spy is not None and spy["valid"] and not reasons and not lines:
+    if observer is not None and observer["valid"] and not reasons and not lines:
         return proof(name, NOT_SHOWN, "no line has frames", notes=["not shown: no line has frames, so a stop could not be seen"])
-    return wire_proof(name, spy, reasons, [], "the last %d frames of all %d line(s) carry throttle 0" % (STOP_TAIL_FRAMES, len(lines)))
+    return wire_proof(name, observer, reasons, [], "the last %d frames of all %d line(s) carry throttle 0" % (STOP_TAIL_FRAMES, len(lines)))
 
 
-def limitations(spy, scenario, esc_mock):
+def limitations(observer, scenario, esc_mock):
     """What a pass does not show, per motor: a unidirectional motor sends no reply, so the wire cannot show that it spun."""
-    if spy is not None:
-        gpios = [line["gpio"] for line in spy["lines"] if line["mode"] == "unidirectional"
+    if observer is not None:
+        gpios = [line["gpio"] for line in observer["lines"] if line["mode"] == "unidirectional"
                  and (line["facts"]["commanded"] or (line.get("scenario_max_throttle") or 0) >= COMMANDED_MIN)]
-        unknown = [line["gpio"] for line in spy["lines"] if line["mode"] == "unknown" and line["facts"]["commanded"]]
+        unknown = [line["gpio"] for line in observer["lines"] if line["mode"] == "unknown" and line["facts"]["commanded"]]
     else:
         gpios = [motor["pin"] for motor in (scenario or {}).get("motors", []) if not motor.get("bidirectional")]
         unknown = []
@@ -502,10 +506,22 @@ def limitations(spy, scenario, esc_mock):
     return out
 
 
-def build_proofs(device, spy, scenario, esc_mock=False, is_script=False, manifest=None):
-    """The six required proofs, in order. See the module docstring for what each one needs."""
-    return [proof_finished(device, is_script), proof_armed(device, is_script, esc_mock), proof_recording(spy, scenario, manifest),
-            proof_frames(spy), proof_spin(spy, device, esc_mock), proof_stopped(spy)]
+def start_failure_text(failure):
+    """The reason of a session that did not start, from session.json's "start_failure" ({"who": "wingman" | "main_pico", "message": ...})."""
+    who = {"wingman": "the wingman", "main_pico": "the main Pico"}.get(failure.get("who"), "a board")
+    return "%s did not start: %s" % (who, failure.get("message"))
+
+
+def build_proofs(device, observer, scenario, esc_mock=False, is_script=False, manifest=None):
+    """The six required proofs, in order. See the module docstring for what each one needs. A session that did not start fails the first
+    and shows none of the others."""
+    failure = (manifest or {}).get("start_failure")
+    if failure:
+        return [judge("run finished cleanly", [start_failure_text(failure)], [], "")] + [
+            proof(name, NOT_SHOWN, "the session did not start") for name in (
+                "armed within the bound", "wire recording complete", "our frames were correct", "motors spun as specified", "motors stopped at the end")]
+    return [proof_finished(device, is_script), proof_armed(device, is_script, esc_mock), proof_recording(observer, scenario, manifest),
+            proof_frames(observer), proof_spin(observer, device, esc_mock), proof_stopped(observer)]
 
 
 def verdict_of(proofs):
@@ -544,33 +560,35 @@ def summarize(folder):
     scenario, scenario_source = load_scenario(folder, manifest)
     if scenario_source:
         sources.append(scenario_source)
+    start_failure = manifest.get("start_failure") or None       # the session did not start: nothing ran, so no record of a run is read
     device = {"outcome": None, "armed_ms": None, "error": None}
-    meta = session_files.load_device_meta(folder)
+    meta = {} if start_failure else session_files.load_device_meta(folder)
     if meta:
         device["outcome"] = meta.get("outcome")
         sources.append("session.json:device")
     if (folder / "run.log").is_file():
-        device["armed_ms"], device["error"] = parse_run_log((folder / "run.log").read_text(encoding="utf-8", errors="replace"))
+        if not start_failure:
+            device["armed_ms"], device["error"] = parse_run_log((folder / "run.log").read_text(encoding="utf-8", errors="replace"))
         sources.append("run.log")
-    spy = None
-    if (folder / "spy.bin").is_file():
-        spy = spy_summary((folder / "spy.bin").read_bytes(), scenario, esc_mock=bool(manifest.get("esc_mock")))
-        sources.append("spy.bin")
+    observer = None
+    if not start_failure and (folder / observer_edge_log.OBSERVATION_FILE).is_file():
+        observer = observer_summary((folder / observer_edge_log.OBSERVATION_FILE).read_bytes(), scenario, esc_mock=bool(manifest.get("esc_mock")))
+        sources.append(observer_edge_log.OBSERVATION_FILE)
     esc_mock = bool(manifest.get("esc_mock"))
     command = manifest.get("command") or []
     is_script = bool(command) and str(command[0]).lower().endswith(".py")      # a device script: the Pico reports no scenario outcome
-    proofs = build_proofs(device, spy, scenario, esc_mock, is_script, manifest)
+    proofs = build_proofs(device, observer, scenario, esc_mock, is_script, manifest)
     reasons = [reason for p in proofs for reason in p["reasons"]]
     notes = []
     if esc_mock:
         notes.append("the replies were replayed by the ESC mock, not sent by an ESC: not evidence about an ESC, a motor or arming; "
                      "the checks about the real ESC's own behaviour (first reply after the latch, arming silence) are not applicable")
-    if spy is None:
+    if observer is None and not start_failure:
         notes.append("not judged: %s%s, so whether the motors behaved as the scenario specifies was not shown" % (
             missing_recording(manifest), "; the run completed on the Pico" if device["outcome"] == "completed" else ""))
     notes += [note for p in proofs if p["name"] != "wire recording complete" for note in p["notes"]]
-    if spy is not None and not esc_mock:
-        notes += [note for note in (arming_phase_note(line) for line in spy["lines"] if line["mode"] == "bidirectional") if note]
+    if observer is not None and not esc_mock:
+        notes += [note for note in (arming_phase_note(line) for line in observer["lines"] if line["mode"] == "bidirectional") if note]
     return {
         "session": folder.name,
         "computed": {"at": datetime.now().isoformat(timespec="seconds"), "git_commit": git_commit(), "by": "scripts/session_summary.py"},
@@ -578,13 +596,14 @@ def summarize(folder):
         "scenario": None if scenario is None else {"dshot_speed": scenario.get("dshot_speed"), "duration_ms": scenario.get("duration_ms"),
                                                     "propellers": propellers(scenario)},
         "device": device,
-        "spy": spy,
-        "start": None if spy is None else start_kpi.start_block(spy["lines"], propellers(scenario) if scenario else [], bool(manifest.get("esc_mock"))),
+        "start_failure": start_failure,
+        "observer": observer,
+        "start": None if observer is None else start_kpi.start_block(observer["lines"], propellers(scenario) if scenario else [], bool(manifest.get("esc_mock"))),
         "verdict": verdict_of(proofs),
         "proofs": [{key: p[key] for key in ("name", "status", "detail")} for p in proofs],
         "reasons": reasons,
         "notes": notes,
-        "limitations": limitations(spy, scenario, esc_mock),
+        "limitations": limitations(observer, scenario, esc_mock),
     }
 
 
@@ -609,14 +628,14 @@ def table(summary):
     device = summary["device"]
     out.append("scenario outcome: %s   armed after: %s   sources: %s" % (
         device["outcome"], "%d ms" % device["armed_ms"] if device["armed_ms"] is not None else "-", ", ".join(summary["sources"])))
-    spy = summary["spy"]
-    if spy is not None:
-        out.append("spy: %s" % ("valid" if spy["valid"] else "NOT valid"))
+    observer = summary["observer"]
+    if observer is not None:
+        out.append("observer: %s" % ("valid" if observer["valid"] else "NOT valid"))
         if summary.get("start"):
             out.append(start_kpi.start_text(summary["start"]))
         out.append("%-10s %-14s %8s %9s %10s %12s %14s %6s %9s %9s  %s" % (
             "line", "mode", "frames", "answered", "real eRPM", "not running", "idle after run", "early", "slow gaps", "spin up", "AM32 checks"))
-        for line in spy["lines"]:
+        for line in observer["lines"]:
             f = line["facts"]
             c = line["checks"]["counts"]
             if line["mode"] == "bidirectional":
@@ -628,7 +647,7 @@ def table(summary):
             spin_up = "-" if line["mode"] != "bidirectional" or not f["commanded"] else ("none" if spin_up is None else "%.0f ms" % spin_up)
             out.append("%-10s %-14s %8d %9s %10s %12s %14s %6s %9d %9s  %s" % (
                 "ch%d/GPIO%s" % (line["line"] + 1, line["gpio"]), line["mode"], f["frames"], *[str(x) for x in tail], f["slow_gaps"], spin_up,
-                " ".join("%d %s" % (n, s) for s, n in sorted(c.items()) if s != spy_check_am32.NA)))
+                " ".join("%d %s" % (n, s) for s, n in sorted(c.items()) if s != observer_check_am32.NA)))
     if summary.get("proofs"):
         out.append("proofs required for a pass (pass = every applicable one shown):")
         for p in summary["proofs"]:
