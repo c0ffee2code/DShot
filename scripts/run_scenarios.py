@@ -56,9 +56,11 @@ safe to retry:
   refused        "arming did not complete within" was printed (the arming
                  timeout's own message) - never armed at all within the
                  scenario's own (generous, research-mode) timeout.
-  error          deploy succeeded but none of the above appeared - an
-                 unexpected crash. Always reported with its full output,
-                 never silently dropped into another bucket.
+  error          deploy succeeded but none of the above appeared - any
+                 other "Outcome: aborted: <reason>" (a bail-out of the Pico,
+                 decision/ADR-008) or an unexpected crash. Always reported
+                 with its full output, never silently dropped into another
+                 bucket.
 
 Output is line-oriented key=value, one fact per field, so a long batch can be
 filtered with grep or loaded into a table without parsing prose:
@@ -73,6 +75,9 @@ filtered with grep or loaded into a table without parsing prose:
   START_KPI runs= all_spun_up= all_spun_up_pct= all_spun_up_lower95_pct= start_ok= start_ok_pct= start_ok_lower95_pct= runs_over_spin_up_limit=
       spin_up_limit_ms= out_of_scope= skipped_no_start_block= clean_runs_for_99=      (over the sessions of this batch; the run is the unit)
   SPIN_UP gpio= starts= not_spun_up= median_ms= p90_ms= max_ms= over_limit=      (one line per motor)
+  SESSION_VERDICTS runs= pass= fail= unknown= no_session=      (batch end: how many runs got each session verdict, the wider
+      judgement of scripts/session_summary.py - arming, wire recording, motors spun, motors stopped; no_session = no summary.json
+      came back. The RUN/RESULT verdict above is the arming outcome only, so a batch with all runs "pass" can still show failed sessions here.)
 pass = armed inside the bound; fail = armed late (an ESC reboot) or never armed;
 error and deploy_failed are excluded from the verdict. A field whose value is
 not known is left out of its line.
@@ -101,12 +106,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_session  # noqa: E402
 import start_kpi  # noqa: E402
+import arming_bound  # noqa: E402
 
 # A run that never got past deploy has no "failed 0" - matched separately
 # from a bare "Uploaded" line so a partial deploy (some files failed) is
 # still caught, not mistaken for success because the word appeared.
 DEPLOY_OK_RE = re.compile(r"Uploaded \d+, failed 0\.")
-REFUSED_RE = re.compile(r"arming did not complete within")
+REFUSED_RE = re.compile(re.escape(arming_bound.ARMING_REFUSED_TEXT))
 ARMED_AFTER_RE = re.compile(r"Armed after (\d+)ms\.")
 # run_scenario.py's own WARNING line (printed from its `finally`, so it's
 # there on clean/reboot/refused alike - anything that got far enough to
@@ -116,20 +122,8 @@ ARMED_AFTER_RE = re.compile(r"Armed after (\d+)ms\.")
 # only prints when the count is nonzero.
 SCHEDULE_BEHIND_RE = re.compile(r"fell behind (\d+) time\(s\)")
 
-# This IS the KPI's duration bound (BUG-002's stable-arming KPI: in >=99% of
-# attempts, every configured motor reaches ARMED within this many ms of
-# arm() - not a classification convenience). It also happens to sit in the
-# gap between the "no reboot" duration cluster (~2.1-2.6s) and the "one
-# reboot" cluster (~4.6s, one ~2.46s reboot cycle added) - reconfirmed
-# archive-wide 2026-10-04 (698 sessions): clean arms 2078-2593ms, reboot arms
-# >=4057ms, a clean ~1.4s gap with zero occupancy either side. Recheck this
-# constant if a session is ever seen landing between the clusters, or if
-# MotorGroup's own arm_duration_ms/READY_SPAN_MS defaults change (this number
-# is derived from those, not independent of them). Set to 3000 on 2026-10-13 when
-# the 3.0 s promise was published in README/CLAUDE.md (it was 3300 before);
-# 3000 still sits inside the clean/reboot gap above, so no archived session
-# changes category.
-CLEAN_ARM_THRESHOLD_MS = 3000
+# The arming bound (CLEAN_ARM_THRESHOLD_MS, with its derivation) lives in scripts/arming_bound.py, shared with session_summary.py.
+from arming_bound import CLEAN_ARM_THRESHOLD_MS  # noqa: E402,F401
 
 # A clean arm is "marginal" when it landed within this many ms of the bound:
 # still a pass, but it says the promise holds with little room. Reported next
@@ -206,6 +200,13 @@ def run_record(index, total, scenario_name, verdict, outcome, armed_ms, session,
                   session=session, pass_so_far=passes_so_far, fail_so_far=fails_so_far,
                   schedule_behind=behind, session_verdict=session_verdict, start=start,
                   spin_up_max_ms=None if spin_up_max_ms is None else round(spin_up_max_ms))
+
+
+def session_verdict_totals(verdicts):
+    """How many runs of a batch got each session verdict. verdicts: one entry per run, "pass", "fail", "unknown" or None
+    (no summary came back). Returns a dict of the SESSION_VERDICTS fields."""
+    return {"runs": len(verdicts), "pass": verdicts.count("pass"), "fail": verdicts.count("fail"),
+            "unknown": verdicts.count("unknown"), "no_session": sum(1 for v in verdicts if v not in ("pass", "fail", "unknown"))}
 
 
 def run_once(scenario_path, load=None):
@@ -285,6 +286,7 @@ def main():
              for s in scenarios}
     sessions = []
     summaries = []
+    session_verdicts = []
     in_a_row = 0
     total = len(scenarios) * args.rounds
     n = 0
@@ -303,6 +305,7 @@ def main():
                 counts[outcome] += 1
                 if session_name:
                     sessions.append(session_name)
+                session_verdicts.append(session_verdict)
                 # A deploy failure never reached the device, so there is no
                 # Core1Runner to have fallen behind - excluded from both the
                 # count and its own denominator, same as from the KPI.
@@ -377,6 +380,8 @@ def main():
             print(fields("SCHEDULE", scenario=scenario.name, attempts=behind_attempts,
                          behind_total=counts["schedule_behind_total"],
                          behind_max=counts["schedule_behind_max"]))
+    if session_verdicts:
+        print(fields("SESSION_VERDICTS", **session_verdict_totals(session_verdicts)))
     if any(s.get("start") for s in summaries):
         for line in start_kpi.format_lines(start_kpi.aggregate(summaries)):
             print(line)

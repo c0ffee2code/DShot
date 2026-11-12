@@ -56,7 +56,7 @@ class BidirCaptureSink(CaptureSinkBase):
 
         self.open_capture()
 
-    def finalize(self, outcome, capture_passes, samples_written, samples_failed, missed, largest_gap_us, published, tallies, verdict,
+    def finalize(self, outcome, capture_passes, samples_written, samples_failed, missed, largest_gap_us, published, tallies,
                  extra=None):
         """Record how the run ended and its final device-side stats in meta.txt.
 
@@ -66,9 +66,8 @@ class BidirCaptureSink(CaptureSinkBase):
         samples in capture.bin to what the ESC actually sent. `tallies` maps
         each bidirectional motor's index to the DecodeTally of the captures the
         run decoded on the device, which the analyzer repeats and compares.
-        `verdict` is "pass", or "fail: ..." naming the expectations missed. The
-        outcome stays "completed" for a run that finished but missed an
-        expectation: its capture is whole, and worth analysing.
+        `outcome` is "completed" or "aborted: <reason>". Facts only: the session
+        verdict is made on the PC (decision/ADR-008).
         """
         fields = {
             "capture_passes": str(capture_passes),
@@ -86,7 +85,6 @@ class BidirCaptureSink(CaptureSinkBase):
             fields[prefix + "crc_ok"] = str(tally.crc_ok)
             fields[prefix + "crc_fail"] = str(tally.crc_fail)
             fields[prefix + "invalid"] = str(tally.invalid)
-        fields["verdict"] = verdict
         if extra:
             for key in extra:
                 fields[key] = str(extra[key])

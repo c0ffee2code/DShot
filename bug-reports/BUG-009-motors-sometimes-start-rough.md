@@ -510,6 +510,34 @@ settings, lost-sync restarts and forced steps are ruled out) and its "Next, soft
 state-machine swap scenarios of Result 5. The earlier items here (the echo-vs-AM32 question, BUG-005, the channel-3
 isolation, the 2026-10-10 `captures Backup/`) are done or obsolete; the backup no longer exists.
 
+## Observations, 2026-11-11 (AM32 2.22; not KPI evidence; sessions not retained)
+
+Conditions of all runs: four bidirectional motors on GPIO 6-9, DSHOT600, throttle 0 to 215 held 20 s, bare shafts, the wingman
+recording every run, the driver with the throttle check off the per-tick path (BUG-005).
+
+- **Observation: one run of 15 did not arm within 18 s.** The wire recording was valid and showed no frame of ours on any of the
+  four lines for the whole attempt. All four lines were low when the recording began (in the other runs they are high and the
+  first frame starts 8.6 to 12.8 ms after the start line). The only activity was one rising edge per line at 1470.46 ms, on all
+  four lines within the recorder's 0.1 us resolution of each other. The Pico reported no reply from any motor and its command loop
+  stopped normally at the end. This resembles the open item "one frame, then 1.9-2.0 s with no frames" above (Arming 2.6 s in 2 of
+  21 starts); it is stated as a resemblance, not as the same event. The cause is not known.
+- **Observation: with the ESCs unpowered from the start, our frames were on the wire** on all four lines (refused arming, reason
+  `arming did not complete within 18000ms`, no reply from any motor). An unpowered ESC therefore does not by itself describe the
+  no-frame run above.
+- **Observation: slow arming with early bad-CRC replies.** Of the other 14 runs, 11 armed in 2112 to 2113 ms and 3 in 2630 to
+  2659 ms; the slow ones were the first or second run of their batch of five. In the two slow runs of one batch the wire showed
+  reply activity confined to the first 0.44 to 0.53 s of the recording, starting at our first frame: each such reply began less
+  than 10 us after our frame (a normal reply begins about 23 us after) and had a bad CRC; 407 to 495 of them per line on all four
+  lines in one run, about 500 on one line (channel 2) in the other; none after the throttle step. In a normal run of that batch the
+  ESC sent nothing for the first 120 ms or so and then replied cleanly. In a third slow run (2659 ms) channel 3 had 2151 replies
+  before the throttle step at 2669.5 ms, 520 of them with a bad CRC and an early start. This is the same kind of activity as the
+  2,635 ms run of Result 3.
+- **Decided:** the open question in Result 3, whether the scenario's CRC expectation should judge only the commanded phase, is
+  settled by ADR-008: the thresholds are judged from the throttle step, and the arming phase is reported as facts (counts of
+  replies, bad CRC and early starts) in the session's note, not judged.
+- **Counts:** 14 of 15 runs armed; five runs per batch; no rate is claimed.
+- **Not known:** why one run sent no frame; what the early replies are; whether either recurs.
+
 ## Related
 
 - BUG-002 - the arming-reliability investigation this spun off from, now resolved. A different

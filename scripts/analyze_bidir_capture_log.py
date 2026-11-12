@@ -16,9 +16,8 @@ each sampled word is decoded here, the per-motor tally must equal the Pico's, an
 decode here. The words carry their token, so any of them can be found on the spy's recording.
 
 Refuses a session whose meta does not say capture_kind=sampled (an older per-pass log is not read) and one whose outcome is
-not completed. Then re-checks the scenario's own "expect" thresholds: the decode thresholds on the sampled tally, the gap and
-rate thresholds from the Pico's own counters (meta largest_gap_us, capture_passes), which the log cannot show any more.
-Exits non-zero if any is missed.
+not completed. Judges no threshold: the session verdict is scripts/session_summary.py's, from the wire recording
+(decision/ADR-008). Exits non-zero when the decode here disagrees with the Pico's tally or failed flags.
 """
 
 import struct
@@ -132,30 +131,6 @@ def median(values):
     return ordered[len(ordered) // 2]
 
 
-def check_expect(expect, meta, duration_ms, per_motor):
-    failures = []
-
-    max_gap_ms = expect.get("max_gap_ms")
-    gap_us = int(meta.get("largest_gap_us", 0))
-    if max_gap_ms is not None and gap_us / 1000 > max_gap_ms:
-        failures.append(f"largest_gap={gap_us / 1000:.1f}ms > max_gap_ms={max_gap_ms}")
-
-    min_rate = expect.get("min_record_rate_hz")
-    if min_rate is not None and duration_ms > 0 and "capture_passes" in meta:
-        rate = int(meta["capture_passes"]) / (duration_ms / 1000)
-        if rate < min_rate:
-            failures.append(f"pass rate={rate:.1f}/s < min_record_rate_hz={min_rate}")
-
-    # A CRC-valid reply only shows the telemetry link works: an armed ESC replies with a constant at-rest eRPM (917) even
-    # when the motor never starts, so the median eRPM is what shows the motor turning. Same rule as on the device.
-    crc = expect.get("min_crc_valid_pct", {})
-    erpm = expect.get("min_median_erpm", {})
-    for index, state in per_motor.items():
-        for message in state["sample"].check(crc.get(str(index)), erpm.get(str(index))):
-            failures.append(f"motor {index}: {message}")
-    return failures
-
-
 def main():
     if len(sys.argv) > 1:
         session_dir = Path(sys.argv[1])
@@ -223,27 +198,20 @@ def main():
             print(f"           ... and {len(state['failures']) - 10} more failed samples")
 
     print()
-    print(f"Device verdict: {meta.get('verdict', 'not recorded')}")
     if "max_loop_gap_us" in meta:
         print(f"Command loop: longest gap between update() calls {int(meta['max_loop_gap_us']) / 1000:.1f}ms")
     for index in bidir_indices:
         if f"motor{index}_decode_sampled" in meta:
             print(f"Motor {index} sampled decode (every {scenario.decode_every}th capture), replayed here: "
                   f"{per_motor[index]['sample'].summary()}")
-    for index, state in per_motor.items():
-        note = state["sample"].not_judged(scenario.expect.get("min_crc_valid_pct", {}).get(str(index)),
-                                          scenario.expect.get("min_median_erpm", {}).get(str(index)))
-        if note:
-            print(f"Motor {index}: not judged ({note}); the spy's recording holds every reply")
-    failures = check_expect(scenario.expect, meta, scenario.duration_ms, per_motor)
-    failures += compare_with_device(meta, per_motor, records)
+    failures = compare_with_device(meta, per_motor, records)
     if failures:
-        print("expect thresholds NOT met:")
+        print("The decode here disagrees with the Pico's:")
         for f in failures:
             print(f"  - {f}")
         sys.exit(1)
 
-    print("All expect thresholds met." if scenario.expect else "No expect thresholds declared.")
+    print("The decode here agrees with the Pico's tally and failed flags.")
 
 
 if __name__ == "__main__":

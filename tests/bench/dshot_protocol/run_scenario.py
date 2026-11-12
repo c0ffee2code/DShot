@@ -11,38 +11,35 @@
 # fixed device-side name, since mpremote's `run` has no way to pass an extra
 # file/argument into the running script.
 #
-# What is kept: the group keeps ONE capture per bidirectional motor (the
-# latest), so this cannot see every reply. Core 0 polls raw_telemetry() and counts, in RAM, every
-# pass in which a motor has a capture whose value differs from the last one seen (capture_passes).
-# Captures published but never seen (the token stepped by more than one) are counted as missed;
-# they are not an error, because reading the latest is the contract - the
-# scenario's `expect` thresholds say how much sampling a run must achieve.
-# Nothing goes to the SD card per pass: I/O on Core 0 costs the command loop, and every edge on the
-# wire is recorded by the wingman instead. The card gets one sample record each time a capture is
-# decoded (every `decode_every`-th per motor, below): the latest raw captures of all four motors, the
-# throttles and a flag when that decode failed, so the decoder can be checked on a PC against the
-# wire. Nothing is logged while the group is still arming (see arm_group()), so capture.bin starts
-# at ARMED; meta.txt's armed_ticks_us marks the boundary.
+# Division of work (decision/ADR-008): this script reports facts and never judges the run. The
+# session verdict is made on the PC by scripts/session_summary.py from the wingman's recording of
+# every edge on the wire. The run ends "completed" or "aborted: <reason>", in meta.txt and on the
+# console, and an aborted run exits non-zero.
 #
-# Fail-fast, deliberately: a Core 1 error, a gap/rate violation of the
-# scenario's own "expect" thresholds, a tripped reply failsafe (see
-# check_reply_failsafe: a capture only says the receiver ran, not that the ESC
-# answered, so a sustained run of all-zero captures is itself the anomaly), a
-# capture handed out while the group is still arming, or Ctrl-C all still run the
-# disarm/close sequence in `finally`, then propagate - this never swallows a
-# failure into a "Test Complete" banner. A run that fails exits non-zero and marks
-# outcome=failed in meta.txt, so a truncated capture.bin is never mistaken for a
-# complete one by the PC-side analyzer.
+# Bail-outs, which stop a run early and are reported as an abort: arming not complete within the
+# scenario's window plus ARM_TIMEOUT_MARGIN_MS, a Core 1 error, the scenario's max_gap_ms or
+# min_record_rate_hz missed (both measure how well this script's own polling keeps up, not the
+# ESC), a motor commanded to spin with no real eRPM for longer than NOT_RUNNING_LIMIT_MS
+# (SpinWatch), the over-speed limit, Ctrl-C, and a Core 1 loop that did not stop before disarm().
+# Every one still runs fast_stop() in `finally`. A bail-out's reason states the measured value
+# against its limit and draws no conclusion from it: the conclusion is the PC's (ADR-008).
 #
-# Decoding: every Nth new capture per motor (scenario `decode_every`) is decoded
-# on the device with MotorGroup.decode_telemetry(), the way an application would
-# on Core 0, and tallied (decode_tally.py) as a real reply, a CRC failure or not
-# a reply at all. That sample is what the scenario's `min_crc_valid_pct` and
-# `min_median_erpm` are checked against at the end of the run, so a run gives its
-# own verdict without pulling the SD card. Decoding costs milliseconds, so it is
-# sampled, never done for every capture. scripts/analyze_bidir_capture_log.py
-# decodes the logged samples on a PC with an independent decoder and checks they agree
-# with the device's tally and with the flags the device wrote.
+# What is kept: the group keeps ONE capture per bidirectional motor (the latest), so this cannot
+# see every reply. Core 0 polls raw_telemetry() and counts, in RAM, every pass in which a motor has
+# a capture whose value differs from the last one seen (capture_passes). Captures published but
+# never seen (the token stepped by more than one) are counted as missed; reading the latest is
+# the contract. Nothing goes to the SD card per pass: I/O on Core 0 costs the command loop. The
+# card gets one sample record each time a capture is decoded (every `decode_every`-th per motor):
+# the latest raw captures of all four motors, the throttles and a flag when that decode failed.
+# Nothing is logged while the group is still arming (see arm_group()), so capture.bin starts at
+# ARMED; meta.txt's armed_ticks_us marks the boundary.
+#
+# Decoding: every Nth new capture per motor (scenario `decode_every`) is decoded on the device
+# with MotorGroup.decode_telemetry(), the way an application would on Core 0, and tallied
+# (decode_tally.py). The sample feeds the SpinWatch bail-out and is reported as facts in meta.txt
+# and the summary; scripts/analyze_bidir_capture_log.py checks on a PC that the device's decoder
+# agrees with an independent one on the same words. Decoding costs milliseconds, so it is
+# sampled, never done for every capture.
 
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot
@@ -59,14 +56,6 @@ import utime
 
 SCENARIO_PATH = "scenario.json"
 
-# Grace window before the reply failsafe is armed. Deliberately short (not
-# the 20s settling window check_expect's min_record_rate_hz needs, which
-# is a CUMULATIVE-average threshold and genuinely needs one) - this checks
-# for the mere existence of one real reply, and arming already finished
-# before this function is ever called, so a healthy ESC's first real reply
-# lands within milliseconds of run_start.
-REPLY_FAILSAFE_GRACE_MS = 2000
-
 # How long past the scenario's own arming window arming may take before it is
 # an error: arming completes inside update() on Core 1, so a dead loop shows
 # here, and MotorGroup also waits for 2s of replies from every bidirectional
@@ -82,56 +71,51 @@ ARM_TIMEOUT_MARGIN_MS = 16000
 # How long a bidirectional motor commanded to spin (throttle >= 48) may go
 # without one real eRPM decode before the run is stopped (decode_tally.SpinWatch).
 # With the reply-gated ARMED transition (bug-reports/BUG-003), reaching ARMED
-# already means the ESC was replying steadily - this catches the remaining
-# case, where it replies but the motor never turns, or stops turning (BUG-002's
-# signature; BUG-008). Every healthy spin-up on this bench starts well inside
-# it. A continuous streak, not an "ever spun" flag: a single glitch frame does
-# not defeat it for the rest of the run.
+# already means the ESC was replying steadily; this limit applies to the case
+# where it replies but no real eRPM is decoded (BUG-002's signature; BUG-008).
+# Every healthy spin-up on this bench starts well inside it. A continuous
+# streak, not an "ever spun" flag: a single glitch frame does not reset it
+# for the rest of the run.
 NOT_RUNNING_LIMIT_MS = 2000
 
-def check_reply_failsafe(has_bidir, nonzero_records, elapsed_ms):
-    # Bidirectional DShot's contract is a continuous eRPM reply every
-    # command - unlike a rate/gap threshold, "the ESC has never once
-    # replied" is not a tunable performance bar, it's a protocol violation,
-    # so this fires unconditionally once armed rather than via the
-    # scenario's own "expect" block.
-    #
-    # Words are non-zero only when the receiver saw the line move, so a run of
-    # captures that are literally all-zero words is a dead bench/ESC that would
-    # otherwise only show in a post-hoc tally, well after the fact.
-    #
-    # any-MOTOR, not per-motor: a live motor would mask a silent one.
-    if not has_bidir:
-        return
-    if elapsed_ms >= REPLY_FAILSAFE_GRACE_MS and nonzero_records == 0:
-        raise RuntimeError(
-            "reply failsafe tripped: no ESC reply seen by " + str(elapsed_ms) +
-            "ms elapsed (every captured record's words are still all-zero) "
-            "- check ESC power/arming/bidir mode before continuing"
-        )
+ABORTED = "aborted: "   # how a bail-out's outcome starts; the reason follows (scripts/session_summary.py reads it)
 
 
-def check_stuck_at_rest_failsafe(bidir_indices, spin_watches, throttles, elapsed_ms):
+class BailOutError(Exception):
+    """This script's own bail-out. Its message is the whole reason, stated as facts (measured value
+    against its limit); the type name carries nothing, so abort_reason() leaves it out. A Core 1
+    error keeps its own type in the reason: there the type is the information."""
+
+
+def check_no_real_erpm(bidir_indices, spin_watches, throttles, elapsed_ms):
     """
-    A bidirectional motor commanded to spin that has decoded no real eRPM for
-    NOT_RUNNING_LIMIT_MS is BUG-002's own signature: CRC-valid replies, no
-    error state, and no spin. This stops the run instead of waiting out its
-    full duration for a result already decided.
+    Bail out when a bidirectional motor commanded to spin has decoded no real
+    eRPM for longer than NOT_RUNNING_LIMIT_MS. The reason gives the motor, its
+    throttle and the measured time against the limit.
 
     A motor deliberately held below throttle 48 (an idle bidirectional motor
     used as a second-line control) legitimately replies the same sentinel
-    forever and cannot trip this: SpinWatch only counts while commanded.
+    forever and does not count: SpinWatch only counts while commanded.
     """
     for index in bidir_indices:
         spin_watches[index].note_throttle(throttles[index], elapsed_ms)
         if spin_watches[index].tripped(throttles[index], elapsed_ms):
-            raise RuntimeError(
-                "not-running failsafe tripped: motor " + str(index) + " has been commanded "
-                "throttle " + str(throttles[index]) + " for " +
+            raise BailOutError(
+                "motor " + str(index) + " throttle=" + str(throttles[index]) + ": no real eRPM for " +
                 str(spin_watches[index].stuck_ms(throttles[index], elapsed_ms)) +
-                "ms with no real eRPM decoded - it is not going to start on its own this run "
-                "(see bug-reports/BUG-002-bidirectional-motor-intermittently-does-not-spin.md)"
+                "ms > limit=" + str(spin_watches[index].limit_ms) + "ms"
             )
+
+
+def overspeed_reason(index, throttle, erpm, watch):
+    return ("motor " + str(index) + " throttle=" + str(throttle) + ": " + str(int(erpm)) + " eRPM in " +
+            str(watch.consecutive) + " decodes in a row > limit=" + str(watch.limit_erpm()) + " eRPM")
+
+
+def arming_reason(arm_timeout_ms, arming_status):
+    # scripts/run_scenarios.py recognises a refused arming by "arming did not complete within"
+    return ("arming did not complete within " + str(arm_timeout_ms) +
+            "ms; per motor (replying_for_ms, last_reply_ms_ago), None = no reply: " + str(arming_status))
 
 
 def check_expect(expect, largest_gap_us, records, elapsed_ms):
@@ -142,7 +126,7 @@ def check_expect(expect, largest_gap_us, records, elapsed_ms):
 
     max_gap_ms = expect.get("max_gap_ms")
     if max_gap_ms is not None and largest_gap_us > max_gap_ms * 1000:
-        raise RuntimeError(
+        raise BailOutError(
             "largest_gap=" + str(largest_gap_us / 1000) + "ms > max_gap_ms=" + str(max_gap_ms)
         )
 
@@ -156,32 +140,19 @@ def check_expect(expect, largest_gap_us, records, elapsed_ms):
     if min_rate is not None and elapsed_ms >= 20000:
         rate = records / (elapsed_ms / 1000)
         if rate < min_rate:
-            raise RuntimeError(
+            raise BailOutError(
                 "record rate=" + str(rate) + "/s < min_record_rate_hz=" + str(min_rate)
             )
 
 
-def check_decode_expect(expect, tallies):
-    """The scenario's decode thresholds the sampled tallies miss, as messages."""
-    failures = []
-    crc = expect.get("min_crc_valid_pct", {})
-    erpm = expect.get("min_median_erpm", {})
-    for index in tallies:
-        for message in tallies[index].check(crc.get(str(index)), erpm.get(str(index))):
-            failures.append("motor " + str(index) + ": " + message)
-    return failures
-
-
-def decode_not_judged(expect, tallies):
-    """Motors whose sampled tally was too small to judge the scenario's decode thresholds, as messages."""
-    notes = []
-    crc = expect.get("min_crc_valid_pct", {})
-    erpm = expect.get("min_median_erpm", {})
-    for index in tallies:
-        message = tallies[index].not_judged(crc.get(str(index)), erpm.get(str(index)))
-        if message is not None:
-            notes.append("motor " + str(index) + ": " + message)
-    return notes
+def abort_reason(error):
+    """The text of a bail-out for meta.txt and the console: one line. This script's own bail-outs give
+    their message alone; any other exception (a Core 1 error) gives its type and message."""
+    if isinstance(error, BailOutError):
+        text = str(error)
+    else:
+        text = type(error).__name__ + ": " + str(error)
+    return text.replace("\r", " ").replace("\n", " ")
 
 
 def build_motor(spec, dshot_speed):
@@ -233,9 +204,7 @@ def arm_group(group, scenario, runner, arm_times):
         if runner.error is not None:
             raise runner.error
         if utime.ticks_diff(utime.ticks_ms(), arm_start) > arm_timeout_ms:
-            raise RuntimeError("arming did not complete within " + str(arm_timeout_ms) +
-                               "ms; per motor (replying_for_ms, last_reply_ms_ago), None = no reply: " +
-                               str(group.arming_status()))
+            raise BailOutError(arming_reason(arm_timeout_ms, group.arming_status()))
         utime.sleep_ms(1)
     arm_times[1] = utime.ticks_us()
     print("Armed after {}ms.".format(utime.ticks_diff(arm_times[1], arm_times[0]) // 1000))
@@ -267,9 +236,7 @@ def run_scenario():
     group = None
     runner = None
     bidir_indices = scenario.bidir_indices
-    has_bidir = bool(bidir_indices)
     total_records = 0          # passes in which some motor had a capture it had not shown before (RAM only)
-    total_nonzero_records = 0
     samples_written = 0        # sample records written to the SD card (one per decode)
     samples_failed = 0         # of those, the ones whose decode failed
     last_value = [0, 0, 0, 0]  # per motor: the capture value last seen (0 = none yet)
@@ -277,14 +244,14 @@ def run_scenario():
     missed = 0                 # captures published but never seen
     last_record_us = None
     largest_gap_us = 0
-    outcome = "failed"
+    # How the run ended, a fact for the PC: "completed", or "aborted: <reason>" (set by the except clauses below)
+    outcome = ABORTED + "ended without a reason recorded"
     line_high_us = None       # ticks_us when the start line rose, for mapping onto the spy's recording
     arm_times = [None, None]  # ticks_us of arm() and of ARMED, filled in by arm_group()
     tallies = {i: DecodeTally() for i in bidir_indices}
     seen = [0, 0, 0, 0]      # per motor: non-empty captures seen, for the sampling rule
     spin_watches = [SpinWatch(NOT_RUNNING_LIMIT_MS) for _ in range(4)]  # per motor, see SpinWatch
     overspeed_watches = [OverspeedWatch() for _ in range(4)]            # per motor, see OverspeedWatch
-    failures = []
     # Set for real once the running loop starts (below); 0 here covers a run
     # that fails before reaching it, so finally's status-printing loop is a
     # no-op rather than a NameError that would mask the real failure
@@ -301,9 +268,6 @@ def run_scenario():
         print("Running scenario for {}ms...".format(scenario.duration_ms))
         run_start = utime.ticks_ms()
         last_status_ms = run_start
-        # Reused every iteration below instead of allocating a fresh list each
-        # pass - this loop runs for the whole scenario at poll_ms cadence
-        words = [0, 0, 0, 0]
 
         # Status snapshots are stored as raw numbers in preallocated arrays
         # while the loop runs - no string formatting, no print(), no file
@@ -321,7 +285,6 @@ def run_scenario():
         status_count = 0
         status_elapsed_ms = array('I', [0] * status_capacity)
         status_records = array('I', [0] * status_capacity)
-        status_nonzero = array('I', [0] * status_capacity)
         status_missed = array('I', [0] * status_capacity)
         status_gap_us = array('I', [0] * status_capacity)
 
@@ -339,9 +302,7 @@ def run_scenario():
             throttles = group.get_all_throttles()
 
             # One count per pass in which any motor has a capture it has not
-            # shown before (nothing is written for it); the other motors' word slots stay zero
-            for i in range(4):
-                words[i] = 0
+            # shown before (nothing is written for it)
             new_capture = False
             for index in bidir_indices:
                 capture = group.raw_telemetry(index)
@@ -360,7 +321,6 @@ def run_scenario():
                 missed += step - 1
                 last_value[index] = capture
                 frame = capture & FRAME_MASK
-                words[index] = frame
                 new_capture = True
                 if frame:
                     seen[index] += 1
@@ -377,30 +337,21 @@ def run_scenario():
                             if OVERSPEED_GUARD_ENABLED and result["erpm"] is not None:
                                 overspeed_watches[index].note_throttle(throttles[index], elapsed_ms)
                                 if overspeed_watches[index].note_erpm(result["erpm"]):
-                                    raise RuntimeError(
-                                        "over-speed guard tripped: motor " + str(index) + " reported " +
-                                        str(int(result["erpm"])) + " eRPM in " +
-                                        str(overspeed_watches[index].consecutive) +
-                                        " decodes in a row, above the limit of " +
-                                        str(overspeed_watches[index].limit_erpm()) +
-                                        " eRPM for its commanded throttle (" + str(throttles[index]) + ")"
-                                    )
+                                    raise BailOutError(overspeed_reason(
+                                        index, throttles[index], result["erpm"], overspeed_watches[index]))
 
             if new_capture:
                 # No timestamp travels with a capture: the pass is stamped when
                 # Core 0 sees the value change, at the resolution of its own poll
                 record_us = utime.ticks_us()
                 total_records += 1
-                if any(words):
-                    total_nonzero_records += 1
                 if last_record_us is not None:
                     gap = utime.ticks_diff(record_us, last_record_us)
                     if gap > largest_gap_us:
                         largest_gap_us = gap
                 last_record_us = record_us
 
-            check_reply_failsafe(has_bidir, total_nonzero_records, elapsed_ms)
-            check_stuck_at_rest_failsafe(bidir_indices, spin_watches, throttles, elapsed_ms)
+            check_no_real_erpm(bidir_indices, spin_watches, throttles, elapsed_ms)
             check_expect(scenario.expect, largest_gap_us, total_records, elapsed_ms)
 
             now = utime.ticks_ms()
@@ -411,7 +362,6 @@ def run_scenario():
                 if status_count < status_capacity:
                     status_elapsed_ms[status_count] = utime.ticks_diff(now, run_start)
                     status_records[status_count] = total_records
-                    status_nonzero[status_count] = total_nonzero_records
                     status_missed[status_count] = missed
                     status_gap_us[status_count] = largest_gap_us
                     status_count += 1
@@ -419,13 +369,18 @@ def run_scenario():
             utime.sleep_ms(scenario.poll_ms)
 
         outcome = "completed"
-        failures = check_decode_expect(scenario.expect, tallies)
         print()
         print("Scenario duration complete.")
         print()
 
+    # A bail-out is recorded as a fact and then propagates, so the process exits non-zero.
+    # KeyboardInterrupt is not an Exception subclass in MicroPython, hence its own clause.
     except KeyboardInterrupt:
         print("\nInterrupted!")
+        outcome = ABORTED + "interrupted (Ctrl-C)"
+        raise
+    except Exception as error:
+        outcome = ABORTED + abort_reason(error)
         raise
 
     finally:
@@ -446,7 +401,10 @@ def run_scenario():
             # disarm() ran while Core 1 may still have been inside update():
             # mark the run so it cannot pass as clean (BUG-007).
             print("WARNING: Core 1 loop did not stop - disarm() raced update()")
-            outcome = "failed: Core 1 loop did not stop"
+            if outcome == "completed":
+                outcome = ABORTED + "Core 1 loop did not stop before disarm()"
+            else:
+                outcome += "; Core 1 loop did not stop before disarm()"
         line.value(0)
         print("Motors stopped and disarmed.")
 
@@ -456,22 +414,11 @@ def run_scenario():
         for i in range(status_count):
             elapsed_s = status_elapsed_ms[i] / 1000
             rate = status_records[i] / elapsed_s if elapsed_s else 0.0
-            print("  [{:7.1f}s] passes={} nonzero={} missed={} rate={:.1f}/s largest_gap={:.1f}ms".format(
-                elapsed_s, status_records[i], status_nonzero[i], status_missed[i],
+            print("  [{:7.1f}s] passes={} missed={} rate={:.1f}/s largest_gap={:.1f}ms".format(
+                elapsed_s, status_records[i], status_missed[i],
                 rate, status_gap_us[i] / 1000))
 
         published_by_motor = {i: published[i] for i in bidir_indices}
-        # The thresholds are judged on a run that reached its end; one that was
-        # cut short (a gap or rate threshold, a Core 1 error) has no verdict
-        if outcome != "completed":
-            verdict = "not evaluated: the run did not complete"
-        elif failures:
-            verdict = "fail: " + "; ".join(failures)
-        else:
-            verdict = "pass"
-            notes = decode_not_judged(scenario.expect, tallies)
-            if notes:
-                verdict = "pass (not judged: " + "; ".join(notes) + ")"
         extra = {}
         if runner is not None:
             # >0 means the deadline schedule fell behind and had to skip
@@ -499,7 +446,7 @@ def run_scenario():
             # tick in capture.bin onto the spy's time
             extra["line_high_ticks_us"] = line_high_us
         sink.finalize(outcome, total_records, samples_written, samples_failed, missed, largest_gap_us,
-                      published_by_motor, tallies, verdict, extra)
+                      published_by_motor, tallies, extra)
         sink.close()
         print("SD card flushed and unmounted.")
 
@@ -511,7 +458,6 @@ def run_scenario():
         print("Session:", sink.path)
         print("Outcome:", outcome)
         print("Passes with a capture seen for the first time:", total_records)
-        print("Passes with a real (non-all-zero) reply:", total_nonzero_records)
         print("Samples written to the SD card:", samples_written, "(decode failed:", str(samples_failed) + ")")
         print("Captures published (counted from the token steps, per motor):", published_by_motor)
         print("Captures published but never seen:", missed)
@@ -528,12 +474,13 @@ def run_scenario():
                 # The ESC reports electrical RPM; the shaft figure is what the motor's magnet count makes of it
                 line += " (ESC RPM {})".format(round(hardware.shaft_rpm(tallies[index].median_erpm())))
             print(line)
-        for message in failures:
-            print("  expectation missed - " + message)
-        print("=== Test Complete ===" if outcome == "completed" and not failures else "=== Test FAILED ===")
+        # Facts only: the session verdict is made on the PC from the wire recording (ADR-008)
+        print("=== Run completed ===" if outcome == "completed" else "=== Run aborted ===")
 
-    if failures:
-        raise RuntimeError("decode expectations missed: " + "; ".join(failures))
+    # Reached only when no exception propagated: a run marked aborted in `finally` (its Core 1 loop
+    # did not stop) must still end the process non-zero
+    if outcome != "completed":
+        raise BailOutError(outcome[len(ABORTED):])
 
 
 run_scenario()

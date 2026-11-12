@@ -22,8 +22,8 @@ class SessionFilesTest(unittest.TestCase):
         self.assertEqual({"a": "1", "motor0_name": "X Y"}, session_files.parse_meta(" a = 1 \nmotor0_name=X Y\nnoise\n"))
 
     def test_new_session_reads_the_device_section(self):
-        folder = self.folder({"session.json": json.dumps({"session": "s", "device": {"outcome": "failed"}})})
-        self.assertEqual({"outcome": "failed"}, session_files.load_device_meta(folder))
+        folder = self.folder({"session.json": json.dumps({"session": "s", "device": {"outcome": "aborted: RuntimeError: x"}})})
+        self.assertEqual({"outcome": "aborted: RuntimeError: x"}, session_files.load_device_meta(folder))
         self.assertTrue(session_files.is_session(folder))
 
     def test_folder_without_the_pico_record_is_not_a_session(self):
@@ -57,11 +57,11 @@ class SessionFilesTest(unittest.TestCase):
         self.assertFalse((folder / "meta.txt").exists())
 
     def test_fold_creates_a_manifest_when_there_is_none(self):
-        folder = self.folder({"meta.txt": "outcome=failed\n"})
+        folder = self.folder({"meta.txt": "outcome=aborted: RuntimeError: x\n"})
         self.assertTrue(session_files.fold_device_meta(folder))
         manifest = json.loads((folder / "session.json").read_text())
         self.assertEqual(folder.name, manifest["session"])
-        self.assertEqual("failed", manifest["device"]["outcome"])
+        self.assertEqual("aborted: RuntimeError: x", manifest["device"]["outcome"])
 
     def test_fold_without_meta_txt_does_nothing(self):
         folder = self.folder({"session.json": json.dumps({"session": "s"})})
@@ -69,10 +69,10 @@ class SessionFilesTest(unittest.TestCase):
         self.assertNotIn("device", json.loads((folder / "session.json").read_text()))
 
     def test_fold_twice_is_harmless(self):
-        folder = self.folder({"meta.txt": "outcome=failed\n"})
+        folder = self.folder({"meta.txt": "outcome=aborted: RuntimeError: x\n"})
         session_files.fold_device_meta(folder)
         self.assertFalse(session_files.fold_device_meta(folder))
-        self.assertEqual("failed", session_files.load_device_meta(folder)["outcome"])
+        self.assertEqual("aborted: RuntimeError: x", session_files.load_device_meta(folder)["outcome"])
         self.assertTrue(session_files.is_session(folder))
 
 

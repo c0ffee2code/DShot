@@ -1,7 +1,7 @@
 # Wingman
 
-The wingman is the **second Pico 2** of the bench. It flies alongside the main Pico (the one that drives the motors) and plays
-two roles, which can run together on the same board:
+The wingman is the **second Pico 2** of the bench and a permanent part of it (decision/ADR-008). It flies alongside the main Pico
+(the one that drives the motors) and plays two roles, which can run together on the same board:
 
 | Role | What it does | Details |
 |------|--------------|---------|
@@ -20,7 +20,7 @@ test groups, not a test group: the scenario runner imports `main_pico/start_line
 | `tools/` | the PC | `wingman_board.py` (find the wingman by ID, upload, reset), `wingman_plan.py` (reads the scenario), `wingman_run.py` (the launcher), the `spy_*` tools, `esc_mock_fixture.py` |
 
 The session-level scripts that use them stay in `scripts/` and reach them through `scripts/bench_paths.py` (one `import` that puts the wingman tools and `driver/` on the path; the unit tests do the same): `run_session.py` (starts the wingman for a session),
-`session_summary.py` (the verdict), `session_timeline.py` (the spy's record and the main Pico's on one time axis).
+`session_summary.py` (the session verdict: the only judge of a run, from the spy's recording; the main Pico reports facts only), `session_timeline.py` (the spy's record and the main Pico's on one time axis).
 The frame decoder both the spy tools and the main Pico's pin test read is `driver/dshot_frame_decode.py`.
 
 ## What the wingman is told, and by what
@@ -54,7 +54,9 @@ The wingman is found by its unique ID (`5d703f56522b50fd`), never by COM number;
 
 ## How to run
 
-- A recorded run (the spy is on by default): `python scripts/run_session.py <scenario.json> --load "..."`; `--no-spy` leaves it out.
+- A recorded run (the spy is on by default): `python scripts/run_session.py <scenario.json> --load "..."`. Every bench run is recorded:
+  a session without `spy.bin` has no verdict (`unknown`, with a note naming why), and with the wingman not connected the session stops
+  before the main Pico runs anything. `--no-spy` leaves the spy out for a run that is knowingly not judged.
 - With the ESC disconnected, the wingman also plays the ESC: add `--esc-mock`. The session is marked `esc_mock` and is never evidence
   about an ESC, a motor or arming.
 - By hand: `python tests/bench/wingman/tools/wingman_run.py --scenario <file> [--session <name>] [--esc-mock]` (the scenario is required).

@@ -85,6 +85,9 @@ Betaflight never relies on a timer alone
   reboots every ~2.6 s (0.5 s armed timeout, then startup tune, then a 2 s disarmed timeout).
   The next `arm()` meets it at a random point in that loop: about a quarter of the time it is in
   its 600 ms startup tune and hears nothing.
+  *Observation 2026-11-11:* 3 of 15 bench runs (AM32 2.22, four bidirectional motors, DSHOT600) armed in 2630 to 2659 ms,
+  inside the 3.0 s bound; the other 12 armed in 2112 to 2113 ms; one run did not arm within 18 s (BUG-009, observations of
+  2026-11-11). The cause of the slower arming is not established.
 
 ## Fix plan
 

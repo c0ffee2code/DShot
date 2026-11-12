@@ -59,6 +59,10 @@ Four motors, one per channel: GPIO 6 = ch1 = motor 1, GPIO 7 = ch2 = motor 2, GP
 motor 4. Each can carry a Gemfan 2218 3-blade prop (the current start-quality scope) or a printed RPM disk; what the
 motors carried in a run is recorded per session (`--load` in `session.json`).
 
+A second Pico 2, the **wingman**, is a permanent part of the bench: wired to the same GPIO 6-9 and to the start line (GPIO 15), it
+records every edge of the four signal lines, our frames and the ESCs' replies, for every run (`tests/bench/wingman/README.md`). A run
+without its recording has no verdict.
+
 ### ESC settings as configured
 
 The ESCs hold the vendor's settings except for the three below (owner's go for each write, via `tools/esc_buddy/`; the vendor's values, identity and
@@ -119,6 +123,12 @@ the ESC firmware - see "Verified Parameters" below; on this bench, AM32 arms rel
 - which is `MotorGroup.UPDATE_INTERVAL_US`, the only mode since 2026-10-19 (the earlier max-rate/no-pacing default, 0us, was removed). On this test
 bench that means a dedicated Core 1 thread, keeping Core 0 free for the display and buttons -
 see `tests/bench/core1_runner.py` for a ready-made example to copy into your project.
+
+**Who reports, who judges.** The library reports facts (`update_age_ms()`, the arming state, the latest reply per motor) and judges
+nothing; the application decides on them ([ADR-004](decision/ADR-004-client-owned-command-loop.md)). The test bench applies the same
+rule one level up ([ADR-008](decision/ADR-008-main-pico-reports-pc-judges.md)): the main Pico runs a scenario, reports facts and may
+bail out of a run early (it then reports "aborted" and the reason), but never says pass or fail; the PC judges every session from the
+wingman's recording of every reply on the wire (`scripts/session_summary.py`).
 
 ## Quick Start
 
@@ -281,6 +291,7 @@ that the motor is actually armed and spinning.
 │       ├── session_recorder/        # SD-card session recorder
 │       ├── dshot_protocol/          # scenario runner + JSON scenarios, single-motor ESC probes
 │       ├── pio_and_cores/           # PIO and two-core checks (Pico only, no ESC)
+│       ├── wingman/                 # the second Pico: records every wire edge (spy), plays the ESC (ESC mock)
 ├── tools/
 │   └── esc_buddy/                   # ESC configuration access through the main Pico (--read / --passthrough / --debug)
 ├── scripts/                         # deploy, pull/analyse captures, PC-side reference decoder
@@ -322,7 +333,8 @@ a reference flight-controller host drives it.
 | **ESC configuration access** | Read and write done | ADR-006: `tools/esc_buddy/` reads all four ESCs' settings (JSON), gives the AM32 web configurator read-only passthrough, and writes named motor, start-up and protection settings to one ESC at a time with a backup and read-back (only KV, poles and beeper volume tried on real ESCs so far); firmware flash (`--flash`, ADR-007) has put AM32 2.22 on all eight ESCs; bootloader update is not built (`tools/esc_buddy/README.md`) |
 | **Extended telemetry (EDT)** | TODO | Current AM32 source already implements it (`specification/AM32.md`#10) - the bench ran AM32 2.16 until 2026-11-10 and runs 2.22 now (`specification/KM55A2_DEFAULTS.md`); whether 2.22 implements it is not checked yet. This driver's own decoder doesn't yet discriminate an EDT frame from an eRPM frame either way |
 
-See `decision/` folder for Architecture Decision Records (ADRs).
+See `decision/` folder for Architecture Decision Records (ADRs); the bench's division of work between the main Pico and the PC is
+[ADR-008](decision/ADR-008-main-pico-reports-pc-judges.md).
 
 ## License
 

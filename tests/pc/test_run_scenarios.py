@@ -74,6 +74,43 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(fields("X", a=1, b=None, c="z"), "X a=1 c=z")
 
 
+class SessionVerdictTotalsTest(unittest.TestCase):
+    def test_a_batch_of_passing_arms_still_shows_the_failed_sessions(self):
+        import run_scenarios
+        totals = run_scenarios.session_verdict_totals(["pass", "fail", "unknown", "pass", None, "fail"])
+        self.assertEqual({"runs": 6, "pass": 2, "fail": 2, "unknown": 1, "no_session": 1}, totals)
+        line = run_scenarios.fields("SESSION_VERDICTS", **totals)
+        self.assertEqual("SESSION_VERDICTS runs=6 pass=2 fail=2 unknown=1 no_session=1", line)
+
+    def test_the_batch_end_prints_the_totals_and_keeps_the_arming_lines(self):
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        import run_scenarios
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, folder, True)
+        (folder / "s1").mkdir()
+        (folder / "s1" / "summary.json").write_text(json.dumps({"verdict": "fail"}), encoding="utf-8")
+        output = "Uploaded 3, failed 0.\nArmed after 2100ms.\nOutcome: completed\n"
+        old_session, old_captures = run_scenarios.run_session.run_session, run_scenarios.run_session.CAPTURES
+        run_scenarios.run_session.run_session = lambda *a, **k: ("s1", output, 0, {"verdict": "fail"})
+        run_scenarios.run_session.CAPTURES = folder
+        self.addCleanup(setattr, run_scenarios.run_session, "run_session", old_session)
+        self.addCleanup(setattr, run_scenarios.run_session, "CAPTURES", old_captures)
+        old = sys.argv
+        sys.argv = ["run_scenarios.py", "--scenario", str(Path(__file__)), "--rounds", "2", "--load", "none"]
+        self.addCleanup(setattr, sys, "argv", old)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            run_scenarios.main()
+        text = out.getvalue()
+        self.assertIn("verdict=pass outcome=clean", text)           # the arming outcome keeps its meaning
+        self.assertIn("session_verdict=fail", text)
+        self.assertIn("RESULT scenario=test_run_scenarios.py attempts=2 pass=2 fail=0", text)
+        self.assertIn("SESSION_VERDICTS runs=2 pass=0 fail=2 unknown=0 no_session=0", text)
+
+
 class BatchFailureTest(unittest.TestCase):
     def patch_session(self, fn):
         import run_scenarios

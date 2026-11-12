@@ -3,10 +3,14 @@ run_session.py - run one scenario as one session: the PC names the session, both
 everything the run produces lands in captures/<session>/.
 
   python scripts/run_session.py tests/bench/dshot_protocol/scenarios/four_channel_bidirectional_600.json
-  python scripts/run_session.py <scenario> --no-spy      # without the spy (no spy.bin)
+  python scripts/run_session.py <scenario> --no-spy      # without the wingman: no spy.bin, so the session verdict is "unknown"
   python scripts/run_session.py <scenario> --esc-mock       # the wingman plays the ESC (ESC disconnected; not evidence)
   python scripts/run_session.py test_core0_io_options.py    # a device test script instead of a scenario
                                                             # (spy off unless --spy: most do not raise the start line)
+
+The wingman is a permanent part of the bench (decision/ADR-008): for a scenario it records by default, and a session without its
+recording has no verdict ("unknown", with a note naming why). When the wingman is not connected, its launcher stops with a message and this
+script stops before the main Pico runs anything.
 
 What it does, in order: makes captures/<session>/ (name from this PC's clock) and writes session.json there (what was
 run: scenario, git commit and whether the tree had uncommitted changes, boards, arguments); starts the spy
@@ -16,6 +20,10 @@ with the session name, which the main Pico uses as its SD folder name; then pull
 ends up with session.json, run.log, scenario.json (copied by this script from the scenario it ran), capture.bin (the Pico's sampled record) and, if the spy ran, spy.bin, and then summary.json,
 the computed verdict (scripts/session_summary.py, which can be re-run on any session folder). This spins the motors the
 scenario names - the caller owns that decision.
+
+Exit code of the command line (the function run_session() returns run_test.py's code unchanged, for the batch runner): 0 only when the
+session verdict is "pass"; 1 when it is "fail" or run_test.py returned non-zero; 2 when it is "unknown" (nothing failed, but the
+required proofs were not all shown, e.g. no wire recording, or an ESC-mock session).
 
 scripts/run_scenarios.py (a batch) is a repetition of this: it calls run_session() once per attempt.
 """
@@ -40,7 +48,7 @@ import wingman_plan
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURES = ROOT / "captures"
-SCENARIO_LINES = ("Armed after", "Outcome:", "Motor ", "Largest gap", "WARNING", "FAILED", "Test ", "Error", "Traceback")
+SCENARIO_LINES = ("Armed after", "Outcome:", "Motor ", "Largest gap", "WARNING", "=== Run ", "Error", "Traceback")
 DEPLOY_OK = re.compile(r"Uploaded \d+, failed 0\.")
 RUN_TIMEOUT_S = 650                 # past run_test.py's own 600 s watchdog
 
@@ -210,18 +218,25 @@ def run_session(scenario, spy=None, echo=True, argv=None, config=None, load=None
     return session, output, code, summary
 
 
+def exit_code(test_code, verdict):
+    """The command line's exit code: 0 only for a "pass" whose run_test.py returned 0; 1 for a fail or a non-zero run_test.py; 2 for unknown."""
+    if test_code != 0 or verdict == "fail":
+        return 1
+    return 0 if verdict == "pass" else 2
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("scenario", help="a scenario JSON, or the bare name of a device test script (*.py under tests/bench/)")
     parser.add_argument("--load", required=True, help='what is on the motor shafts, recorded in session.json: "none", or e.g. "Gemfan D2.2 3-blade, 1-1.25 g each"')
-    parser.add_argument("--no-spy", action="store_true", help="do not start the spy (no spy.bin)")
+    parser.add_argument("--no-spy", action="store_true", help="do not start the spy: no spy.bin, so the session verdict is unknown")
     parser.add_argument("--spy", action="store_true", help="for a device test script: start the spy (default off)")
     parser.add_argument("--esc-mock", action="store_true", help="the wingman also plays the ESC (recorded replies, tests/bench/wingman/): for runs with the ESC disconnected from the signal lines")
     args = parser.parse_args()
     is_script = Path(args.scenario).suffix == ".py"
     spy = args.spy if is_script else not args.no_spy
-    _, _, code, _ = run_session(args.scenario, spy, argv=sys.argv[1:], load=args.load, esc_mock=args.esc_mock)
-    sys.exit(code)
+    _, _, code, summary = run_session(args.scenario, spy, argv=sys.argv[1:], load=args.load, esc_mock=args.esc_mock)
+    sys.exit(exit_code(code, summary["verdict"]))
 
 
 if __name__ == "__main__":

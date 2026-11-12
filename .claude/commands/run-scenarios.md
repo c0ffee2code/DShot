@@ -7,8 +7,9 @@ armed; error and deploy failures are excluded), `outcome=` (clean, reboot, refus
 deploy_failed), `armed_ms=` and `margin_ms=` (room left under the bound, for a pass), `session=` (the attempt's own folder
 captures/<session>/) and `session_verdict=` (that session's summary.json verdict, a wider judgement than arming). The series
 summary prints `RESULT` (pass/fail counts and percentage), `ARMING_TIME` (min, median, max over the
-arms that passed, plus how many were within 500 ms of the limit) and `SCHEDULE` lines. Report the
-lines, not a paraphrase; they are meant to be grepped.
+arms that passed, plus how many were within 500 ms of the limit) and `SCHEDULE` lines, and a closing
+`SESSION_VERDICTS` line (how many sessions were pass, fail and unknown: `verdict=pass` above is arming only, so read
+this line too). Report the lines, not a paraphrase; they are meant to be grepped.
 
 Multiple `--scenario` values are interleaved round by round (all scenarios
 once, then all again, ...), not run in blocks.
@@ -35,6 +36,16 @@ python scripts/run_scenarios.py \
 ```
 
 `--load` is required (`"none"` for bare shafts): it is written into every session's `session.json`.
+
+**Ask the owner before every batch; never take the load from an earlier session or from the scenario file.** What is on the
+shafts is a fact only the owner can see. Ask with the question dialog (AskUserQuestion), offering the loads the repo knows as
+options: Gemfan 2218 3-Blade props, bare shafts ("none"), RPM disks. Put the planned runs in the same dialog (which scenario,
+how many rounds) so the owner confirms both at once. Running motors still needs the owner's go (CLAUDE.md).
+
+If the answer does not match the `propeller` in the scenario's `hardware` blocks (for example bare shafts while the scenario
+names a propeller), do not edit the permanent scenario: write a copy to a temporary folder with `propeller` corrected and run
+that copy, so the session records and the start-quality scope check say what was really mounted (CLAUDE.md, "Permanent
+scenarios need the owner's permission").
 
 There is no arming-only scenario any more (`two_channel_arming_600.json`, removed 2026-10-17; it is in git
 history). Every scenario run prints `Armed after Nms` and the batch runner judges it against the 3.0 s bound,

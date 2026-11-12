@@ -1413,6 +1413,8 @@ group still decodes correctly on both paths (7/7 OK, no mismatches).
   `mpremote`-reset corruption above quickly once added, instead of
   requiring another multi-session investigation.
 
+*Update 2026-11-11:* `check_reply_failsafe` is removed from `run_scenario.py`. After `ARMED` the frame receiver pushes one capture per frame sent, so a silent ESC yields the driver's own next frame and the check could not trip. A run is judged on the PC from the wingman's recording (ADR-008). Bench runs of 2026-11-11 with the ESCs switched off during the hold, and with the ESCs unpowered from the start, ended aborted with a failing session verdict without this check.
+
 ### Fixed-ratio RX sampling: DSHOT600 retune, sweep retirement, close-out (2026-09-12, continued)
 
 **DSHOT600 retested on real hardware, same K range, same method as DSHOT300:**
@@ -1781,8 +1783,7 @@ builds and queues the packet with no range check. `MotorGroup.validate_throttle(
 `set_all_throttles()`, negatives included. `send_throttle_command()` keeps its
 own check (no negatives, nothing above the ceiling) for code that drives a motor
 without a group. The lookup table and flattened loop above were not built. This
-change (commit `99d1e33`) has PC tests only; it has not yet run on the Pico or
-the bench, so no per-tick figure exists for it.
+change (commit `99d1e33`) ran on the Pico and the bench on 2026-11-11: in 15 runs (AM32 2.22, four bidirectional motors, DSHOT600, throttle 0 to 215 held 20 s, bare shafts; none of them KPI evidence) 14 armed and spun, 12 of them in 2112 to 2113 ms and 3 in 2630 to 2659 ms. This shows that the changed path arms and drives the motors. It establishes no arming rate (five runs per batch), and nothing was measured about per-tick timing. No per-tick figure exists for it.
 The scenario harness no longer reads words itself: it runs through `MotorGroup` and samples the latest capture (ADR-005).
 
 ### Further hot-path tightening (2026-10-10)

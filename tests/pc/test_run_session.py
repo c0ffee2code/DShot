@@ -45,6 +45,36 @@ class ManifestTest(unittest.TestCase):
             self.assertEqual({"session": "x", "spy": False}, json.loads((folder / "session.json").read_text()))
 
 
+class ExitCodeTest(unittest.TestCase):
+    def test_only_a_pass_exits_zero(self):
+        self.assertEqual(0, run_session.exit_code(0, "pass"))
+        self.assertEqual(1, run_session.exit_code(0, "fail"))
+        self.assertEqual(2, run_session.exit_code(0, "unknown"))
+
+    def test_a_non_zero_run_test_exits_non_zero_whatever_the_verdict(self):
+        for verdict in ("pass", "fail", "unknown"):
+            self.assertEqual(1, run_session.exit_code(3, verdict))
+            self.assertEqual(1, run_session.exit_code(-1, verdict))
+
+    def test_the_function_still_returns_run_tests_own_code_for_the_batch_runner(self):
+        import subprocess
+        saved = (subprocess.run, run_session.collect_sd_session, run_session.session_summary.write_summary, run_session.CAPTURES)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        scenario = Path(tmp.name) / "s.json"
+        scenario.write_text('{"duration_ms": 1}', encoding="utf-8")
+        run_session.CAPTURES = Path(tmp.name) / "captures"
+        subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="Uploaded 5, failed 0.", stderr="")
+        run_session.collect_sd_session = lambda *a, **k: False
+        run_session.session_summary.write_summary = lambda folder: {"verdict": "fail"}
+        try:
+            _, _, code, summary = run_session.run_session(scenario, spy=False, echo=False)
+        finally:
+            subprocess.run, run_session.collect_sd_session, run_session.session_summary.write_summary, run_session.CAPTURES = saved
+        self.assertEqual(0, code)
+        self.assertEqual("fail", summary["verdict"])
+
+
 class ScenarioCopyTest(unittest.TestCase):
     def run_with_fakes(self, scenario_name):
         """run_session() with the bench replaced by stand-ins; returns the session folder."""

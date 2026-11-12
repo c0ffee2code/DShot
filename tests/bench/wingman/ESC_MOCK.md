@@ -39,7 +39,7 @@ again in its own `finally` for every `--esc-mock` session (a killed launcher run
 - The speed is replayed from the fixture, not derived from the throttle; there is no start-up transient.
 - The AM32 checks about the real ESC's own behaviour (first reply after the latch, arming silence) are reported as not
   applicable on a mock session; the reply integrity, bit-time and coverage checks stay judged.
-- Mock sessions are not evidence for the arming rate or for start quality. They are marked in `session.json`.
+- Mock sessions are not evidence for the arming rate or for start quality. They are marked in `session.json`. Their session verdict (`scripts/session_summary.py`) is never `pass`: the arming and spin proofs are `not shown`, so a clean mock session reads `unknown`.
 
 ## Fixture provenance
 

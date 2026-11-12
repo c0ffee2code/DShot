@@ -16,8 +16,7 @@ value other than 0 or 48 to `THROTTLE_CEILING` (250, the temporary bench ceiling
 `MotorGroup.update()` no longer checks the range on every tick: it sends through the new
 `DShotPIO.send_unchecked()`. `send_throttle_command()` keeps its own check for code that drives a
 motor without a group, and it rejects negatives and values above 250, not 2047 as plan item 2
-says; it still accepts 1-47. Commit `99d1e33`; PC tests only, not yet run on the Pico or the
-bench. The risk above holds only when the loop that stops is the one calling `update()`. When the
+says; it still accepts 1-47. Commit `99d1e33`; ran on the Pico and the bench on 2026-11-11: in 15 runs (AM32 2.22, four bidirectional motors, DSHOT600, throttle 0 to 215 held 20 s, bare shafts; none of them KPI evidence) 14 armed and spun, 12 of them in 2112 to 2113 ms and 3 in 2630 to 2659 ms. This shows that the changed path arms and drives the motors. It establishes no arming rate (five runs per batch), and nothing was measured about per-tick timing. The risk above holds only when the loop that stops is the one calling `update()`. When the
 command loop runs on another core and only the code setting throttles stops, `update()` keeps
 sending the last throttle, the ESC keeps receiving valid frames and its signal-loss timeout does
 not fire (ADR-004, the 2026-11-11 note under "The library reports facts, not health").

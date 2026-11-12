@@ -34,7 +34,7 @@ All figures were measured with AM32 2.16; the bench ESCs run 2.22 since 2026-11-
 
 An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that arms later after an ESC reboot. The 99% arming rate is **not yet supported** on the current code. The evidence and the measurements behind these figures are in the README's Operational Envelope.
 
-The arming bound is measured by `scripts/run_scenarios.py` (`CLEAN_ARM_THRESHOLD_MS`); keep that constant, README.md and this table in agreement. Not guaranteed: DShot commands, other ESC firmware, motor behaviour after arming.
+The arming bound is the constant `CLEAN_ARM_THRESHOLD_MS` in `scripts/arming_bound.py`, used by both the batch runner (`scripts/run_scenarios.py`) and the session verdict (`scripts/session_summary.py`); keep that constant, README.md and this table in agreement. Not guaranteed: DShot commands, other ESC firmware, motor behaviour after arming.
 
 ## Development Environment
 
@@ -59,6 +59,12 @@ Explain work as goal → step → why, in plain language.
   option's consequence in the user's terms.
 - Say whether a number comes from the user's memory, your memory, or the repo - and check the
   repo first.
+
+## Ways of working
+
+- **Work on a feature branch, never on master.** Create the branch before the first change; agreed work is committed there without asking (owner, 2026-11-10).
+- **Merging to master is a squash merge and needs the owner's go; so does a push.** Run the PC tests on master after the merge and before the push.
+- **Delete the feature branch once its squash merge is on master** (owner, 2026-11-12). No go is needed for the deletion; git history and the squash commit are the record.
 
 ## Code Style
 
@@ -150,12 +156,14 @@ folder contents and the spy's tools are in `tests/README.md`.
 - **`tests/pc/`** - runs on a PC under plain Python with `fakes.py` (`python -m unittest discover -s tests/pc`). Nothing that touches the Pico.
 - **`tests/bench/dshot_protocol/`** - does the DShot link and the arming/telemetry behaviour hold on this ESC across motor counts and configurations? The scenario runner, its JSON scenarios, the single-motor ESC probes. Not: physical RPM, code another group also needs, anything without an ESC.
 - **`tests/bench/pio_and_cores/`** - how the driver uses the RP2350's PIO blocks and its two cores. Pico only, no ESC or motor power. Not: anything that arms an ESC.
-- **`tests/bench/wingman/`** - the second Pico (the wingman) and everything it relies on, grouped by the machine the code runs on: the **spy** records every edge of the ESC lines, the **ESC mock** plays recorded ESC replies with the ESC disconnected. Equipment, not a test group. Not: anything about a real ESC, a motor or arming; a mock session is never evidence. **Design principle (owner, 2026-11-01): the wingman takes everything it needs to know about the main Pico (pins, which lines are bidirectional, DSHOT speed, run length) from the scenario the main Pico runs, read in one place (`tests/bench/wingman/tools/wingman_plan.py`); no pin, speed or fixture is written into the wingman's own code.**
+- **`tests/bench/wingman/`** - the second Pico (the wingman) and everything it relies on, grouped by the machine the code runs on: the **spy** records every edge of the ESC lines, the **ESC mock** plays recorded ESC replies with the ESC disconnected. Equipment, not a test group, and a permanent part of the bench. Not: anything about a real ESC, a motor or arming; a mock session is never evidence. **Design principle (owner, 2026-11-01): the wingman takes everything it needs to know about the main Pico (pins, which lines are bidirectional, DSHOT speed, run length) from the scenario the main Pico runs, read in one place (`tests/bench/wingman/tools/wingman_plan.py`); no pin, speed or fixture is written into the wingman's own code.**
 
 **Rules for bench runs** (the mechanics are in `tests/README.md`, "Bench rules and mechanics"):
 
 - One run is one session, named by the PC (`scripts/run_session.py`, or the batch runner `scripts/run_scenarios.py`).
-- **While the main Pico controls motors its I/O is the bare minimum (ESC I/O excepted); the spy records every wire edge** (owner, 2026-10-31). A threshold with too few samples is reported as not judged, never failed.
+- **The main Pico reports facts, the PC judges** (owner, 2026-11-11; ADR-008). The main Pico reports what happened and may bail out of a run early; a bail-out is reported as "aborted" with its reason, never as a verdict, and its console says completed or aborted, never pass or fail. The verdict of every session is made on the PC only (`scripts/session_summary.py`), from the wire recording. This is ADR-004's "the library reports facts" one level up: the library reports to the application, the main Pico reports to the PC.
+- **The wingman is a permanent part of the bench** (owner, 2026-11-11). Every bench run is recorded by it; a run without its recording has not been judged (verdict "unknown").
+- **While the main Pico controls motors its I/O is the bare minimum (ESC I/O excepted); the spy records every wire edge** (owner, 2026-10-31). A threshold with too few replies on the wire is reported as not judged, never failed.
 - A bench test that runs motors uses the scenario runner's mechanics, so every result compares with the same baseline; a test that must differ says so in its header.
 - Shared test code sits directly in `tests/bench/`; test groups never import another group's files. File names are unique across the repository, because `deploy.py` flattens them onto the Pico.
 - Running hardware: `scripts/deploy.py` only uploads; `scripts/run_test.py` and `scripts/run_scenarios.py` spin motors (all three are on the Claude Code allow-list).

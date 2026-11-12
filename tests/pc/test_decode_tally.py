@@ -1,5 +1,5 @@
 # tests/bench/decode_tally.py: how a run's decoded captures are classified and
-# checked against a scenario's thresholds.
+# summarised as facts.
 
 import sys
 import unittest
@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
 import fakes  # noqa: E402,F401
-from decode_tally import DecodeTally, SpinWatch, MIN_SAMPLES, ERPM_KEPT, is_sampled  # noqa: E402
+from decode_tally import DecodeTally, SpinWatch, ERPM_KEPT, is_sampled  # noqa: E402
 
 
 def good(erpm=21000.0):
@@ -92,7 +92,7 @@ class ErpmTest(unittest.TestCase):
         self.assertGreater(kept[-1], total * 0.90)
 
 
-class CheckTest(unittest.TestCase):
+class SummaryTest(unittest.TestCase):
     def filled(self, ok, bad=0, invalid=0, erpm=21000.0):
         tally = DecodeTally()
         for _ in range(ok):
@@ -102,36 +102,6 @@ class CheckTest(unittest.TestCase):
         for _ in range(invalid):
             tally.add(BAD_SYMBOL)
         return tally
-
-    def test_no_thresholds_means_nothing_to_miss(self):
-        self.assertEqual(DecodeTally().check(), [])
-
-    def test_thresholds_met(self):
-        self.assertEqual(self.filled(99, bad=1).check(min_crc_valid_pct=98.0, min_median_erpm=10000), [])
-
-    def test_too_much_garbage_is_reported_with_its_kinds(self):
-        failures = self.filled(90, bad=6, invalid=4).check(min_crc_valid_pct=98.0)
-        self.assertEqual(len(failures), 1)
-        self.assertIn("90.0%", failures[0])
-        self.assertIn("6 CRC failures", failures[0])
-        self.assertIn("4 invalid", failures[0])
-
-    def test_a_motor_that_is_not_turning_is_reported(self):
-        failures = self.filled(100, erpm=917.0).check(min_median_erpm=10000)
-        self.assertEqual(len(failures), 1)
-        self.assertIn("median eRPM=917", failures[0])
-
-    def test_a_tiny_sample_judges_nothing_and_says_so(self):
-        tally = self.filled(MIN_SAMPLES - 1)
-        self.assertEqual([], tally.check(min_crc_valid_pct=50.0, min_median_erpm=10000))
-        self.assertIn("need " + str(MIN_SAMPLES), tally.not_judged(min_crc_valid_pct=50.0))
-        self.assertIsNone(tally.not_judged())
-
-    def test_a_full_sample_is_judged(self):
-        self.assertIsNone(self.filled(MIN_SAMPLES).not_judged(min_crc_valid_pct=50.0))
-
-    def test_a_sample_of_exactly_the_minimum_is_enough(self):
-        self.assertEqual(self.filled(MIN_SAMPLES).check(min_crc_valid_pct=99.0), [])
 
     def test_summary_names_every_class(self):
         text = self.filled(3, bad=1, invalid=2).summary()

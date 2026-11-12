@@ -254,13 +254,9 @@ def build_scenario(data, historic=False):
             )
 
     # NOTE: expect.min_crc_valid_pct and expect.min_median_erpm are validated
-    # here (shape + motor index) but NOT enforced on-device - run_scenario.py
-    # deliberately does no GCR/CRC decoding during the run, because decoding on
-    # the device costs milliseconds per capture. They are checked PC-side on the
-    # pulled session by scripts/analyze_bidir_capture_log.py. The one on-device
-    # reply check is a coarser, cheap proxy: check_reply_failsafe in
-    # run_scenario.py, which only asserts "at least one non-all-zero reply
-    # appeared".
+    # here (shape + motor index) only. They are judged on the PC, on every reply
+    # the wingman recorded from the first throttle of 48 or more onward
+    # (scripts/session_summary.py, decision/ADR-008); the Pico does not judge them.
     # Every Nth new capture per bidirectional motor is decoded on the device (0 = never).
     # Decoding a capture costs about 1.3ms, so only a sample of them is decoded on the
     # device; this is often enough for a percentage and rare enough to stay cheap.

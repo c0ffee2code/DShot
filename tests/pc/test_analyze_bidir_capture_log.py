@@ -99,7 +99,7 @@ class RefusalTest(unittest.TestCase):
 
     def test_an_aborted_run_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
-            write_session(Path(tmp), [sample(1, 20400)], device={"outcome": "failed"})
+            write_session(Path(tmp), [sample(1, 20400)], device={"outcome": "aborted: RuntimeError: arming did not complete within 18000ms"})
             _, code = analyze(Path(tmp))
         self.assertNotEqual(0, code)
 
@@ -140,20 +140,6 @@ class CrossCheckTest(unittest.TestCase):
             text, code = analyze(Path(tmp))
         self.assertEqual(1, code)
         self.assertIn("wrote 26 samples, the log holds 25", text)
-
-
-class ExpectTest(unittest.TestCase):
-    def test_gap_and_rate_come_from_the_devices_own_counters(self):
-        records = [sample(1000 * i, 20400) for i in range(25)]
-        scenario = valid_scenario()
-        scenario["expect"] = {"max_gap_ms": 100, "min_record_rate_hz": 150}
-        with tempfile.TemporaryDirectory() as tmp:
-            write_session(Path(tmp), records, scenario=scenario,
-                          device={"largest_gap_us": "250000", "capture_passes": "10"})
-            text, code = analyze(Path(tmp))
-        self.assertEqual(1, code)
-        self.assertIn("largest_gap=250.0ms > max_gap_ms=100", text)
-        self.assertIn("min_record_rate_hz=150", text)
 
 
 if __name__ == "__main__":

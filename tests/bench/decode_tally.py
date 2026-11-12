@@ -1,10 +1,11 @@
 # EXAMPLE APPLICATION CODE - not part of the DShot library.
 #
-# Tallies how the telemetry captures a run decoded, for one motor, so a scenario
-# can say how much garbage it tolerates. run_scenario.py decodes every Nth new
-# capture on the device - the decode a real application would do on Core 0, in
-# MicroPython - and feeds each result here; scripts/analyze_bidir_capture_log.py
-# replays the same sampling rule over the logged captures on a PC and compares.
+# Tallies how the telemetry captures a run decoded, for one motor, as facts: it
+# judges nothing (the session verdict is made on the PC from the wire recording,
+# decision/ADR-008). run_scenario.py decodes every Nth new capture on the device -
+# the decode a real application would do on Core 0, in MicroPython - and feeds each
+# result here; scripts/analyze_bidir_capture_log.py replays the same sampling rule
+# over the logged captures on a PC and checks that the two decoders agree.
 #
 # A decoded capture lands in exactly one of three classes:
 #   crc_ok    - GCR symbols and CRC both valid: a real reply.
@@ -17,10 +18,6 @@
 # Pure Python (array only), so tests/pc exercises it on a PC as well.
 
 from array import array
-
-# Fewer decoded captures than this cannot support a percentage: a threshold on
-# an almost-empty sample would pass or fail by luck
-MIN_SAMPLES = 20
 
 ERPM_KEPT = 256
 
@@ -80,34 +77,6 @@ class DecodeTally:
             return 0.0
         values = sorted(self.erpms[:self.erpm_count])
         return values[self.erpm_count // 2]
-
-    def not_judged(self, min_crc_valid_pct=None, min_median_erpm=None):
-        """
-        A message when thresholds were given but the sample is too small to judge them, else None.
-        Sampling rarely is the owner's choice (decode_every), so a thin sample is reported, never failed:
-        the real replies are on the spy's recording.
-        """
-        if (min_crc_valid_pct is None and min_median_erpm is None) or self.sampled >= MIN_SAMPLES:
-            return None
-        return "only " + str(self.sampled) + " captures decoded, need " + str(MIN_SAMPLES) + " to judge"
-
-    def check(self, min_crc_valid_pct=None, min_median_erpm=None):
-        """
-        The thresholds this tally misses, as a list of messages (empty when met).
-        A sample smaller than MIN_SAMPLES judges nothing (see not_judged()) and so misses nothing.
-        """
-        failures = []
-        if self.not_judged(min_crc_valid_pct, min_median_erpm) is not None or (
-                min_crc_valid_pct is None and min_median_erpm is None):
-            return failures
-        if min_crc_valid_pct is not None and self.crc_valid_pct() < min_crc_valid_pct:
-            failures.append("crc_valid=" + str(round(self.crc_valid_pct(), 1)) + "% < min_crc_valid_pct=" +
-                            str(min_crc_valid_pct) + "% (" + str(self.crc_fail) + " CRC failures, " +
-                            str(self.invalid) + " invalid)")
-        if min_median_erpm is not None and self.median_erpm() < min_median_erpm:
-            failures.append("median eRPM=" + str(round(self.median_erpm())) + " < min_median_erpm=" +
-                            str(min_median_erpm))
-        return failures
 
     def summary(self):
         return ("decoded=" + str(self.sampled) + " crc_ok=" + str(self.crc_ok) +

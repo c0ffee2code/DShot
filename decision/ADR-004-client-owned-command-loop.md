@@ -62,7 +62,7 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 └─────────────────────────────────────────────────────────────┘
 ```
 
-*Update 2026-11-11:* `update()` no longer calls `send_throttle_command(throttle)`. Once armed it sends each motor's throttle through `send_unchecked(throttle)`, which builds and queues the packet with no range check; while arming it sends the precomputed `send_zero()`. The range check moved to the boundary: `MotorGroup.set_throttle()` and `set_all_throttles()` reject anything other than 0 or 48 to the bench ceiling (`validate_throttle()`). `send_throttle_command()` keeps its own check for code that drives a motor without a group. See ADR-002, "Command-loop and decode performance", update note of 2026-11-11 (PC-tested only, not yet run on the Pico or the bench).
+*Update 2026-11-11:* `update()` no longer calls `send_throttle_command(throttle)`. Once armed it sends each motor's throttle through `send_unchecked(throttle)`, which builds and queues the packet with no range check; while arming it sends the precomputed `send_zero()`. The range check moved to the boundary: `MotorGroup.set_throttle()` and `set_all_throttles()` reject anything other than 0 or 48 to the bench ceiling (`validate_throttle()`). `send_throttle_command()` keeps its own check for code that drives a motor without a group. See ADR-002, "Command-loop and decode performance", update note of 2026-11-11 (the change ran on the Pico and the bench on 2026-11-11: in 15 runs (AM32 2.22, four bidirectional motors, DSHOT600, throttle 0 to 215 held 20 s, bare shafts; none of them KPI evidence) 14 armed and spun, 12 of them in 2112 to 2113 ms and 3 in 2630 to 2659 ms. This shows that the changed path arms and drives the motors. It establishes no arming rate (five runs per batch), and nothing was measured about per-tick timing.).
 
 ### No runner abstraction in the library
 
@@ -95,6 +95,8 @@ Gating on state also makes call ordering unhazardous in general. The application
 `is_healthy()` is gone. It blocked for 5ms inside `utime.sleep_ms()`, and was called from within `arm()` — a hidden stall in a safety path. More fundamentally, a library that does not own the loop cannot judge whether that loop is healthy.
 
 `update_age_ms()` reports milliseconds since the last transmission. The application sets its own threshold, because only the application knows what its scheduling arrangement should deliver. The arming state machine reuses the same timestamp, so there is one source of truth and no separate heartbeat counter to overflow.
+
+*Cross-reference 2026-11-11:* the same principle applied one level up, on the test bench (the main Pico reports facts and may bail out of a run; the PC judges every session from the wire recording), is [ADR-008](ADR-008-main-pico-reports-pc-judges.md).
 
 #### Amendment 2026-11-11: failures outside the library are not handled by the library
 
