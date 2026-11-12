@@ -2,13 +2,18 @@
 
 **Update 2026-10-19:** the loop this report describes as "unpaced" / "maximum rate" (`UPDATE_INTERVAL_US = 0`, `update()` back to back) no longer exists. The only mode is the paced loop at 1045us, and a scenario cannot choose its own period. What follows records the earlier unpaced loop and was not re-measured on the paced one.
 
-**Status:** Deferred — superseded by the 2026-08 implementation work below (RX
-capture + eRPM decode verified on hardware, 100% CRC-valid across two
-independent confirmation sweeps). The driver now exposes bidirectional
-telemetry through `BidirectionalDShot` and `MotorGroup` (see
-[ADR-005](ADR-005-bidirectional-telemetry-data-flow.md)); the formal flip to
-Accepted is still pending, as decoding non-eRPM frames (extended telemetry, the
-stopped-motor value) and the motor pole count are still open. The
+**Status:** Accepted (2026-11-11). Bidirectional DShot is a supported capability
+of the driver. The driver exposes bidirectional telemetry through `BidirectionalDShot` and
+`MotorGroup` (see [ADR-005](ADR-005-bidirectional-telemetry-data-flow.md)), with
+the frame receiver as its only receiver. What is and is not verified is in the
+"Verification status" table below; all of it was measured on AM32 2.16. Still
+open and not part of what is accepted: decoding extended telemetry frames.
+*Earlier status, until 2026-11-11:* "Deferred", then pending a formal flip to
+Accepted while non-eRPM frames (extended telemetry, the stopped-motor value) and
+the motor pole count were open. The stopped-motor value is now recognised
+(`not_running` in `gcr_decode.decode_result()`, and the arming gate's
+`AM32_NOT_RUNNING_FRAME`), and the pole count was measured on 2026-10-15, see
+"eRPM Decoding". The
 "Implementation Update (2026-08-23)" section and everything below it hold
 the real investigation history, including dead ends - each subsection's own
 heading/status line says whether it's verified or superseded, so read those
@@ -32,23 +37,26 @@ as firmware this driver still accommodates.
 ## Verification status
 
 What has and has not been shown on hardware, kept current as gates pass. Each
-row's evidence is in the dated sections below.
+row's evidence is in the dated sections below. Rows last brought up to date on
+2026-11-11. Every bench figure in this table was measured with AM32 2.16; the
+bench ESCs run AM32 2.22 since 2026-11-10 and none of it has been re-measured
+on 2.22.
 
 | Layer | Status |
 |---|---|
 | Inverted TX (ESC detects bidirectional mode) | Verified |
 | Physical RX capture | Verified |
 | GCR decode | Verified |
-| CRC validation (inverted polarity only) | Verified |
-| eRPM value from a CRC-valid eRPM frame | Verified; mechanical RPM is not - the motor pole count is an unverified constant |
-| Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing); corruption after a stall under the production command loop not re-tested |
-| RX FIFO management | 8 words deep (joined), drained on every command-loop tick before the commands are sent, capped per call (ADR-005); two bidirectional motors verified 100% CRC-valid at both speeds, deliberate consumer stalls not re-tested |
-| `update()`'s own frame-to-reply-window spacing for one bidirectional motor | Checked 2026-10-11 after the hot-path tightening below raised the concern: one bidirectional motor, DSHOT300, max-rate pacing, 8s - 114/114 CRC-valid, no collision observed (bug-reports/BUG-006); a longer/varied-load run would still be worth it before relying on this configuration |
-| Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4's earlier failure was a defect in this project's own code, not the PIO state machines or the channel (owner's correction, 2026-10-19; the specific defect is not recorded here); four bidirectional motors through the facade not verified |
-| Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one bidirectional motor verified through the facade, several not yet |
-| DShot600 bidirectional | Verified for short, settled-throttle captures; no saturation or stall-recovery run |
-| Non-eRPM frames (extended telemetry, stopped-motor value) | Not handled |
-| Telemetry loss and health tracking | Not implemented |
+| CRC validation (inverted polarity only) | Verified. It does not separate a silent ESC from a replying one at some throttles: with no reply, the receiver captures our own next frame, and at 218 of the 2,001 throttle values outside the command range (0 and 48 to 2047; DSHOT600, PC model of 2026-11-11) that capture can pass the CRC; 13 of them fall within today's bench ceiling of 48 to 250 (see the correction under "Hardware validation, part 5", and ADR-005) |
+| eRPM value from a CRC-valid eRPM frame | Verified. Mechanical RPM = eRPM / 6 on this bench's motors: 12 magnets, 6 pole pairs, measured with an optical sensor on 2026-10-15 (see "eRPM Decoding") |
+| Continuous RX synchronization | Verified in steady operation and after deliberate FIFO stalls (no lost pairing). With the frame receiver, a drain stalled for up to 60 frames holds correct captures and loses the later ones ("Hardware validation, part 3": DSHOT300, motor driven directly, not through `MotorGroup`). A stall under the production command loop, and any stall at DSHOT600, not tested |
+| RX FIFO management | The frame receiver pushes one word per reply into its default 4-word RX FIFO (not joined: the join was tried and reverted, part 3), so the FIFO holds 4 replies. Drained on every command-loop tick before the commands are sent, at most `RX_DRAIN_LIMIT` (4) replies per call (ADR-005). Two and four bidirectional motors verified, see the row below. Deliberate consumer stalls under `MotorGroup` not tested |
+| Frame-to-reply spacing on the command loop | Since 2026-10-19 `update()` runs only on the loop paced at 1045us, far above a frame plus its reply window (about 135us at DSHOT300 and 80us at DSHOT600, BUG-006's figures from AM32's F051 source). The check of 2026-10-11 (one motor, DSHOT300, 8s, 114/114 CRC-valid, no collision) ran on the max-rate loop that no longer exists. Nothing in the driver enforces a minimum frame period (BUG-006) |
+| Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4's earlier failure was a defect in this project's own code, not the PIO state machines or the channel (owner's correction, 2026-10-19; the specific defect is not recorded here). Four bidirectional motors, two per PIO block, ran through `MotorGroup` and the scenario runner on the paced loop at DSHOT600 in 60 runs of 20s (BUG-009 Results 3 and 4, 2026-11-01/02): every run armed within 3.0s, all four motors spun up and held, and the sampled decodes met the runner's 99% CRC-valid threshold. One of those runs failed the session summary's CRC check on two motors (98.1% and 97.7%, all in its first 0.75s). Four motors at DSHOT300 not run |
+| Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one, two and four bidirectional motors verified through the facade (rows above) |
+| DShot600 bidirectional | Verified for settled-throttle captures, in 60-second two-motor runs (ADR-005) and in the 20-second four-motor runs above; no saturation or stall-recovery run |
+| Non-eRPM frames (extended telemetry, stopped-motor value) | Stopped-motor value recognised (`not_running` in `gcr_decode.decode_result()`; the arming gate compares with `AM32_NOT_RUNNING_FRAME`). Extended telemetry not handled |
+| Telemetry loss and health tracking | Not in the library, by decision: the library reports facts and the application judges health (ADR-004, "The library reports facts, not health") |
 | Post-disarm line state (bidirectional) | Verified: `stop()` drives the line low instead of releasing it; the ESC recovers with no reset; re-arm works |
 
 ## Context
@@ -437,6 +445,10 @@ implementation has since happened and been verified on hardware; see
 on why bidirectional DShot was originally shelved. A formal status flip to
 Accepted is still pending completion of Phase 4/5/6 (driver integration,
 docs) - see the project plan.*
+
+*Update 2026-11-11:* the status flip mentioned above has happened: this ADR is
+Accepted (see the Status line at the top). The text below is the original
+2026-02 decision to defer, kept as history.
 
 **Deferred** - Bidirectional DShot implementation is postponed due to:
 
@@ -1758,6 +1770,19 @@ overhead per tick; a lookup table of packets and a flattened loop measured about
 10 times faster in a prototype but restructure the hot path and move the
 throttle validation, so they were left. When to collect garbage - for example at
 points where a stall is harmless - is a scheduling matter for the application.
+
+*Update 2026-11-11:* the throttle validation has since moved, though not for
+speed alone. The owner's ruling of that date: incorrect input is rejected,
+never clamped, and the valid-range check does not belong on the per-tick path.
+`MotorGroup.update()` now sends through `DShotPIO.send_unchecked()`, which
+builds and queues the packet with no range check. `MotorGroup.validate_throttle()`
+(formerly `clamp_throttle()`) rejects every value other than 0 or
+`MIN_THROTTLE` (48) to `THROTTLE_CEILING` (250) in `set_throttle()` and
+`set_all_throttles()`, negatives included. `send_throttle_command()` keeps its
+own check (no negatives, nothing above the ceiling) for code that drives a motor
+without a group. The lookup table and flattened loop above were not built. This
+change (commit `99d1e33`) has PC tests only; it has not yet run on the Pico or
+the bench, so no per-tick figure exists for it.
 The scenario harness no longer reads words itself: it runs through `MotorGroup` and samples the latest capture (ADR-005).
 
 ### Further hot-path tightening (2026-10-10)
@@ -2107,6 +2132,17 @@ fresh IRQ wait for every frame after that. `CaptureMailbox.latest()` returns `No
 first real publish regardless of receiver (unit-tested, receiver-independent), so an application
 sees nothing during the gap rather than stale or garbage data.
 
+**Correction (2026-11-11):** the reasoning above misses that our own next frame supplies a
+falling edge. With the ESC silent, the line is released and pulled high after our frame, so the
+receiver's `wait(1, pin, 0)` passes at once, and the `wait(0, pin, 0)` marker wait is then ended by
+the first falling edge of our next frame, about one command period later. The receiver reads its
+21 bits from that frame and pushes them. So a silent ESC does not leave the application with
+nothing: `update()` keeps publishing captures of our own frames, with a new token each time. Most
+fail the CRC, but at some throttles the capture can pass it (ADR-005, the correction under
+"`ARMED` is not 'the ESC has armed'"; BUG-008). BUG-004 and BUG-008 describe the same
+fall-through. Telling a silent ESC from a replying one is left to the application (ADR-004, "The
+library reports facts, not health"). The no-reply case has still not been forced on the bench.
+
 This is a smaller extrapolation than it would have been before part 3 above: the stalled-drain
 test already exercised the same "not listening for many frames, then resyncs cleanly on
 `wrap_target()`" pattern far more aggressively (60 frames of TX activity with RX not listening,
@@ -2194,6 +2230,8 @@ was deleted along with it.
 The receiver program pushes each reply as exactly 4 words, and its FIFO was 4 words deep, on the reasoning that one capture could then never block mid-frame. That holds only while the CPU takes every capture before the next reply's first word arrives, and the next command (which starts the next capture) is queued within tens of microseconds of the drain. With two bidirectional motors driven from one command loop, the motor drained last lost its replies: the capture's first word blocked on the full FIFO, the receiver's sampling paused while the reply carried on, and it resumed after the reply had ended, so the words were a short burst followed by idle-level words. It repeated on every following capture, and which channel it hit changed from run to run.
 
 The receiver never uses its TX FIFO, so `fifo_join=PIO.JOIN_RX` gives its RX FIFO the whole 8 words at no cost: room for one capture the CPU has not taken yet plus the next. On the bench (two bidirectional motors, DSHOT300 and DSHOT600, 8-second and 60-second scenarios) it removed the failure: the old send-first order with the joined FIFO was clean in 4 of 4 runs, and with the drain moved before the send (ADR-005) both channels were 100% CRC-valid in the 60-second runs. Stalling the consumer for longer than a capture is still possible and still produces a corrupted capture, but it now takes two late drains in a row rather than one.
+
+*Update 2026-11-11:* this section describes the sample receiver (`dshot_bidir_rx`, 4 words per capture), which was removed on 2026-09-26 and deleted from the driver on 2026-10-11 (see "Idea, not built: run-length capture" above). The frame receiver that replaced it pushes one word per reply and has no `fifo_join`: its RX FIFO is the default 4 words. A join was tried on it and reverted ("Hardware validation, part 3"), and its full FIFO stalls holding a correct capture rather than corrupting one. Nothing in the driver joins a FIFO today.
 
 ## Implementation Update (2026-09-25): post-disarm line state
 

@@ -8,6 +8,21 @@ holding its last throttle until the ESC's signal-loss timeout, so callers must e
 produce 1-47 or catch it. Values below 0 and above 2047 are still clamped, as before.
 Plan items 2-4 (low-level docstring warning, profile and scenario-load rejection) are done as
 written.
+*Update 2026-11-11:* nothing is clamped any more. The owner's ruling of that date: incorrect input
+is rejected, never clamped, and the valid-range check does not belong on the per-tick path.
+`clamp_throttle()` is renamed `validate_throttle()` and raises `MotorGroupException` for every
+value other than 0 or 48 to `THROTTLE_CEILING` (250, the temporary bench ceiling since
+2026-10-19), negatives included; `set_throttle()` and `set_all_throttles()` call it.
+`MotorGroup.update()` no longer checks the range on every tick: it sends through the new
+`DShotPIO.send_unchecked()`. `send_throttle_command()` keeps its own check for code that drives a
+motor without a group, and it rejects negatives and values above 250, not 2047 as plan item 2
+says; it still accepts 1-47. Commit `99d1e33`; PC tests only, not yet run on the Pico or the
+bench. The risk above holds only when the loop that stops is the one calling `update()`. When the
+command loop runs on another core and only the code setting throttles stops, `update()` keeps
+sending the last throttle, the ESC keeps receiving valid frames and its signal-loss timeout does
+not fire (ADR-004, the 2026-11-11 note under "The library reports facts, not health").
+*Paths (2026-11-11):* `tests/harness/throttle_profile.py` is now `tests/bench/throttle_profile.py`
+(tests restructured in commit `2cbde0c`).
 **Severity:** High (latent) - no current scenario hits it, but any throttle ramp from 0 does.
 Consequences include ESC EEPROM writes.
 **Component:** `driver/motor_group.py` (`clamp_throttle()`, `set_throttle()`),

@@ -62,11 +62,15 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 └─────────────────────────────────────────────────────────────┘
 ```
 
+*Update 2026-11-11:* `update()` no longer calls `send_throttle_command(throttle)`. Once armed it sends each motor's throttle through `send_unchecked(throttle)`, which builds and queues the packet with no range check; while arming it sends the precomputed `send_zero()`. The range check moved to the boundary: `MotorGroup.set_throttle()` and `set_all_throttles()` reject anything other than 0 or 48 to the bench ceiling (`validate_throttle()`). `send_throttle_command()` keeps its own check for code that drives a motor without a group. See ADR-002, "Command-loop and decode performance", update note of 2026-11-11 (PC-tested only, not yet run on the Pico or the bench).
+
 ### No runner abstraction in the library
 
 The library ships no `MotorRunner` interface for the application to implement. The shape of such an interface — callback versus poll, who owns the interval, restart semantics, how failures surface — is precisely what varies between projects, so defining it in `driver/` would re-create the same coupling one layer up.
 
 `tests/harness/core1_runner.py` is a concrete Core 1 runner, and it is explicitly **application code**, kept next to the scripts that use it rather than in `driver/`. Projects copy and adapt it. If a genuinely common shape emerges across several projects, extract it then, from real usage rather than speculation.
+
+*Paths (2026-11-11):* `tests/harness/` no longer exists (tests restructured in commit `2cbde0c`). The runner is now `tests/bench/core1_runner.py`, and the scenario harness named under Verification is `tests/bench/dshot_protocol/run_scenario.py`. `tests/device/test_pio_lifecycle.py` is now `tests/bench/pio_and_cores/test_pio_lifecycle.py`.
 
 ### Sub-Decision: Non-blocking arming
 
@@ -91,6 +95,30 @@ Gating on state also makes call ordering unhazardous in general. The application
 `is_healthy()` is gone. It blocked for 5ms inside `utime.sleep_ms()`, and was called from within `arm()` — a hidden stall in a safety path. More fundamentally, a library that does not own the loop cannot judge whether that loop is healthy.
 
 `update_age_ms()` reports milliseconds since the last transmission. The application sets its own threshold, because only the application knows what its scheduling arrangement should deliver. The arming state machine reuses the same timestamp, so there is one source of truth and no separate heartbeat counter to overflow.
+
+#### Amendment 2026-11-11: failures outside the library are not handled by the library
+
+**Decision.** The library does not detect and does not handle the two cases below. It gets no dead-hand mechanism, no health judgement, no automatic zero throttle and no accessor for the age of the last throttle write. The library reports facts; application code decides on them and provides the level of resilience it requires.
+
+**Cases considered.**
+
+1. **The application stops updating throttles while the command loop keeps running** (for example, the control code on one core fails while `update()` keeps running on the other). `update()` keeps sending the last throttle values, so the ESC keeps receiving valid frames and its signal-loss timeout never fires. The motors hold their last throttle until the application acts.
+2. **An ESC goes silent or resets after `ARMED`.** The group stays `ARMED` and keeps sending. With the ESC silent, the receiver captures our own frames and publishes them (ADR-002, correction under "Hardware validation, part 5"), so captures keep arriving and some can pass the CRC at some throttles (ADR-005).
+
+**Motivation.**
+
+- A crash of the application without shutting the library down is a defect of the application, not of the library.
+- Resilience and self-healing inside a library grow without a natural limit; they are kept to the minimum.
+- The library cannot tell a stopped application from a quiet one: "a throttle was written" is not "the application is alive" (a bench script sets a throttle once and waits; a controller may be alive and skip a write). Only the application knows which holds.
+- The application can detect both cases without help from the library.
+- A timestamp in `set_throttle()` would add work on the core that sets throttles, which changes the command loop's frame spacing on this platform (BUG-011).
+
+**Consequences.**
+
+- Shutdown is the application's duty. An application that can fail calls `disarm()` on every exit path (for example in a `try`/`finally`). `disarm()` deactivates and re-initialises the PIO state machines and drives the lines low, nothing more; after it `update()` is inert, so a command loop that is still running sends nothing.
+- Case 1 stays undetected by the library. `update_age_ms()` cannot show it, because `update()` itself refreshes that value. `set_throttle()` and `set_all_throttles()` store values only.
+- Case 2 is application work: a per-motor check that the captures are real replies, and a flag for a reset after `ARMED`. BUG-008 records both for the test harness, which is the application on the bench.
+- What the library reports (checked against `driver/motor_group.py` on the amendment date): `update_age_ms()`, the time since `update()` last ran; `state`, `is_armed()` and `is_arming()`; `arming_status()`, the reply evidence gathered while arming (not updated after `ARMED`); the latest capture per bidirectional motor through `raw_telemetry()`, and its decode (CRC, eRPM, `not_running`) through `decode_telemetry()`; the throttle values held, through `get_all_throttles()`.
 
 ### Sub-Decision: `arm()` / `disarm()` own the PIO lifecycle
 
@@ -158,11 +186,13 @@ Reversed:
 | `update()` called on a stopped group | Inert by design — this is why the state gate exists. |
 | Core 1 exception invisible in REPL | `Core1Runner` captures the exception into `runner.error` instead of swallowing it. |
 
+*Update 2026-11-11:* the "loop dies mid-flight" row holds for the loop that calls `update()`. If the code that sets throttles dies while that loop keeps running, `update_age_ms()` stays fresh and the motors hold their last throttle (see the 2026-11-11 note under "The library reports facts, not health").
+
 ## Verification
 
 **Status:** Partly verified. Arming, running and disarming through the facade with an application-owned Core 1 loop has been exercised repeatedly on the AM32 bench ESC, most recently through the scenario harness (`tests/harness/run_scenario.py`), which drives every scenario through `MotorGroup` with `update()` on an application-owned Core 1 loop. The other checks below have not been re-run individually, and the scripts named in the table were retired.
 
-**PIO state machines are deactivated, never released.** `stop()` deactivates and restarts a state machine; nothing frees the state machines or the programs they loaded, and this MicroPython (1.28) has no way to free a state machine (`StateMachine` has no `deinit`), only `PIO.remove_program()` for a program. That is enough for how a `MotorGroup` is used: 30 builds of a group, each armed and disarmed, raised no error and left the heap unchanged, because a new state machine on the same id reuses the program already loaded. It would not be enough for code that puts a different program on the same state machine repeatedly: the replaced program stays loaded and the block's 32 slots run out (an ENOMEM, which is what swapping the receiver program on a constructed motor produced); `remove_program()` should free it, but has not been tried. `disarm()` leaves the receiver's FIFO full of unread words (8 with the joined FIFO); `start()` flushes them.
+**PIO state machines are deactivated, never released.** `stop()` deactivates and restarts a state machine; nothing frees the state machines or the programs they loaded, and this MicroPython (1.28) has no way to free a state machine (`StateMachine` has no `deinit`), only `PIO.remove_program()` for a program. That is enough for how a `MotorGroup` is used: 30 builds of a group, each armed and disarmed, raised no error and left the heap unchanged, because a new state machine on the same id reuses the program already loaded. It would not be enough for code that puts a different program on the same state machine repeatedly: the replaced program stays loaded and the block's 32 slots run out (an ENOMEM, which is what swapping the receiver program on a constructed motor produced); `remove_program()` should free it, but has not been tried. `disarm()` leaves the receiver's FIFO full of unread words (8 with the joined FIFO); `start()` flushes them. *Correction (2026-11-11):* no longer true. Since 2026-10-13 each motor's `stop()` re-initialises its state machines, and `BidirectionalDShot.init_state_machines()` empties the RX FIFO and clears the published capture, so `disarm()` leaves the FIFO empty; `start()` does the same again. The receiver's FIFO is not joined any more: the frame receiver pushes one word per reply into the default 4-word FIFO (ADR-002, "Hardware validation, part 3").
 
 Between runs: the next `mpremote run` clears the PIO state itself. After a run that exited armed, every state machine was inactive and every FIFO empty, and a Core 1 thread left running did not stop the next run from starting its own (both checked 2026-09-21). What does survive is pad configuration, such as a pull-up set by the previous run.
 

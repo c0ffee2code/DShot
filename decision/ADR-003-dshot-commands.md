@@ -9,6 +9,10 @@ exact path). What's still missing is a driver-side command API - there is none t
 *Update 2026-10-13:* that clamp has landed: `MotorGroup.set_throttle()` raises for 1-47, so the
 facade can no longer send a command by accident, and a future command API cannot go through
 `set_throttle()`. The low-level `send_throttle_command()` still accepts 1-47.
+*Update 2026-11-11:* still true. `send_throttle_command()` rejects only negative values and
+values above the bench ceiling (250), and the new `send_unchecked()`, which `MotorGroup.update()`
+uses, checks nothing. `MotorGroup` now rejects every value other than 0 or 48 to the ceiling
+(`validate_throttle()`, formerly `clamp_throttle()`).
 **Date:** 2026-02-01
 **Context:** Implementing DShot special commands beyond throttle control
 
@@ -65,9 +69,15 @@ remaining condition. This ADR's Blocked status needs a fresh decision rather
 than being assumed still to hold; AM32's command support has not been
 checked here.*
 
+*Update 2026-11-11:* AM32's command support has since been checked against its
+source (`specification/AM32.md`#7), and the status at the top of this record
+says the blocker no longer applies.
+
 ## Decision
 
 Defer implementation of special commands in `DShotPIO` driver until several different ESCs are available for testing. The API design below documents the intended interface.
+
+*Update 2026-11-11:* this condition no longer applies. AM32 is the only ESC firmware in scope and it implements the commands, so "several different ESCs" will not come; see the status at the top. The work is TODO, not blocked. The API sketch below predates `MotorGroup` and BUG-005: a command API needs its own entry point, because `set_throttle()` rejects 1-47.
 
 ### API Design
 
@@ -104,6 +114,8 @@ class DShotPIO:
 | Beep functionality | Blocked - several different ESCs required for testing |
 | Spin direction | Blocked - several different ESCs required for testing |
 
+*Update 2026-11-11:* "Blocked" here is out of date; the work is TODO (see the status at the top). Nothing in the table is implemented yet: there is no `DSHOT_CMD` and no command method in `driver/`.
+
 ## Consequences
 
 ### Current State
@@ -111,6 +123,8 @@ class DShotPIO:
 - Implementation blocked until several different ESCs available for testing
 - API design documented above for future implementation
 - Motors already spin in opposite directions, no configuration needed
+
+*Update 2026-11-11:* the first point no longer holds (see the status at the top).
 
 ### Future
 

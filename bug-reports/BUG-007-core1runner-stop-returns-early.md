@@ -7,6 +7,9 @@
 avoid by stopping the loop first.
 **Component:** `tests/harness/core1_runner.py` (example application code that projects copy),
 `driver/dshot_pio.py` (`UnidirectionalDShot` start/stop)
+*Paths (2026-11-11):* `tests/harness/core1_runner.py` is now `tests/bench/core1_runner.py`, and
+the `tests/device/` tests named here are in `tests/bench/pio_and_cores/` (including
+`test_stop_clears_queues.py` and `test_pio_lifecycle.py`); tests restructured in commit `2cbde0c`.
 **Found:** 2026-09-27, code review
 
 ## Summary

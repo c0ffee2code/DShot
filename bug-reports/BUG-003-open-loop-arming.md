@@ -28,6 +28,11 @@ gap-reset entirely; the floor is now plain elapsed time since `arm()`.
   gate off. Only `tests/device/test_pio_lifecycle.py` does that, because it has no ESC attached.
 - Unit tests: `ArmingGateTest` in `tests/unit/test_motor_group.py`, the not-running count in
   `test_capture_mailbox.py`, and the constant's derivation in `test_gcr_decode.py`.
+- *Paths (2026-11-11):* `tests/unit/` is now `tests/pc/`, and `tests/device/test_pio_lifecycle.py`
+  is now `tests/bench/pio_and_cores/test_pio_lifecycle.py` (tests restructured in commit
+  `2cbde0c`). `CaptureMailbox` has two methods now: `drain()` publishes once armed and
+  `discard()` drops replies while arming, and both return the not-running count (ADR-005,
+  2026-10-17 update).
 **Severity:** High - design gap. Any delay on the ESC side means the motor never arms, and nothing
 reports it.
 **Component:** `driver/motor_group.py` (`arm()`, `update()`), `driver/capture_mailbox.py`
@@ -133,6 +138,25 @@ Betaflight never relies on a timer alone
      (cells × 400 ms) and exceeds 450 ms. The count then restarts after an ESC that has already
      armed. That costs 2 s, while zeros keep flowing.
 
+     *Note 2026-11-11:* two texts disagree on the tune's length. This bullet says 400 ms per
+     cell and cites no source; the link `[am32-inputtune]` at the end of this file is defined but
+     not used anywhere in the text. `specification/AM32.md` §16 says the arming tune is three
+     100 ms beeps, about 300 ms, repeated once per cell with the cutoff on, and cites
+     `Src/sounds.c#L219-L237` and `Src/main.c#L1376-L1389`. The "Why 2000 ms" step above also
+     gives ~0.3 s (0.27 s measured). Which length is right is not settled here. Either way, with
+     the cutoff on and two or more cells the silence is longer than 450 ms, and the count restarts
+     after the ESC has armed. The count restarts only after arming (~1 s after the first reply) and
+     the tune (at least ~0.6 s for two cells by either figure), and then needs 2 s more, so `ARMED`
+     comes at least ~3.6 s after the first reply: past the published 3.0 s arming bound (README
+     and CLAUDE.md, Operational Envelope). The bench ESCs have
+     the low-voltage cutoff off (vendor value, `specification/KM55A2_DEFAULTS.md`; the README's
+     "ESC settings as configured", read after the 2.22 flash, lists it as unchanged), so this
+     case does not arise on this bench. **Amendment 2026-11-11.** *Decision:* arming is tuned against AM32 2.22, or a newer release when
+     one is available; no constant is changed now. *Motivation:* the figures in this report were
+     read and measured on AM32 2.16, which the bench no longer runs. *Consequences:* the tune's
+     length, `READY_GAP_MS` and the other gate constants are settled from the 2.22 source and from
+     bench runs on that firmware; until then the disagreement above stays open.
+
    **Replayed on a bench round's captures from BUG-002's own investigation** (not retained in
    BUG-002.md's later distillation), this gate would have held both motors at zero until
    2.5-3.0 s after the old `ARMED`, that is, until each ESC had replied for 2 s after its reboot.
@@ -157,6 +181,10 @@ Betaflight never relies on a timer alone
 6. **Unidirectional-only groups** have nothing to observe. Raise their default minimum to
    3000 ms, Betaflight's DShot detection delay. Document "wait ≥1.5 s after `disarm()` before
    `arm()`".
+
+   *Update 2026-11-11:* still not done. `MotorGroup.DEFAULT_ARM_DURATION_MS` is 2000 for every
+   group, unidirectional-only included, and nothing in `driver/motor_group.py` gives such a group
+   a different default.
 7. **Docs.**
    - CLAUDE.md ("Non-blocking arming"): `ARMED` means the evidence gate, not a timer.
    - README: the "idle tune" heard after `disarm()` is AM32's startup tune after its own reset.

@@ -71,6 +71,11 @@ Apply and bench-test **one at a time**.
    instruction.
    - A silent ESC behaves as today: the receiver still falls through to our next frame, and the
      BUG-008 failsafe catches that.
+
+     *Correction (2026-11-11):* the first half holds; the second does not. BUG-008's own item 1
+     says its reply failsafe cannot trip on these captures, because they are not all-zero, and the
+     per-motor check that would catch them is still open (BUG-008, now application work by the
+     owner's decision of 2026-11-11).
    - `scripts/simulate_frame_receiver.py` models the receiver from `wait(0, pin, 0)` on, so only
      its header comment changes.
 
@@ -80,7 +85,7 @@ Apply and bench-test **one at a time**.
   instructions. Not added - `tests/unit/fakes.py` deliberately does not assemble PIO programs
   (`asm_pio` returns the decorated function unrun), so instruction count can only be checked by
   hand or by deploying to real hardware; both instruction counts were confirmed unchanged by hand
-  after editing.
+  after editing. *(Paths, 2026-11-11: `tests/unit/` is now `tests/pc/`.)*
 - Bench, 2026-09-27:
   1. **Change 1 alone**, 3 runs each on `two_channel_divergent_600` and `two_channel_gc_600`:
      6/6 still failed, identical signature (both motors stuck at 917; one `two_channel_gc_600` run

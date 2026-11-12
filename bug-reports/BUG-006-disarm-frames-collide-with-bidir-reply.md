@@ -11,6 +11,17 @@ test 2026-10-11 (`single_channel_bidirectional_300.json`, max-rate, DSHOT300, 8s
 CRC-valid, 0 failures, median eRPM 21,614. No collision observed in this run. Kept open rather
 than closed outright - one clean run is good evidence, not exhaustive proof against an
 intermittent timing margin.
+*Status note 2026-11-11:* the max-rate exposure measured above no longer exists as a mode: since
+2026-10-19 `update()` runs only on the loop paced at `UPDATE_INTERVAL_US` (1045us), far above the
+~135us (DSHOT300) and ~80us (DSHOT600) floors in the table below. Nothing in the driver enforces a
+minimum frame period, though: `update()` sends whenever it is called. Fix-plan item 3 (document
+the minimum frame period) and item 4 (skip a bidirectional motor sent to too recently) are not
+done; `min_frame_period_us` and a per-speed reply guard do not exist in `driver/`. A fact
+relevant to item 3: `Core1Runner` (`tests/bench/core1_runner.py`) skips forward by whole periods
+when it falls behind, but the two "pump it from your own main loop" examples (README.md and
+`MotorGroup`'s docstring) sleep `max(0, ...)` to a deadline that advances by one period per call,
+so when they fall behind they call `update()` back to back until they catch up.
+*Paths (2026-11-11):* `tests/unit/fakes.py` (Verification) is now `tests/pc/fakes.py`.
 **Severity:** Medium. The emergency stop relies on a single frame for bidirectional motors, and a
 faster command loop would collide on every frame.
 **Component:** `driver/motor_group.py` (`disarm()`), `driver/dshot_pio.py` (`dshot_bidir_tx`)
