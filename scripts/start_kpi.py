@@ -50,7 +50,7 @@ SPIN_UP_LIMIT_MS = 500                  # owner, 2026-11-02, from the 28-run bas
                                         # more runs exist
 PEER_TOLERANCE = 0.15                   # a motor's settled speed against the median of the four in its run
 HOLD_OUTSIDE_MAX_PCT = 1.0              # replies outside the motor's own +-35% band after spin-up (baseline brief dips are about 0.1%)
-CLEAN_RUNS_FOR_99 = 300                 # the evidence rule the arming promise uses (CLAUDE.md, Operational Envelope)
+CLEAN_RUNS_FOR_99 = 300                 # the evidence rule the arming promise uses (README, Operational Envelope)
 
 # Sessions the owner has taken out of the KPI by name (folder name -> why). They are counted apart, never as runs, and the totals say how many
 # were left out. Add one only on the owner's word.

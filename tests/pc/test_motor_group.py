@@ -400,7 +400,7 @@ class DisarmTest(GroupTestCase):
 
 class UpdateIntervalTest(GroupTestCase):
     def test_the_update_period_is_the_one_bench_verified_value(self):
-        # 1045us is what README's "Verified Parameters" table (20/20, then 13/13 clean) and CLAUDE.md's
+        # 1045us is what README's "Verified Parameters" table (20/20, then 13/13 clean) and the README's
         # Operational Envelope rest on. There is no unpaced mode (0 was the default until 2026-10-19):
         # changing this number is a deliberate act that needs new evidence and these docs updated.
         self.assertEqual(MotorGroup.UPDATE_INTERVAL_US, 1045)

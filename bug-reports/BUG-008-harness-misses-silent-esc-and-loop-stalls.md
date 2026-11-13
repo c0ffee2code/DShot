@@ -116,7 +116,7 @@ by default hides exactly the failures this report is about.
   (update above: 13 values between 60 and 122 at DSHOT600 within today's ceiling, in the model) a
   silent ESC can therefore restart its 2 s clock. The spy's recording is not affected, so the
   PC-side verdict still fails the run. The Pico does the minimum during a motor run (CLAUDE.md,
-  "Rules for bench runs"), so no further check is added there.
+  "Rules for bench runs"), so no further check is added there. *Note 2026-11-12:* the rule is now in `.claude/rules/bench-harness.md` ("Harness rules") and `tests/README.md` ("Bench rules and mechanics"); CLAUDE.md holds neither.
 - Done 2026-11-11: `check_reply_failsafe()`, `REPLY_FAILSAFE_GRACE_MS` and the counters that
   existed only for it (`total_nonzero_records`, the `nonzero=` column of the status lines, the
   "Passes with a real (non-all-zero) reply" summary line) are removed from `run_scenario.py`.

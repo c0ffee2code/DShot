@@ -187,7 +187,7 @@ def arm_group(group, scenario, runner, arm_times):
     tests/pc/test_motor_group.py's `test_no_capture_is_handed_out_while_disarmed_or_arming`
     and `test_the_group_itself_refuses_captures_while_arming` - so this bench
     check added no safety value a real application's documented usage
-    (CLAUDE.md's `while not is_armed(): sleep_ms(10)`, which never calls
+    (README.md's Quick Start, `while not motors.is_armed(): sleep_ms(10)`, which never calls
     raw_telemetry() during arming at all) doesn't already have for free.
 
     `arm_times` still gets the ticks_us of arm() as soon as it is called and

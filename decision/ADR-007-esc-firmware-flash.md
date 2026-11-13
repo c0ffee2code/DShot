@@ -22,7 +22,7 @@ byte for byte, with 0xFF where the file has no data.
 **Forward flashes only:** from the shipped firmware to newer AM32 releases for the same target. There is no plan to downgrade an ESC's firmware
 (owner, 2026-11-10), so the design has no rollback path and does not need one:
 - the tool does not compare versions or check the direction of a flash; an older image would be written like any other, and is out of scope;
-- the buddy's settings code speaks one layout (CLAUDE.md, "ESC buddy"), so an ESC flashed back to a build with another layout would be one
+- the buddy's settings code speaks one layout (`.claude/rules/esc-buddy.md`), so an ESC flashed back to a build with another layout would be one
   the buddy can no longer read or write;
 - the bootloader is not updated either.
 
@@ -66,7 +66,7 @@ image the owner chose. The configurator is not used for flashing.** `--dump-firm
 AM32 2.22 (`Src/main.c`): on its first boot it compares the stored version and layout with its own and, when they differ, writes the new
 version into the settings buffer and saves all 192 bytes of the new layout; fields an older layout lacks get defaults in
 `loadEEpromSettings`. The tool therefore needs no new-layout block of its own. The buddy's settings code follows the firmware on the bench
-and keeps no older layout (CLAUDE.md, "ESC buddy").
+and keeps no older layout (`.claude/rules/esc-buddy.md`).
 
 ## Alternatives considered
 
@@ -86,7 +86,7 @@ and keeps no older layout (CLAUDE.md, "ESC buddy").
 ## Consequences
 
 - AM32 2.17 to 2.22 change start-up, sine mode, demag and stuck-rotor handling and eRPM values. Every arming, start-quality and eRPM figure in
-  the README and CLAUDE.md was measured on 2.16 and has to be measured again. One early observation, not a measurement: after the flash the
+  the README was measured on 2.16 and has to be measured again. One early observation, not a measurement: after the flash the
   median eRPM at throttle 215 read about 11 % lower on the two ESCs with a motor (a few decoded samples per run). One discarded four-channel
   run on 2.22 did not arm: one ESC gave no reply for 18 s; the next run, after a power cycle, armed. One occurrence, not counted as evidence
   either way for the arming rate, which has to be measured again anyway.

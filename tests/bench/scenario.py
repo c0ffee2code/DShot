@@ -69,20 +69,20 @@ def build_hardware(entry, index, historic=False):
     if raw is None:
         return None
     context = "motor " + str(index) + " hardware"
-    name = _require(raw, "name", context)
+    name = require(raw, "name", context)
     if not isinstance(name, str) or not name.strip() or "\n" in name:
         raise ValueError(context + ": name must be a non-empty single-line string, got " + repr(name))
-    kv = _require(raw, "kv", context)
+    kv = require(raw, "kv", context)
     if not isinstance(kv, int) or isinstance(kv, bool) or kv <= 0:
         raise ValueError(context + ": kv must be a whole number > 0, got " + str(kv))
-    magnets = _require(raw, "magnets", context)
+    magnets = require(raw, "magnets", context)
     if not isinstance(magnets, int) or isinstance(magnets, bool) or magnets < 2 or magnets % 2:
         raise ValueError(context + ": magnets must be an even whole number >= 2 "
                          "(the rotor's magnet count), got " + str(magnets))
     if historic and "propeller" not in raw:
         propeller = PROPELLER_NOT_RECORDED
     else:
-        propeller = _require(raw, "propeller", context)
+        propeller = require(raw, "propeller", context)
         if not isinstance(propeller, str) or not propeller.strip() or "\n" in propeller:
             raise ValueError(context + ": propeller must be a non-empty single-line string "
                              "(its name, or \"none\" for a bare shaft), got " + repr(propeller))
@@ -116,7 +116,7 @@ class Scenario:
         return [i for i, m in enumerate(self.motors) if m.bidirectional]
 
 
-def _require(data, key, context="scenario"):
+def require(data, key, context="scenario"):
     """
     Fail-fast field lookup: this is a test suite, not an application with
     reasonable runtime defaults, so a scenario JSON that omits a setting is a
@@ -166,7 +166,7 @@ def build_scenario(data, historic=False):
     for index, entry in enumerate(motors_raw):
         pin = entry["pin"]
         sm_id = entry["sm_id"]
-        bidirectional = _require(entry, "bidirectional", "motor " + str(index))
+        bidirectional = require(entry, "bidirectional", "motor " + str(index))
         rx_sm_id = entry.get("rx_sm_id")
 
         if pin in seen_pins:
@@ -260,7 +260,7 @@ def build_scenario(data, historic=False):
     # Every Nth new capture per bidirectional motor is decoded on the device (0 = never).
     # Decoding a capture costs about 1.3ms, so only a sample of them is decoded on the
     # device; this is often enough for a percentage and rare enough to stay cheap.
-    decode_every = _require(data, "decode_every")
+    decode_every = require(data, "decode_every")
     if not isinstance(decode_every, int) or decode_every < 0:
         raise ValueError("decode_every must be a whole number >= 0, got " + str(decode_every))
 
@@ -275,7 +275,7 @@ def build_scenario(data, historic=False):
     # classification and the min_send_interval_us pacing floor. Rejected
     # outright rather than silently ignored if a scenario still sets either
     # to a nonzero value, so an old file doesn't look like it's still doing
-    # something it no longer does (see _require()'s own rationale above) - a
+    # something it no longer does (see require()'s own rationale above) - a
     # lingering "0" is harmless and left alone.
     if not historic and data.get("arming_class_bin_width_us", 0):
         raise ValueError("arming_class_bin_width_us was retired 2026-10-03; "
@@ -299,7 +299,7 @@ def build_scenario(data, historic=False):
         raise ValueError("core1_fixed_schedule was retired 2026-10-09; Core1Runner no longer "
                           "supports the sleep-after-work pad mode")
 
-    expect = _require(data, "expect")
+    expect = require(data, "expect")
     bidir_indices = {i for i, m in enumerate(motors) if m.bidirectional}
     # Every scenario with telemetry states how long the harness may go without
     # a new record. Without it a stalled command loop (a gap of 0.5 s or more
@@ -318,9 +318,9 @@ def build_scenario(data, historic=False):
     return Scenario(
         dshot_speed=dshot_speed,
         duration_ms=duration_ms,
-        arm_duration_ms=_require(data, "arm_duration_ms"),
-        status_interval_ms=_require(data, "status_interval_ms"),
-        poll_ms=_require(data, "poll_ms"),
+        arm_duration_ms=require(data, "arm_duration_ms"),
+        status_interval_ms=require(data, "status_interval_ms"),
+        poll_ms=require(data, "poll_ms"),
         decode_every=decode_every,
         expect=expect,
         motors=motors,

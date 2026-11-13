@@ -98,7 +98,7 @@ bit 29 ........ 21 | 20 ................. 0
 - **A ring of slots,** so the writer must lap the reader to spoil a read. It works while a read is shorter than the ring's lead (16 slots at 0.3ms is about 4.8ms), but it adds a writer-side index and per-slot counters, and it still validates.
 - **Publish an immutable `(ticks, sequence, word)` tuple by swapping one reference.** Atomic, but one allocation per publish: about 3,500 a second, over 100KB/s of garbage, which is what the drain above was rewritten to avoid.
 - **Pack the frame with a short timestamp** (11 bits, 2ms at 1us resolution). Atomic, but a range too short to detect a silent ESC or to measure the gap between replies.
-- **Require applications to pace `update()`.** It works (see above) but leaves the default loop, the one CLAUDE.md shows, unable to read telemetry reliably.
+- **Require applications to pace `update()`.** It works (see above) but leaves the default loop, the one CLAUDE.md shows, unable to read telemetry reliably. *Note 2026-11-12:* the usage examples are in README.md, "Quick Start"; CLAUDE.md holds none.
 
 ### Consequences
 

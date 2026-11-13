@@ -21,6 +21,7 @@ relevant to item 3: `Core1Runner` (`tests/bench/core1_runner.py`) skips forward 
 when it falls behind, but the two "pump it from your own main loop" examples (README.md and
 `MotorGroup`'s docstring) sleep `max(0, ...)` to a deadline that advances by one period per call,
 so when they fall behind they call `update()` back to back until they catch up.
+*Note 2026-11-13:* `MotorGroup`'s docstring no longer holds a usage example; the README's "Without a Second Core" example is the only one, and it still catches up this way.
 *Paths (2026-11-11):* `tests/unit/fakes.py` (Verification) is now `tests/pc/fakes.py`.
 **Severity:** Medium. The emergency stop relies on a single frame for bidirectional motors, and a
 faster command loop would collide on every frame.
@@ -86,7 +87,7 @@ not materialize.
    - Blocking grows from ~0.3 ms to ~0.6 ms, still inside `disarm()`'s documented cost.
    - Fix the `DISARM_FRAMES` comment.
 3. **Document the tick floor.** A bidirectional motor must not be sent to more often than
-   `min_frame_period_us`. State it in `MotorGroup`'s docstring and CLAUDE.md.
+   `min_frame_period_us`. State it in `MotorGroup`'s docstring and CLAUDE.md. *Note 2026-11-12:* CLAUDE.md holds no usage documentation; usage is documented in README.md, "Quick Start".
 4. **Optional, measure first (ADR-002 hot-path rules).** Enforce the floor in `update()` by
    skipping a bidirectional motor whose last send was less than `min_frame_period_us` ago. That is
    Betaflight's skip-a-cycle behaviour, at the cost of one `ticks_us()` per bidirectional motor

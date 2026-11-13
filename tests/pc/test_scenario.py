@@ -23,7 +23,7 @@ def valid_scenario():
     receiver fills the block), three idle motors on the free PIO2 block. Every
     field here is one build_scenario() requires outright - there is no
     "leave it out and get a default" case to fall back on (see scenario.py's
-    _require())."""
+    require())."""
     idle = [{"type": "hold", "throttle": 0, "duration_ms": 1000}]
     return {
         "dshot_speed": "DSHOT300",
@@ -260,7 +260,7 @@ class ScenarioValidationTest(unittest.TestCase):
         """
         This is a test suite, not an application - a scenario JSON that omits
         a setting is a scenario mistake and must fail loudly, never fall back
-        to a guessed value. See scenario.py's _require().
+        to a guessed value. See scenario.py's require().
         """
         for field in ("arm_duration_ms", "status_interval_ms", "poll_ms", "expect"):
             self.rejected(lambda d, field=field: d.pop(field), "missing required field: " + field)

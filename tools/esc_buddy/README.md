@@ -9,7 +9,7 @@ looks like a Betaflight flight controller in passthrough mode. Why it is built t
 
 | | |
 |---|---|
-| **ESC firmware** | **AM32 2.22, settings layout 4** (192-byte settings block). The mechanism is the layout version stored in byte 1 of the block: the decoder and the write guards accept layout 4 only and refuse a block of any other layout, which `--read` reports as an error with the raw block. No older layouts or firmware versions are supported or kept working: when the bench moves to a new firmware the buddy moves with it (CLAUDE.md, "ESC buddy"). |
+| **ESC firmware** | **AM32 2.22, settings layout 4** (192-byte settings block). The mechanism is the layout version stored in byte 1 of the block: the decoder and the write guards accept layout 4 only and refuse a block of any other layout, which `--read` reports as an error with the raw block. No older layouts or firmware versions are supported or kept working: when the bench moves to a new firmware the buddy moves with it (`.claude/rules/esc-buddy.md`). |
 | **MCU / bootloader** | AM32 bootloader on an F421 (signature `0x1F06`, settings page at `0x7C00`, application area `0x1000`-`0x7BFF`). Flashing refuses any other signature. |
 | **Wiring** | 1 to 8 ESC signal lines on the main Pico, given as `--pins` (the order is ESC 1..n in the configurator and in every report). |
 

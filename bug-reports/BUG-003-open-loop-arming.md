@@ -150,8 +150,8 @@ Betaflight never relies on a timer alone
      the cutoff on and two or more cells the silence is longer than 450 ms, and the count restarts
      after the ESC has armed. The count restarts only after arming (~1 s after the first reply) and
      the tune (at least ~0.6 s for two cells by either figure), and then needs 2 s more, so `ARMED`
-     comes at least ~3.6 s after the first reply: past the published 3.0 s arming bound (README
-     and CLAUDE.md, Operational Envelope). The bench ESCs have
+     comes at least ~3.6 s after the first reply: past the published 3.0 s arming bound (README,
+     Operational Envelope). The bench ESCs have
      the low-voltage cutoff off (vendor value, `specification/KM55A2_DEFAULTS.md`; the README's
      "ESC settings as configured", read after the 2.22 flash, lists it as unchanged), so this
      case does not arise on this bench. **Amendment 2026-11-11.** *Decision:* arming is tuned against AM32 2.22, or a newer release when
@@ -189,7 +189,7 @@ Betaflight never relies on a timer alone
    group, unidirectional-only included, and nothing in `driver/motor_group.py` gives such a group
    a different default.
 7. **Docs.**
-   - CLAUDE.md ("Non-blocking arming"): `ARMED` means the evidence gate, not a timer.
+   - CLAUDE.md ("Non-blocking arming"): `ARMED` means the evidence gate, not a timer. *Note 2026-11-12:* CLAUDE.md has no such section; non-blocking arming is in ADR-004 ("Non-blocking arming") and README.md, "Quick Start".
    - README: the "idle tune" heard after `disarm()` is AM32's startup tune after its own reset.
 
 ## Verification

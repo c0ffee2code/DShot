@@ -1,40 +1,11 @@
 """
-On-device bidirectional DShot GCR telemetry decoder - MicroPython.
+Decoder for the bidirectional DShot reply: GCR, CRC and eRPM from the 21-bit
+frame dshot_bidir_rx_frame pushes. analyze_frame() is the entry point.
 
-One entry point: analyze_frame() decodes the frame receiver's
-(dshot_bidir_rx_frame, see driver/dshot_pio.py) already run-length-
-reconstructed 21-bit frame - the path BidirectionalDShot uses. There used to
-be a second, analyze_capture(), for the older sample receiver's raw
-oversampled waveform (reconstructed on the CPU) - removed 2026-10-11 along
-with that receiver and the one standalone tool that used it
-(tools/calibrate_bidir_rx.py was the only caller of either). The raw-sample
-reconstruction math (find_edges, reconstruct_frame, sample_cycle,
-estimate_bit_period_fixed) moved to scripts/simulate_frame_receiver.py,
-which is PC-side and was the only other caller left.
-
-decode()/check_crc()/decode_result() are shared between analyze_frame() and
-scripts/dshot_bidir_decode.py (the PC-side reference) and
-scripts/simulate_frame_receiver.py. tests/pc/test_gcr_decode.py's parity test checks
-analyze_frame() stays in sync with the reference, and scripts/analyze_bidir_capture_log.py
-checks it on real sampled captures.
-
-Unlike the reference script, check_crc() here accepts ONLY the inverted CRC
-polarity: every CRC-valid capture from real hardware has been inverted
-(798/798 on this bench), matching AM32's firmware source - AM32 inverts its
-reply CRC unconditionally (see specification/AM32.md) - and accepting the
-plain polarity as well would double the false-accept probability of the
-4-bit CRC (2/16 instead of 1/16) for a polarity the hardware never produces.
-The reference script accepts both because a stray plain hit is diagnostic
-there; this module is the driver's validity gate and has no such use for it.
-tests/pc/test_am32_reply_path.py independently confirms the whole GCR table
-against AM32's own encoder: it reproduces make_dshot_package() line for
-line and decodes all 2,304 distinct payloads AM32 can emit, with 0
-mismatches against this module.
-
-Every step works on plain integers, not on lists of per-sample tuples: a
-garbage collection on either core pauses both, so heap churn here shows up
-as gaps in the command loop - see ADR-002 for the measured cost this design
-avoids.
+Pure Python with no hardware imports: the driver decodes on the Pico with it,
+and PC tools and tests import it too. Works on plain integers, so a decode
+allocates no per-bit objects. Only AM32's reply is accepted: inverted CRC.
+Wire format: specification/DSHOT.md, specification/AM32.md. Design: ADR-002.
 """
 
 GCR_ENCODE_TABLE = [
@@ -45,18 +16,13 @@ GCR_DECODE_TABLE = {symbol: nibble for nibble, symbol in enumerate(GCR_ENCODE_TA
 
 FRAME_LENGTH_BITS = 21  # marker (1) + 20 differentially-encoded data bits
 
-# AM32's fixed "motor not running" payload (mantissa 0x1FF, exponent 0b111 -
-# all 12 data bits set): sent whether the ESC is armed-but-stopped or fully
-# disarmed, so a CRC-valid reply of exactly this value proves nothing about
-# arm state, only that the motor isn't turning right now (see
-# specification/AM32.md#9).
+# AM32's "motor not running" payload, all 12 bits set; sent armed or disarmed,
+# so it says nothing about arm state (specification/AM32.md#9)
 AM32_NOT_RUNNING_DATA12 = 0xFFF
 
-# That payload as dshot_bidir_rx_frame pushes it: the whole 21-bit frame (marker,
-# then 0xFFF and its inverted CRC in GCR). The only word a stopped AM32 ever
-# replies with, so MotorGroup's arming gate recognises it with one integer compare
-# instead of a decode (bug-reports/BUG-003). Our own throttle-0 frame, captured
-# when the ESC is silent, never produces it.
+# That payload as dshot_bidir_rx_frame pushes it, so the reply gate needs one
+# compare, not a decode. A capture of the driver's own throttle-0 frame
+# never produces it.
 AM32_NOT_RUNNING_FRAME = 0x52951
 
 
@@ -67,12 +33,12 @@ def crc_inverted(data12):
 
 def decode(frame):
     """
-    Differential-decode + GCR table lookup. `frame` is a FRAME_LENGTH_BITS-bit
-    integer: its top bit is the marker (always 0) and the 20 bits below it are the
-    real data bits, each XORed against the bit before it, the first against the
-    marker's own value (0) - which is data ^ (data >> 1) over those 20 bits.
-    Returns the 16-bit DShot number (12-bit data + 4-bit CRC), or None if a
-    5-bit group is not a valid GCR symbol.
+    Differential decode and GCR lookup of a FRAME_LENGTH_BITS-bit frame,
+    marker (0) on top. Each of the 20 bits below is the XOR of a data bit with
+    the one before it, the first with the marker.
+
+    Returns the 16-bit DShot number (12-bit data, 4-bit CRC), or None if a
+    5-bit group is not a GCR symbol.
     """
     data = frame & 0xFFFFF
     decoded20 = data ^ (data >> 1)
@@ -87,7 +53,9 @@ def decode(frame):
 
 def check_crc(dshot_full_number):
     """
-    Only the inverted polarity is accepted - see the module docstring for why.
+    Return ("inverted", data12) when the CRC is AM32's inverted one, else
+    (None, data12). AM32 always inverts; accepting the plain CRC too would
+    double the chance that a corrupt frame passes.
     """
     crc = dshot_full_number & 0xF
     data12 = (dshot_full_number >> 4) & 0xFFF
@@ -98,51 +66,20 @@ def check_crc(dshot_full_number):
 
 def decode_result(frame):
     """
-    Shared tail of analyze_frame() and the PC-side reference's equivalent:
-    decode a reconstructed FRAME_LENGTH_BITS-bit frame (marker at the top)
-    into a result dict, without the period fields - each caller's own timing
-    information, if it has any, goes in those.
+    Decode a FRAME_LENGTH_BITS-bit frame (marker on top) into a dict:
+    analyze_frame() without its period fields.
 
-    marker_ok is the frame's own top bit read back as 0, the reply's fixed
-    start level. decode() itself never checks it (the differential decode
-    folds the marker's fixed value in implicitly), but a false marker is a
-    sign of a garbled first bit, worth surfacing next to the CRC check rather
-    than dropping it silently.
+      full        - the 16-bit DShot number, or None if a GCR lookup failed
+      marker_ok   - the marker bit read 0; False hints at a garbled first bit
+      crc_ok      - the CRC matched (inverted polarity only)
+      crc_kind    - "inverted" on a CRC match, else None
+      data12      - the 12-bit payload (mantissa, exponent), if decoded
+      erpm        - electrical RPM, or None if not decoded or CRC-invalid
+      not_running - data12 is AM32_NOT_RUNNING_DATA12; None if CRC-invalid.
+                    erpm still reads about 917 for it.
 
-    Returns a dict with:
-      full      - the raw 16-bit DShot number (12-bit data + 4-bit CRC), or
-                  None if GCR symbol lookup failed
-      marker_ok - True if the frame's marker bit read back as 0
-      crc_ok    - True if `full`'s CRC matched (inverted polarity only)
-      crc_kind  - "inverted" on a CRC hit, else None
-      data12    - the 12-bit payload (mantissa + exponent), if decoded
-      erpm      - electrical RPM, or None if not decodable/CRC-invalid
-      not_running - True if data12 is AM32's fixed not-running sentinel
-                  (AM32_NOT_RUNNING_DATA12), else False; None if CRC-invalid.
-                  Deliberately not folded into erpm: erpm keeps reporting the
-                  same ~917 either way, so callers that already threshold on
-                  eRPM magnitude are unaffected, while callers that need an
-                  exact answer (not a fuzzy eRPM range) can check this instead.
-
-    Known caveat, not necessarily a decode bug here: a CRC-valid frame has
-    been seen reporting a wildly implausible erpm (data12=2, i.e. 30,000,000)
-    shortly after a motor's throttle crosses from zero to nonzero. AM32's own
-    source has an eRPM moving-average array that is zero-initialized at boot;
-    one re-read of this project's pinned commit found a gating condition
-    (`old_routine`, default-on at boot) under which the array can stay
-    untouched until the motor's first real commutation, so the first reply
-    computed after "running" flips could read it as genuinely all-zero. A
-    separate hypothesis for *why* this never reproduces at a different
-    throttle (a polling-rate difference) was checked against this project's
-    own measured numbers and ruled out - the gap is still unexplained. Treat
-    the whole mechanism as a candidate, not confirmed: it already reversed
-    once between two source reads. It is not this driver's own TX echo: a
-    second Pico recording the signal line (2026-10-28) shows the ESC itself
-    sending data12=2 for 6-9 replies after the first throttle frame, which is
-    also what the source arithmetic gives for six zero intervals. Why the
-    intervals are still zero is not settled. See
-    bug-reports/BUG-009-motors-sometimes-start-rough.md for the full,
-    still-open account.
+    A CRC-valid reply can still carry an implausible eRPM: AM32 sends
+    data12=2 (30,000,000 eRPM) in some replies right after a start.
     """
     full = decode(frame)
     result = {
@@ -171,15 +108,10 @@ def decode_result(frame):
 
 def analyze_frame(frame):
     """
-    Full pipeline for one frame the frame receiver (dshot_bidir_rx_frame, the
-    only receiver BidirectionalDShot has) already reconstructed in hardware:
-    a FRAME_LENGTH_BITS-bit integer, marker at the top. The receiver did that
-    reconstruction work in the state machine, not the CPU.
-
-    period_cycles, period_us and bitrate_bps are always None in the returned
-    dict: the frame receiver's bit period is fixed by its clock divider
-    (driver/dshot_profiles.py's frame_rx_speed()), not measured per capture,
-    so there is nothing to report there.
+    Decode one frame as dshot_bidir_rx_frame pushes it: a
+    FRAME_LENGTH_BITS-bit integer, marker on top. Returns decode_result()'s
+    dict plus period_cycles, period_us and bitrate_bps, always None: the
+    receiver's bit period is fixed by its clock, not measured.
     """
     result = decode_result(frame)
     result["period_cycles"] = None

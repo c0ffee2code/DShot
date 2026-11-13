@@ -2,8 +2,8 @@
 arming_bound.py - the published arming bound, in one place.
 
 CLEAN_ARM_THRESHOLD_MS is read by scripts/run_scenarios.py (the per-run arming verdict) and by scripts/session_summary.py (the
-"armed within the bound" proof of a session's verdict). The two must never disagree, so neither holds a copy; README.md and CLAUDE.md quote the
-same number and must be kept in agreement with it. Importing this module has no side effects.
+"armed within the bound" proof of a session's verdict). The two must never disagree, so neither holds a copy; README.md's Operational Envelope quotes the
+same number and must be kept in agreement with it (the rule is in CLAUDE.md). Importing this module has no side effects.
 """
 
 # This IS the KPI's duration bound (BUG-002's stable-arming KPI: in >=99% of

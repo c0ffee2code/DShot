@@ -32,8 +32,7 @@ to spin a motor, and the project runs MicroPython on the Pico.
 
 **Supported:** the bench ESCs - Skystars KM55A2, F421 MCU, AM32 bootloader version 1 - running **AM32 2.22, settings layout 4**. The
 mechanism is the layout version in byte 1 of the settings block: the buddy decodes and writes layout 4 only and refuses a block of any other
-layout. **Older firmware versions and layouts are not supported and not kept working** (owner, 2026-11-09 and 2026-11-10; CLAUDE.md, "ESC
-buddy"): when the bench moves to a new firmware the buddy moves with it. Other firmware families and other MCUs are out of scope. What the
+layout. **Older firmware versions and layouts are not supported and not kept working** (owner, 2026-11-09 and 2026-11-10; `.claude/rules/esc-buddy.md`): when the bench moves to a new firmware the buddy moves with it. Other firmware families and other MCUs are out of scope. What the
 tool supports, down to the property list: `tools/esc_buddy/README.md`.
 
 ## Decision

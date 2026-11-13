@@ -1,66 +1,42 @@
 """
-DSHOT_SPEEDS / BIDIR_PROFILES - pure data, no hardware imports (unlike
-dshot_pio.py, which imports machine/rp2/utime at module level and can
-therefore only run under MicroPython on the Pico). They live here so PC-side
-tooling (e.g. scripts/simulate_frame_receiver.py) can read the live values
-directly instead of keeping a hand-maintained copy that can drift out of sync.
-
-driver/dshot_pio.py imports and re-exports both names, so
-`from dshot_pio import BIDIR_PROFILES, DSHOT_SPEEDS` keeps working. This file
-is deployed to the Pico alongside dshot_pio.py, which needs it too.
+DShot speeds and the reply receiver's profile per speed, as plain data.
+No hardware imports, so PC tools and tests read the values the Pico uses;
+dshot_pio imports and re-exports them. Design: ADR-002.
 """
 
-# The DShot speeds this project supports: DSHOT300 and DSHOT600, the two AM32
-# documents (its README and wiki.am32.ca). AM32's source is this project's
-# ground truth for ESC behaviour, and DSHOT150/DSHOT1200 fall outside it -
-# AM32 has no distinct DSHOT1200 path, it only happens to accept that signal
-# through its coarse input-rate bands - so they are not offered as named speeds.
-# Values are PIO clock frequencies: bit_rate * 8 cycles per bit.
+# The DShot speeds offered: DSHOT300 and DSHOT600, the two AM32 documents.
+# DSHOT150 and DSHOT1200 are not offered: AM32 does not document them and has
+# no path of its own for DSHOT1200 (it falls into a coarse input-rate band).
+# Values are PIO clock frequencies: bit rate x 8 cycles per bit.
 class DSHOT_SPEEDS:
     DSHOT300 = 2_400_000 # 300,000 bit/s * 8 cycle/bit
     DSHOT600 = 4_800_000 # 600,000 bit/s * 8 cycle/bit
 
-# Settings for the bidirectional reply receiver, per DShot speed. Only speeds
-# with an entry here can be used with BidirectionalDShot.
+# Reply receiver settings per DShot speed, measured on the bench ESC (ADR-002);
+# BidirectionalDShot accepts only the speeds listed here.
 #
-#   rx_speed         the measured reply clock this profile is tuned from;
-#                    frame_rx_speed() below derives the frame receiver's own
-#                    clock from it. Independent of the DShot speed (TX and
-#                    RX have separate clock dividers on the same PIO block)
-#                    and sets how many samples land in each bit of the ESC's
-#                    reply.
-#   expected_ratio   the reply's measured bit period in RX clock cycles. It is
-#                    measured on hardware rather than derived from the nominal
-#                    reply rate, because AM32 clocks its reply from a per-MCU
-#                    timer/prescaler, not a fraction of the nominal rate - a
-#                    deterministic, per-MCU-family offset, not oscillator
-#                    drift (see specification/AM32.md). Not read by the
-#                    production frame receiver (its bit period comes from
-#                    frame_rx_speed() instead, fixed by a clock divider, not
-#                    measured per capture) - this field is PC-side tooling
-#                    only now (scripts/simulate_frame_receiver.py,
-#                    scripts/dshot_bidir_decode.py), used as a fixed divisor
-#                    instead of searching for the period on every capture.
-#   ratio_tolerance  0.0 uses expected_ratio as a bare divisor; above 0.0 the
-#                    decoder searches a band of that half-width around it, for
-#                    a profile whose measured spread is too wide to trust bare.
-#
-# See decision/ADR-002-bidirectional-dshot.md's fixed-ratio RX sampling section
-# for how these values were measured and chosen.
+#   rx_speed         reference clock in Hz, 9 x the nominal reply bit rate
+#   expected_ratio   the reply's measured bit period in rx_speed cycles. AM32
+#                    times its reply from its MCU's own timer, so the rate is
+#                    a fixed offset from nominal. frame_rx_speed() derives the
+#                    frame receiver's clock from these two.
+#   ratio_tolerance  half-width of a band a decoder may search around
+#                    expected_ratio; 0.0 means none. The driver does not read it.
 BIDIR_PROFILES = {
-    # rx_speed = 9 x the nominal 375kHz reply rate; the measured 8.7069 cycles per bit (the ESC replies ~3% faster than nominal) matches AM32's own per-MCU-timer math for an F051-class build, not oscillator drift
+    # rx_speed = 9 x the nominal 375kHz reply rate
     DSHOT_SPEEDS.DSHOT300: {"rx_speed": 3_375_000, "expected_ratio": 8.7069, "ratio_tolerance": 0.0},
     # rx_speed = 9 x the nominal 750kHz reply rate
     DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129, "ratio_tolerance": 0.0},
 }
 
-# Cycles per reply bit that dshot_pio.dshot_bidir_rx_frame's per-bit path takes,
-# fixed by its instructions. Its receiver clock is this many times the reply bit
-# rate, which is expected_ratio's measured rate: rx_speed / expected_ratio.
+# Cycles per reply bit in dshot_pio.dshot_bidir_rx_frame, fixed by its instructions
 FRAME_CYCLES_PER_BIT = 16
 
 
 def frame_rx_speed(dshot_speed):
-    """The frame receiver's clock for a DShot speed, in Hz."""
+    """
+    The frame receiver's clock for a DShot speed, in Hz: FRAME_CYCLES_PER_BIT
+    times the measured reply bit rate, rx_speed / expected_ratio.
+    """
     profile = BIDIR_PROFILES[dshot_speed]
     return round(FRAME_CYCLES_PER_BIT * profile["rx_speed"] / profile["expected_ratio"])

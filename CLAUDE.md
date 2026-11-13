@@ -10,31 +10,7 @@ Original implementation from https://github.com/jrddupont/DShotPIO (GNU GPL v3.0
 
 **Supported ESC targets (design constraint):** a pet/exploration project; it does not aim to support the endless universe of ESCs. **AM32** is the sole firmware family in scope. It is open source (https://github.com/am32-firmware/AM32), so behavior is verified against its firmware source rather than guessed from generic protocol articles: when a generic spec and AM32's source disagree, the source wins. Do not add abstraction layers or configuration surface for other ESC families. **BLHeli_S** was an earlier bench target (its timing data is in ADR-001/ADR-004) and is no longer supported: add no code paths or timing accommodations for it.
 
-## Project Goals
-
-| Goal | Status | Details |
-|------|--------|---------|
-| **Improve arming sequence** | Done | Evidence-gated arming on a 2000ms floor, not a timer alone: BUG-002, BUG-003; what pacing has been bench-confirmed: README "Verified Parameters" |
-| **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
-| **DShot commands** | TODO | No driver-side command API yet; `MotorGroup` rejects 1-47 (BUG-005), so a command API needs its own entry point. AM32 implements commands: `specification/AM32.md`#7 |
-| **Bidirectional DShot** | Done | ADR-002: frame receiver, bench-validated on AM32, the sole production receiver |
-| **ESC configuration access** | Read and write done | ADR-006, `tools/esc_buddy/README.md` and the `esc-buddy` skill. Firmware flash (`--flash`, ADR-007): AM32 2.22 flashed on all eight ESCs (both boards); the buddy's settings code speaks layout 4 only (no older layouts); bootloader update: not built |
-| **Smooth start** | In progress | Definition, scope and baseline: BUG-009 ("Current KPI") |
-
-## Operational Envelope (what this driver guarantees)
-
-| Guarantee | Value |
-|-----------|-------|
-| Arming success rate | **≥ 99%** of `arm()` attempts reach `ARMED` |
-| Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
-| ESC firmware | AM32 only |
-| Start quality | **Pending - not yet guaranteed.** Target **≥ 99%** of runs succeeding, spin-up within 0.5 s |
-
-All figures were measured with AM32 2.16; the bench ESCs run 2.22 since 2026-11-10 and none has been re-measured on it (ADR-007). The baseline for the KPIs restarts on 2.22 (owner, 2026-11-10); runs on 2.16 are not comparable.
-
-An attempt that does not reach `ARMED` within 3.0 s counts as a failure, including one that arms later after an ESC reboot. The 99% arming rate is **not yet supported** on the current code. The evidence and the measurements behind these figures are in the README's Operational Envelope.
-
-The arming bound is the constant `CLEAN_ARM_THRESHOLD_MS` in `scripts/arming_bound.py`, used by both the batch runner (`scripts/run_scenarios.py`) and the session verdict (`scripts/session_summary.py`); keep that constant, README.md and this table in agreement. Not guaranteed: DShot commands, other ESC firmware, motor behaviour after arming.
+**Goals, status and guarantees** live in the README: "Roadmap" (every goal and its status) and "Operational Envelope" (what the driver guarantees, what it does not, and the evidence). The arming bound is the constant `CLEAN_ARM_THRESHOLD_MS` in `scripts/arming_bound.py`; keep that constant and the README's Operational Envelope in agreement.
 
 ## Development Environment
 
@@ -44,7 +20,12 @@ The arming bound is the constant `CLEAN_ARM_THRESHOLD_MS` in `scripts/arming_bou
 
 Deploy code to Pico via USB mass storage or tools like Thonny, rshell, or mpremote.
 
-**Pico-only runs need no permission** (owner, 2026-10-20). Code that relies on the Pico 2 but uses no real ESC and no motor - a test on unused GPIO with nothing attached, a PIO/DMA/timing experiment, a driver or harness change that can be exercised without an ESC - is written, deployed and run on the Pico without asking the owner first. Anything that can put a signal on an ESC's input or spin a motor (any pin with an ESC attached, any throttle above 0) still needs the owner's go (the ESC buddy's read-only commands are the exception: see its README). Say in the report which pins a run used.
+## Hardware permissions
+
+- **Pico-only runs need no permission** (owner, 2026-10-20). Code that relies on the Pico 2 but uses no real ESC and no motor (a test on unused GPIO with nothing attached, a PIO/DMA/timing experiment, a driver or harness change that can be exercised without an ESC) is written, deployed and run on the Pico without asking the owner first. Say in the report which pins a run used.
+- **Anything that can put a signal on an ESC's input or spin a motor** (any pin with an ESC attached, any throttle above 0) **needs the owner's go.** The ESC buddy's read-only commands are the exception: see its README.
+- Running hardware: `scripts/deploy.py` only uploads; `scripts/run_test.py` and `scripts/run_scenarios.py` spin motors (all three are on the Claude Code allow-list).
+- **ESC configuration goes through the `esc-buddy` skill** (use the skill; follow its rules). What the buddy does, how to run it and which commands need no permission: `tools/esc_buddy/README.md` and the skill. **Every write to an ESC needs the owner's explicit go, each time.**
 
 ## Communicating with the user
 
@@ -66,50 +47,16 @@ Explain work as goal → step → why, in plain language.
 - **Merging to master is a squash merge and needs the owner's go; so does a push.** Run the PC tests on master after the merge and before the push.
 - **Delete the feature branch once its squash merge is on master** (owner, 2026-11-12). No go is needed for the deletion; git history and the squash commit are the record.
 
-## Code Style
+## Analysing bench results
 
-- **No `_` prefix for visibility.** This is MicroPython on a microcontroller, not a published CPython package — attributes and methods are named plainly (`self.motors`, `self.state`, `runner.loop()`). The underscore convention buys nothing here and just adds noise. `_thread` (a stdlib module) and `__init__` are unaffected, as is `for _ in range(n)` for a throwaway loop variable.
-- **snake_case** throughout `driver/`, including method names.
-- Prefer plain attributes over accessor methods. Keep a method only when it does real work — `get_all_throttles()` converts an `array` to a list, `is_armed()` compares against a state constant.
-- Avoid f-strings on error paths in `driver/`; they allocate, and that code may run on a core with a constrained stack.
+- **A shift between two batches: check for a code change first.** Do not name "thermal drift", "power sag", "day-to-day factor" or any other unnamed environmental cause without evidence. Committed timestamps lag deployed code (code is bench-tested before it is committed), so check `git log --date=iso-local -- driver tests/bench tools scripts` for every commit between the batches and whether its mechanism can cause the shift.
+- **No hardware speculation.** Offer no physical cause for a bench result (wiring, connectors, crosstalk, supply, grounds, solder joints, the lever, a "bad" ESC or motor) unless a measurement in this repository supports it. The Pico cannot see the power or the wiring.
+- Report what the data shows (counts, timings, which motor on which channel and when) and what a test has ruled out, in those words.
+- When asked "why", propose only hypotheses the repository can test in software, and say which result would confirm or reject each.
+- Hardware actions (inspect, swap, measure the supply) are the user's to choose: list them as options without naming a suspected cause, and ask the user for hardware facts instead of guessing.
+- A quantity from AM32's source may be quoted as a source fact; saying it explains a bench result is a hypothesis and is marked as one.
 
-## Investigating a bench-behavior shift over time
-
-When two batches of bench runs, taken hours or days apart, behave differently, check for an actual
-code change before reaching for "thermal drift," "power sag," "day-to-day factor," or any other
-unnamed environmental cause. Those can be real, but they're rarely the first thing to check, and
-naming one without evidence just launders a gap in the investigation as a finding.
-
-**Committed timestamps lag deployed code.** Code is routinely written, deployed to the Pico, and
-bench-tested *before* it's committed - so "what commit was HEAD at that wall-clock time" is not
-"what code was actually running on the bench." A commit's own message often says so directly (e.g.
-"bench-verified: 10 more runs") - that verification happened before the commit, not after. When
-comparing two batches, check `git log --date=iso-local -- driver tests/bench tools scripts` for every commit
-between them, read what each one actually changed, and check whether it's mechanistically capable
-of causing the observed shift - not just correlated in time with it. A real example from BUG-002's
-2026-09-30 investigation: a 09-27 evening jump in first-contact acceptance lined up with a commit
-timestamped minutes *after* the jump, because the change had been bench-verified first and
-committed once confirmed.
-
-## No hardware speculation
-
-Do not offer physical causes for a bench result - wiring, connectors, crosstalk between signal wires,
-supply sag or inrush, grounds, solder joints, mechanical coupling through the lever, a "bad" ESC or
-motor - unless a measurement in this repo supports it. The Pico sees only DShot frames and replies;
-it cannot see the power or the wiring, so a hardware cause cannot be inferred from its
-data. This rule is stricter than the section above, which covers environmental explanations of a shift
-between batches.
-
-- Report what the data shows (counts, timings, which motor on which channel and when) and what has been
-  ruled out by a test, in those words.
-- When asked "why", propose only hypotheses the repo can test in software (order of motors in a
-  group, simultaneous against staggered starts, throttle, polling pattern, PIO block assignment), and
-  say which result would confirm or reject each.
-- Hardware actions (inspect, swap, measure the supply) are the user's to choose. List them as options
-  without naming a suspected cause. The user knows the bench and holds the hardware facts; ask for
-  them instead of guessing.
-- A quantity taken from AM32's source (a timeout, a limit) may be quoted as a source fact. Saying that
-  it explains a bench result is a hypothesis and is marked as one.
+The reasoning and a worked example: `.claude/rules/bench-analysis.md` (loaded when a bug report or decision record is touched).
 
 ## Permanent scenarios need the owner's permission
 
@@ -128,50 +75,16 @@ temporary scenario turns out worth keeping, ask first; do not move it into the r
 - **A tool's README (`tools/*/README.md`) describes the capability** (owner, 2026-11-10): what the tool is for, which firmware or versions it supports and how that is checked, what it does and does not do, and its complete set of properties or options. It is not a logbook or backlog: a dated bench run and what it showed ("poles 14 -> 12 on GPIO 6-9") has a lifetime of about one session, and when it is evidence for a decision it goes to the ADR or bug that owns the claim; open items go to the ADR or bug they belong to.
 - This file holds conventions and pointers (see "Usage"), not facts about the setup.
 
-## Architecture
+## Folder rules
 
-Where things live is found with a file search, so this section lists no layout: it holds the rules the code must keep, each with a pointer to the document that says why.
+Where things live is found with a file search. The rules each folder's code must keep are in path-scoped rule files, loaded when a matching file is read or edited:
 
-### Driver rules (`driver/`)
-
-How the driver behaves is in the ADRs and the README; these are the rules to keep.
-
-1. **Speeds.** Only DSHOT300 and DSHOT600 are offered (the only speeds AM32 documents); do not add DSHOT150 or DSHOT1200 (see the class's own comment).
-2. **Core-agnostic.** The library does not spawn threads or pick a core, and nothing under `driver/` imports `_thread`: the application owns the command loop and calls `update()` at a steady period (ADR-004).
-3. **One paced loop only.** There is no unpaced mode and no per-test or per-scenario period. It was removed on 2026-10-19; do not reintroduce it.
-4. **Bench code stops motors with `fast_stop`.** Any script that spins motors ends with `fast_stop(group, runner)` and treats a `False` result as a failed run (detail: `tests/README.md`).
-
-Where the rest is: the receiver and its PIO cost, and the reply mailbox: ADR-002, ADR-005. Arming, `update()` while disarmed, and `disarm()` and the line state: ADR-004, ADR-002 and BUG-002/BUG-003. Lock-free throttle values: ADR-001.
-
-### ESC buddy (`tools/esc_buddy/`)
-
-Access to the ESCs' AM32 configuration through the main Pico. Not a test group and not part of a motor run. What it does, how to run it and which commands need no permission: `tools/esc_buddy/README.md` and the `esc-buddy` skill (use the skill; follow its rules). **Principle (owner, 2026-11-10): the buddy serves the firmware that is on the bench, and only that.** No backward compatibility with older AM32 versions or settings layouts: when the ESCs move to a new firmware, the buddy moves with them in the same piece of work - decoder, field names and units, ranges, guards, tests, docs - and the old encodings, names and branches are deleted, not kept behind a shim (an old name is refused like any unknown name; an ESC on another layout is refused, not guessed at). There is no other hardware to keep working. History stays in git and in the dated records of ADRs and READMEs. Today: AM32 2.22, settings layout 4 (ADR-007). **Every write to an ESC needs the owner's explicit go, each time.** Why it is built this way: ADR-006; the bench ESC and its settings: `specification/KM55A2_DEFAULTS.md` (vendor) and the README's "ESC settings as configured" (now).
-
-### Tests (`tests/`)
-
-`tests/` is split first by whether it needs hardware, then by what it checks. Each folder has one rule; a file that
-breaks its folder's rule goes elsewhere, not into a catch-all. How each script works, the scenario format, the session
-folder contents and the observer's tools are in `tests/README.md`.
-
-- **`tests/pc/`** - runs on a PC under plain Python with `fakes.py` (`python -m unittest discover -s tests/pc`). Nothing that touches the Pico.
-- **`tests/bench/dshot_protocol/`** - does the DShot link and the arming/telemetry behaviour hold on this ESC across motor counts and configurations? The scenario runner, its JSON scenarios, the single-motor ESC probes. Not: physical RPM, code another group also needs, anything without an ESC.
-- **`tests/bench/pio_and_cores/`** - how the driver uses the RP2350's PIO blocks and its two cores. Pico only, no ESC or motor power. Not: anything that arms an ESC.
-- **`tests/bench/wingman/`** - the second Pico (the wingman) and everything it relies on, grouped by the machine the code runs on: the **observer** records every edge of the ESC lines, the **ESC mock** plays recorded ESC replies with the ESC disconnected. Equipment, not a test group, and a permanent part of the bench. Not: anything about a real ESC, a motor or arming; a mock session is never evidence. **Design principle (owner, 2026-11-01): the wingman takes everything it needs to know about the main Pico (pins, which lines are bidirectional, DSHOT speed, run length) from the scenario the main Pico runs, read in one place (`tests/bench/wingman/tools/wingman_plan.py`); no pin, speed or fixture is written into the wingman's own code.**
-
-**Rules for bench runs** (the mechanics are in `tests/README.md`, "Bench rules and mechanics"):
-
-- One run is one session, named by the PC (`scripts/run_session.py`, or the batch runner `scripts/run_scenarios.py`).
-- **The main Pico reports facts, the PC judges** (owner, 2026-11-11; ADR-008). The main Pico reports what happened and may bail out of a run early; a bail-out is reported as "aborted" with its reason, never as a verdict, and its console says completed or aborted, never pass or fail. The verdict of every session is made on the PC only (`scripts/session_summary.py`), from the wire recording. This is ADR-004's "the library reports facts" one level up: the library reports to the application, the main Pico reports to the PC.
-- **The wingman is a permanent part of the bench** (owner, 2026-11-11). Every bench run with an ESC is recorded by it and there is no way to run a scenario without it (a device script on the Pico alone, with no ESC, is recorded only when asked); a session whose recording is missing has not been judged (verdict "unknown").
-- **While the main Pico controls motors its I/O is the bare minimum (ESC I/O excepted); the observer records every wire edge** (owner, 2026-10-31). A threshold with too few replies on the wire is reported as not judged, never failed.
-- A bench test that runs motors uses the scenario runner's mechanics, so every result compares with the same baseline; a test that must differ says so in its header.
-- Shared test code sits directly in `tests/bench/`; test groups never import another group's files. File names are unique across the repository, because `deploy.py` flattens them onto the Pico.
-- Running hardware: `scripts/deploy.py` only uploads; `scripts/run_test.py` and `scripts/run_scenarios.py` spin motors (all three are on the Claude Code allow-list).
-
-### DShot Protocol
-
-See `specification/DSHOT.md` for the wire protocol itself (packet structure, bit timing for all
-variants, special commands 0-47, bidirectional DShot and eRPM telemetry, CRC), `specification/AM32.md` for how this project's target ESC firmware implements it, and `specification/BETAFLIGHT.md` for how a reference flight-controller host drives it. The bench ESC itself (AM32 2.22 since 2026-11-10, shipped with 2.16; older bootloader): `specification/KM55A2_DEFAULTS.md` (vendor settings as read); what the ESCs hold now is in the README's "ESC settings as configured".
+- **All MicroPython code** (`driver/`, `tests/bench/`, `tools/esc_buddy/`): `.claude/rules/pico-code-style.md` (naming and style; no `_` prefix for visibility).
+- **Driver code** (`driver/`): `.claude/rules/driver-code.md` (speeds, core-agnostic, one paced loop, where the design is recorded, the protocol specifications).
+- **Comments and docstrings in `driver/` say purpose and contract, never implementation or history.** The rules are in `.claude/rules/driver-comments.md` (loaded when a driver file is touched); the `driver-comment-review` agent applies them.
+- **Tests and the bench harness** (`tests/`, `scripts/`): `.claude/rules/bench-harness.md` (what each test folder is for, the wingman, how a bench run is judged, `fast_stop`).
+- **ESC buddy** (`tools/esc_buddy/`): `.claude/rules/esc-buddy.md` (it serves only the firmware on the bench; no backward compatibility).
+- **Bug reports and decision records**: `.claude/rules/bench-analysis.md` (the reasoning behind "Analysing bench results").
 
 ## Usage
 

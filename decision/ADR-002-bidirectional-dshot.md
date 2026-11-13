@@ -1920,6 +1920,14 @@ hardware UART receiver re-synchronises, and it needs no division. It reads
 exactly 21 bits and autopushes them as one word, marker at the top, so the end of
 a frame never has to be detected.
 
+*Update 2026-11-12:* "half a bit after the edge, at the centre of the new bit" does
+not describe the program as built. After a flip is seen, the short count places the
+next read 5 receiver cycles later for a low-to-high flip and 6 for a high-to-low
+flip, not at the half-bit point (8 of the 16 cycles per bit). Traced against the
+instruction-level model in `scripts/simulate_frame_receiver.py`, which is a hand
+transcription of `dshot_bidir_rx_frame`, and confirmed by counting the program's
+instructions. A run of equal bits is then read every 16 cycles from that point.
+
 - **Clock.** The bit is 16 receiver cycles at both levels, so the receiver clock
   is 16 times the reply bit rate: 6.20MHz at DSHOT300 and 12.40MHz at DSHOT600
   (`frame_rx_speed()`; the rate is `rx_speed / expected_ratio`, the measured value).

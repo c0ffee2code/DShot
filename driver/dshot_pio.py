@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Original implementation: https://github.com/jrddupont/DShotPIO
 # Licensed under GNU General Public License v3.0
-# DShot protocol reference: https://brushlesswhoop.com/dshot-and-bidirectional-dshot/
+#
+# DShot transmit and bidirectional-telemetry receive on the RP2350's PIO, one
+# motor per object. Wire protocol: specification/DSHOT.md.
+# Design: ADR-002, ADR-005.
 
 import micropython
 import utime
@@ -10,16 +13,13 @@ from rp2 import PIO, StateMachine, asm_pio
 
 import gcr_decode
 from capture_mailbox import CaptureMailbox, FRAME_MASK
+# DSHOT_SPEEDS and BIDIR_PROFILES are also imported from here by callers
 from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES, FRAME_CYCLES_PER_BIT, frame_rx_speed
 
-# Highest value the 11-bit throttle field of a DShot packet can carry. A module
-# constant rather than a class attribute lookup because send_throttle_command()
-# reads it on every frame of every motor.
+# Highest value of the 11-bit throttle field of a DShot packet.
 MAX_THROTTLE = 2047
 
-# TEMPORARY bench ceiling (owner's decision 2026-10-19): throttles above this are not tested yet, so
-# send_throttle_command() and MotorGroup.set_throttle() reject them instead of sending them. Raise or
-# remove it when higher throttles are tested; MAX_THROTTLE stays the protocol's own limit.
+# TEMPORARY: highest throttle accepted until higher ones are tested (BUG-005).
 THROTTLE_CEILING = 250
 
 
@@ -31,210 +31,128 @@ class UnsupportedOperationException(Exception):
     def __init__(self,message):
         self.message=message
 
-# PIO assembly code for sending DShot throttle packets
-# This is set up to transmit the 16 high order bits of a 32 bit input from high to low order
-# Each bit is sent in 8 clock cycles
+# DShot TX. Sends the top 16 bits of each 32-bit FIFO word, MSB first, 8 cycles
+# per bit: high 3 cycles for a 0, 6 for a 1. The line idles low between frames.
 @asm_pio(sideset_init=PIO.OUT_LOW, out_shiftdir=PIO.SHIFT_LEFT, autopull=True, pull_thresh=16)
 def dshot():
     wrap_target()
     label("start")
-    out(x, 1)            .side(0)    [1] # 2 cycle, Read the next bit into x register. Start at zero so the output is always low when waiting for new data
-    jmp(not_x, "zero")   .side(1)    [2] # 3 cycles, Jump on x register
-    jmp("start")         .side(1)    [2] # 3 cycles, "ONE" condition
+    out(x, 1)            .side(0)    [1] # 2 cycles, LOW; stalls here when the FIFO is empty
+    jmp(not_x, "zero")   .side(1)    [2] # 3 cycles, HIGH
+    jmp("start")         .side(1)    [2] # 3 cycles, HIGH: bit 1
     label("zero")
-    jmp("start")         .side(0)    [2] # 3 cycles, "ZERO" condition
+    jmp("start")         .side(0)    [2] # 3 cycles, LOW: bit 0
     wrap()
 
-# Bidirectional DShot TX. Same bit timing as dshot(), with every side-set level
-# flipped so the line idles HIGH and the "0" bit's duty portion sits HIGH. An
-# AM32 ESC recognises bidirectional mode from this inverted polarity, and only
-# while it is disarmed, so this program has to be in use for the whole arm
-# sequence (see BidirectionalDShot).
-#
-# Unlike dshot(), it releases the pin (pindirs -> input) after each 16-bit frame
-# so the ESC can drive the line for its GCR telemetry reply, then reclaims it
-# for the next frame.
-#
-# It counts bits by hand and uses a manual pull() instead of autopull: autopull
-# refills the OSR with nothing a program can branch on, so the end of a frame -
-# the moment the pin must be released - could not be detected. pull() blocks
-# with the pin already released, so the idle time between frames is also the
-# ESC's reply window.
-#
-# The bit=1 and bit=0 paths each carry their own release-and-loop tail because
-# one PIO instruction encodes exactly one side-set value and the two paths need
-# different ones. That costs program memory (13 of 32 words) but no cycles: the
-# per-bit timing is identical on both paths.
-#
-# irq(rel(1)) fires once per frame, telling the paired receiver that it may
-# start its post-release delay. It is non-blocking, so it costs nothing when RX
-# is inactive or still busy with the previous capture. On the "zero" path it
-# fires right after the release; on the "one" path (BUG-004 fix, 2026-09-27) it
-# fires immediately before, while the line is still driven high, so that path's
-# release also happens at the idle level instead of from a driven-low pin left
-# to float up through the pull-ups alone - the release edge our own receiver
-# and the ESC both measure timing against.
-#
-# The IRQ is relative (rel) rather than a literal flag number because flags 4-7
-# are shared by every state machine on a PIO block: with a literal flag, two
-# bidirectional pairs on one block would consume each other's signal. rel(k)
-# resolves to a flag derived from the executing state machine's own id, so a TX
-# and its RX share one flag and every other pair gets a different one - provided
-# every pair uses the same TX-to-RX id offset. That is why BidirectionalDShot
-# requires rx_state_machine_id == state_machine_id + 1 (TX fires rel(1), RX
-# waits on rel(0)). See ADR-002's per-pair synchronization section.
+# Bidirectional DShot TX. dshot()'s bit timing with every level inverted: the
+# line idles high, which is how AM32 detects bidirectional mode while disarmed.
+# After the 16th bit it releases the pin (input, held high by the pull-up) so
+# the ESC can reply, and raises irq(rel(1)) to start the paired receiver; it
+# reclaims the pin when the next word arrives. Bits are counted by hand with a
+# manual pull(), because autopull gives no point at which to release. Each bit
+# path has its own release tail, because an instruction carries one side-set
+# value; both tails release from a driven-high line. rel(1) reaches the
+# receiver only if it runs on state machine id + 1 of the same block.
 @asm_pio(sideset_init=PIO.OUT_HIGH, set_init=PIO.OUT_HIGH, out_shiftdir=PIO.SHIFT_LEFT, autopull=False)
 def dshot_bidir_tx():
     label("frame_start")
-    pull()                     .side(1)   [1] # blocks here with the pin already released - this is the gap/RX window
-    set(pindirs, 1)            .side(1)   [1] # a new command is ready - reclaim the pin as output
-    set(y, 15)                 .side(1)   [1] # 16-bit counter
+    pull()                     .side(1)   [1] # pin released; waits here between frames (reply window)
+    set(pindirs, 1)            .side(1)   [1] # reclaim pin
+    set(y, 15)                 .side(1)   [1] # 16 bits
     label("bitloop")
-    out(x, 1)                  .side(1)   [1] # 2 cycles, HIGH (idle level) while shifting in the next bit
-    jmp(not_x, "zero")         .side(0)   [2] # 3 cycles, LOW, always executed regardless of bit value
-    jmp(y_dec, "bitloop")      .side(0)   [2] # "one" path: 3 cycles LOW, loop unless this was bit 16 - mostly LOW (25% high)
-    irq(rel(1))                .side(1)   [0] # bit 16 only ("one" path): drive HIGH (BUG-004) and tell paired RX (id = this SM's id + 1) a release is coming
-    set(pindirs, 0)            .side(1)   [1] # then release - the line is already high, not floating up from low
+    out(x, 1)                  .side(1)   [1] # 2 cycles, HIGH
+    jmp(not_x, "zero")         .side(0)   [2] # 3 cycles, LOW
+    jmp(y_dec, "bitloop")      .side(0)   [2] # 3 cycles, LOW: bit 1
+    irq(rel(1))                .side(1)   [0] # after bit 16 (bit 1): HIGH, signal RX
+    set(pindirs, 0)            .side(1)   [1] # release
     jmp("frame_start")         .side(1)   [0]
     label("zero")
-    jmp(y_dec, "bitloop")      .side(1)   [2] # "zero" path: 3 cycles HIGH, loop unless this was bit 16 - mostly HIGH (62.5% high)
-    set(pindirs, 0)            .side(1)   [1] # bit 16 only ("zero" path): release the pin
-    irq(rel(1))                .side(1)   [0] # tell paired RX (id = this SM's id + 1) the pin was just released
+    jmp(y_dec, "bitloop")      .side(1)   [2] # 3 cycles, HIGH: bit 0
+    set(pindirs, 0)            .side(1)   [1] # after bit 16 (bit 0): release
+    irq(rel(1))                .side(1)   [0] # signal RX
     jmp("frame_start")         .side(1)   [0]
 
-# BidirectionalDShot's receiver: the state machine rebuilds the reply itself
-# and hands the CPU one word per reply - the frame's 21 bits with the marker
-# at the top, the same integer gcr_decode.reconstruct_frame() used to build
-# from raw samples (see scripts/simulate_frame_receiver.py, which still does
-# that reconstruction for PC-side verification of this program) - so the CPU
-# is left with gcr_decode.decode() and check_crc().
-#
-# It reads the pin once per bit, at the bit's centre, and starts the count for
-# the next centre afresh at every flip - the way a hardware UART stays in step
-# with a sender whose clock is a little off - so a timing error can grow only
-# within one run of equal bits, not across the frame. That needs a receiver
-# clock at a whole number of cycles per reply bit: 16, see FRAME_CYCLES_PER_BIT.
-# It takes exactly 21 bits, so it never has to recognise the end of a frame,
-# and a reply's worth of work always ends: the 21st read is the one autopush
-# fires on, and by then every bit is already shifted into the ISR, so a full
-# RX FIFO stalls there holding a complete, correct value rather than a partial
-# one. It only costs later replies, silently uncaptured while the state
-# machine sits stalled - it does not resume watching for the next one until
-# room frees. See ADR-002's "run-length capture" section.
-#
-# What the program does, in order:
-#
-# 1. Wait for the paired TX's release signal and then for the reply's leading
-#    (marker) edge.
-#
-# 2. Count down from a preset while the pin holds its level: one pass of the
-#    counting loop is 2 cycles (a pin test and a decrement), the loop for the
-#    level the pin is at. When the pin flips, jump to the other level's loop with
-#    the counter set to a short count, so the next read lands close to the edge -
-#    5 cycles for a low-to-high flip, 6 for high-to-low (traced against
-#    scripts/simulate_frame_receiver.py's instruction-level PROGRAM model, which
-#    is hand-transcribed from this one), not the half-bit point (8 of the 16
-#    cycles in FRAME_CYCLES_PER_BIT) a symmetric design might suggest. When the
-#    counter runs out with no flip, the read lands one whole bit after the last one.
-#
-# 3. Read the pin into the input shift register (autopush hands it over after 21
-#    reads), count the bit, and reload the counter for a whole bit.
-#
-# The two levels' paths are made the same length on purpose: the low path spends
-# a nop where the high path spends a jump, so a bit is 16 cycles at either level
-# and a run of low bits does not drift against a run of high bits.
-#
-# It takes 19 of a PIO block's 32 instruction slots and dshot_bidir_tx takes 13,
-# so a block that carries this pair is full: no other program fits beside it.
+# Bidirectional DShot RX, paired with dshot_bidir_tx on state machine id + 1 of
+# the same block. After the TX's irq(rel(1)) it waits for the line high plus
+# 26 cycles, then for the reply's falling marker edge, and reads exactly
+# 21 bits, 16 cycles per bit (FRAME_CYCLES_PER_BIT): one read per bit, the count
+# restarting at every flip so timing error cannot build up across a frame.
+# Autopush hands the CPU one word per capture: the 21-bit frame, marker on top.
+# With a silent ESC it captures the driver's own next frame instead.
+# A full RX FIFO stalls it holding a complete word; captures are then lost
+# until room frees. With dshot_bidir_tx (13 words) it fills the 32-word block.
+# scripts/simulate_frame_receiver.py transcribes it by hand: change both.
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=21)
 def dshot_bidir_rx_frame():
     wrap_target()
-    irq(clear, rel(0))               # step 1: drop any stale release signal, then wait below
-    wait(1, irq, rel(0))
-    wait(1, pin, 0)            [26]  # BUG-004: wait for the line high (not just a fixed delay) before
-                                      # arming the marker wait below - never starts looking for a falling
-                                      # edge while the release is still low. Same 27-cycle / 4.2us / 2.2us
-                                      # lower bound as before once the line is high; costs nothing if it
-                                      # already is.
-    wait(0, pin, 0)                  # the marker edge: the pin is now low
-    set(y, 20)                       # 21 reads: y counts 20..0
+    irq(clear, rel(0))               # drop a stale TX signal
+    wait(1, irq, rel(0))             # TX released the line
+    wait(1, pin, 0)            [26]  # line high, then 26 more cycles
+    wait(0, pin, 0)                  # marker edge
+    set(y, 20)                       # 21 reads
     label("flip_low")
-    set(x, 0)                        # step 2: the pin just went low - 1 pass, then read
+    set(x, 0)                        # flipped low: read in 6 cycles
     jmp("low")
     label("flip_high")
-    set(x, 0)                        # the pin just went high - 1 pass, then read
+    set(x, 0)                        # flipped high: read in 5 cycles
     label("high")
-    jmp(pin, "high_count")           # pin still high: count a pass
-    jmp("flip_low")                  # pin went low
+    jmp(pin, "high_count")
+    jmp("flip_low")
     label("high_count")
-    jmp(x_dec, "high")               # 2 cycles a pass; falls through when the count is out
+    jmp(x_dec, "high")               # 2 cycles a pass
     jmp("emit")
     label("again")
-    set(x, 4)                  [1]   # step 3: a whole bit - 5 passes, plus the cycles the path around them takes
+    set(x, 4)                  [1]   # one whole bit: 16 cycles to the next read
     jmp(pin, "high")
-    nop()                            # matches the jump the high path takes to "emit"
+    nop()                            # evens the low path with the high path's jmp("emit")
     label("low")
-    jmp(pin, "flip_high")            # pin went high
-    jmp(x_dec, "low")                # 2 cycles a pass; falls through into "emit" when the count is out
+    jmp(pin, "flip_high")
+    jmp(x_dec, "low")                # 2 cycles a pass
     label("emit")
-    in_(pins, 1)                     # the read
-    jmp(y_dec, "again")              # after the 21st, wraps back to wait for the next reply
-
-# DSHOT_SPEEDS and BIDIR_PROFILES live in dshot_profiles.py (pure data, no
-# hardware imports) so PC-side tooling can read them directly - see that
-# module's docstring. Imported and re-exported above.
+    in_(pins, 1)                     # read one bit
+    jmp(y_dec, "again")
 
 
 class DShotPIO:
     """
-    Common base for UnidirectionalDShot and BidirectionalDShot - construct one
-    of those, not this. Holds everything the two share: the TX state machine,
-    start()/stop()/drain(), and send_throttle_command().
+    Common base of UnidirectionalDShot and BidirectionalDShot; construct one of
+    those, not this. Holds the TX state machine, start(), stop(), drain() and
+    the senders.
     """
 
-    # Words the PIO TX FIFO holds before put() starts blocking
+    # Words the TX FIFO holds before put() blocks
     TX_FIFO_DEPTH = 4
 
-    # Exposed for applications and MotorGroup; see the module constant
     MAX_THROTTLE = MAX_THROTTLE
     THROTTLE_CEILING = THROTTLE_CEILING
 
-    # Each subclass overrides this. send_throttle_command() inverts the CRC
-    # when it is True, and application code reads it to tell the two apart.
+    # True on BidirectionalDShot: its packets carry the inverted CRC
     bidirectional = False
 
-    # Creates the state machine but leaves it inactive - call start() to enable it
+    # Creates the state machine inactive; start() enables it
     def __init__(self, state_machine_id, pin, dshot_speed, program):
-        # Kept so a group of motors can check that no two share hardware
         self.state_machine_id = state_machine_id
         self.pin = pin
 
-        # Kept so init_state_machines() can re-init this state machine on
-        # every start() and stop() (stop() gives the pin to SIO)
+        # For re-initialising on every start() and stop()
         self.dshot_speed = dshot_speed
         self.program = program
 
         self.sm = StateMachine(state_machine_id, program, freq=dshot_speed,
                                 sideset_base=pin, set_base=pin)
 
-        # Wall-clock time of one 16-bit frame at 8 PIO cycles per bit, rounded
-        # up so a wait built from it is never short
+        # Duration of one 16-bit frame at 8 PIO cycles per bit, rounded up, in us
         self.frame_us = (16 * 8 * 1_000_000 + dshot_speed - 1) // dshot_speed
 
-        # The all-zero-throttle packet never changes (throttle=0 and
-        # self.bidirectional are both fixed for this instance's lifetime), so
-        # it is built once here instead of on every send_zero() call - see
-        # send_zero()'s own docstring for why that call exists.
+        # Packet for throttle 0, fixed for this instance; see send_zero()
         self.zero_packet = 0x000F if self.bidirectional else 0x0000
 
     def init_state_machines(self):
         """
-        Put every state machine of this motor into its fresh, never-run state.
+        Put this motor's state machines into their fresh, never-run state.
 
-        Loads the program again, which also empties the TX FIFO and jumps to
-        the program's first instruction, so nothing queued by an earlier run
-        can be sent and no half-sent frame resumes. BidirectionalDShot extends
-        this to its receive side.
+        Reloads the program, which empties the TX FIFO and restarts at the
+        first instruction, so no frame queued by an earlier run is sent.
         """
         self.sm.init(self.program, freq=self.dshot_speed,
                      sideset_base=self.pin, set_base=self.pin)
@@ -244,70 +162,45 @@ class DShotPIO:
 
     def drain(self):
         """
-        Block until everything queued has been transmitted.
+        Block until every queued frame has gone out on the wire.
 
-        Call this before stop() when the queued frames still need to reach the
-        ESC - stop() cuts them off otherwise. It also parks the line at its
-        idle level (low for dshot(), high for dshot_bidir_tx()): with the
-        FIFO empty the program stalls (on the out instruction for dshot(),
-        on pull() for dshot_bidir_tx()), holding that instruction's side-set
-        value - which for dshot_bidir_tx() also means the pin is released
-        (see its own comments), letting an RX state machine or the ESC drive
-        the line.
-
-        Only meaningful on an active state machine. The wait is bounded rather
-        than a spin on tx_fifo(), so calling it on an inactive one costs a few
-        hundred microseconds instead of hanging.
+        Call it before stop() when queued frames must still reach the ESC;
+        stop() discards them. Afterwards the line is at its idle level (low;
+        for a bidirectional motor high and released). Meant for an active
+        state machine; on an inactive one it returns after a few frame times.
         """
         for _ in range(self.TX_FIFO_DEPTH):
             if not self.sm.tx_fifo():
                 break
             utime.sleep_us(self.frame_us)
 
-        # tx_fifo() reaching zero only means the last word has been pulled into
-        # the shift register - it is still going out on the wire
+        # An empty FIFO means the last word is in the shift register, still being sent
         utime.sleep_us(self.frame_us)
 
     def stop(self):
         """
-        Deactivate the state machine and leave this motor fully reset.
+        Deactivate the state machine and leave this motor reset.
 
-        The signal line stops carrying DShot transitions, so the ESC's own
-        signal-loss timeout stops the motor (AM32: 500ms armed, see
-        specification/AM32.md#15) - nothing is transmitted on the way out. A
-        caller that needs the motor stopped sooner sends throttle 0 before
-        calling this.
-
-        Afterwards the state machine is re-initialised - the TX FIFO is empty,
-        so no frame queued before the stop can go out at the next start() - and
-        the pin is a plain output driven low. A frame cut mid-bit would
-        otherwise leave the line at whatever level it was driving.
-
-        Call start() to run again; it re-initialises once more and takes the
-        pin back for PIO.
+        Nothing is transmitted on the way out: the ESC stops the motor on its
+        own signal-loss timeout (specification/AM32.md#15). A caller that needs
+        it stopped sooner sends throttle 0 first. Queued frames are discarded
+        and the pin is left a plain output driven low. start() runs it again.
         """
         self.sm.active(0)
         self.init_state_machines()
         self.pin.init(Pin.OUT, value=0)
 
-    # measured win - see ADR-002's "Further hot-path tightening" section
     @micropython.native
     def send_throttle_command(self, throttle):
         """
-        Send a throttle command to the ESC.
+        Queue one frame with this throttle, after checking its range.
 
         Args:
-            throttle: Throttle value (0 to THROTTLE_CEILING, the temporary bench ceiling)
+            throttle: 0 to THROTTLE_CEILING.
 
         Raises InvalidThrottleException for a negative value or one above
-        THROTTLE_CEILING. Values 1-47 are DShot commands, not throttle: AM32
-        executes them (beep, direction, EEPROM save). This level sends them
-        as given; MotorGroup.set_throttle() is the guard that refuses them.
-
-        Note: DShot protocol includes a telemetry request bit, but this implementation
-        always sets it to 0. AM32 sends a GCR telemetry reply after every frame once
-        bidirectional mode is detected regardless of this bit (confirmed from AM32
-        firmware source - see ADR-002), so leaving it 0 does not suppress telemetry.
+        THROTTLE_CEILING. Values 1-47 are sent as given, and AM32 executes
+        them as DShot commands; MotorGroup.set_throttle() refuses them.
         """
         if throttle < 0:
             raise InvalidThrottleException("Throttle cannot be negative.")
@@ -316,56 +209,40 @@ class DShotPIO:
 
         self.send_unchecked(throttle)
 
-    # measured win - see ADR-002's "Further hot-path tightening" section
     @micropython.native
     def send_unchecked(self, throttle):
         """
-        Build the packet for a throttle and queue it, with no range check.
+        Queue one frame with this throttle, without a range check.
 
-        MotorGroup.update() sends through this every tick: the group's
-        set_throttle() and set_all_throttles() already validated what it
-        holds, so checking again per frame would only cost time. Code that
-        drives a motor without a MotorGroup uses send_throttle_command().
-        A value outside 0..2047 builds a wrong packet.
+        For callers that validated the value already, such as
+        MotorGroup.update(); others use send_throttle_command(). A value
+        outside 0..2047 builds a wrong packet. The telemetry-request bit is
+        always 0; AM32 replies in bidirectional mode regardless.
         """
-        # Build 12-bit value: 11-bit throttle shifted left, telemetry bit = 0
+        # 11-bit throttle, telemetry bit 0
         packetValue = throttle << 1
 
-        # Calculate 4-bit CRC. Bidirectional DShot inverts it - this is what
-        # actually rides on the wire once dshot_bidir_tx's waveform inverts
-        # the bit levels themselves; ESCs use the inverted CRC to validate
-        # frames once they've auto-detected bidirectional mode (see ADR-002).
+        # 4-bit CRC, inverted for bidirectional DShot
         crc = (packetValue ^ (packetValue >> 4) ^ (packetValue >> 8)) & 0x0F
         if self.bidirectional:
             crc = (~crc) & 0x0F
 
-        # Build 16-bit packet: SSSSSSSSSSSTCCCC (S=throttle, T=telemetry=0, C=CRC)
+        # SSSSSSSSSSSTCCCC: throttle, telemetry bit, CRC
         dShotPacket = (packetValue << 4) | crc
 
-        # The state machine consumes the bits from high order to low order, so the
-        # 16-bit packet has to sit in the top of the 32-bit word. put() shifts it
-        # there itself: shifting in Python instead makes a heap integer once the
-        # value passes 30 bits, an allocation on every frame at higher throttle.
+        # put() shifts the 16 bits to the top of the word; a Python shift would allocate
         self.sm.put(dShotPacket, 16)
 
-    # measured win - see ADR-002's "Further hot-path tightening" section
     @micropython.native
     def send_zero(self):
         """
-        Send an all-zero-throttle command - equivalent to
-        send_throttle_command(0), but skips the validation, packet build and
-        CRC calculation that produce the exact same result every time (see
-        self.zero_packet). Used only on MotorGroup.update()'s ARMING-branch
-        hot path, where every motor is sent a forced zero on every tick (see
-        bidirectional_dshot_review.md's W33).
+        Queue one frame with throttle 0; same as send_throttle_command(0),
+        without building the packet. For MotorGroup.update()'s arming ticks.
         """
         self.sm.put(self.zero_packet, 16)
 
-    # The telemetry interface every motor shares. Only BidirectionalDShot
-    # captures replies, so these raise by default: reaching one on a
-    # unidirectional motor means the application wired the wrong kind of motor
-    # into a place that needs telemetry - its own configuration bug, surfaced
-    # loudly rather than as a silent empty result.
+    # Telemetry interface. Only BidirectionalDShot captures replies; on any
+    # other motor these raise, as the application asked the wrong kind of motor.
     def rx_read(self):
         raise UnsupportedOperationException("This motor captures no telemetry")
 
@@ -377,69 +254,50 @@ class DShotPIO:
 
 
 class UnidirectionalDShot(DShotPIO):
-    """Sends commands only - the plain DShot waveform, no reply capture."""
+    """Sends commands only, with the plain DShot waveform; no reply capture."""
 
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         super().__init__(state_machine_id, pin, dshot_speed, dshot)
 
     def start(self):
-        # Re-initialise first: stop() handed the pin to SIO, and loading the
-        # program is what takes it back for PIO (see stop()).
+        # Reloading the program takes the pin back from stop()'s plain output
         self.init_state_machines()
         super().start()
 
 
 class BidirectionalDShot(DShotPIO):
     """
-    Sends commands with the inverted TX waveform an AM32 (or other
-    bidirectional-capable) ESC needs to auto-detect bidirectional DShot, and
-    captures the ESC's GCR telemetry reply on a second state machine sharing
-    the same pin, running dshot_bidir_rx_frame (see its own comment): it
-    reconstructs the reply's 21-bit frame in hardware and hands the CPU one
-    word per reply, for gcr_decode.analyze_frame() to decode. Detection only
-    happens while the ESC is disarmed, so this class must be in use for the
-    whole arm sequence - there is no way to arm with a normal signal and
-    switch afterward.
+    Sends commands with the inverted waveform and captures the ESC's telemetry
+    reply on a second state machine on the same pin.
 
-    The TX/RX pair fills its PIO block on its own (dshot_bidir_tx is 13
-    instructions, dshot_bidir_rx_frame 19, of the block's 32) - it cannot share
-    a block with a unidirectional motor, though two bidirectional motors may
-    share one (identical programs load once per block - see ADR-002's layout
-    table).
+    AM32 detects bidirectional mode only while disarmed, so this class must
+    drive the motor through the whole arm sequence. Its TX/RX pair fills a PIO
+    block (dshot_bidir_tx and dshot_bidir_rx_frame): no unidirectional motor
+    fits beside it, a second bidirectional pair does. The application drains
+    the receiver on every command-loop tick (drain_rx() or discard_rx()).
+    A capture is not proof of a reply: with a silent ESC the receiver captures
+    the driver's own next frame, and at some throttles that capture passes the
+    CRC.
     """
 
     bidirectional = True
 
-    # Most captures drain_rx() takes in one call. It bounds how long one call can
-    # hold the command loop - which also feeds TX - if the receiver keeps
-    # producing while the FIFO is being emptied; anything left over is taken on
-    # the next call.
+    # Most captures one drain_rx() or discard_rx() call takes; bounds the call's time
     RX_DRAIN_LIMIT = 4
 
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600,
                  rx_state_machine_id=None):
         """
         Args:
-            rx_state_machine_id: Required. The second state machine, listening
-                on the same pin for the ESC's GCR reply (see dshot_bidir_rx_frame).
-                Two constraints, both enforced here:
-                (1) Same PIO block as state_machine_id (ids 0-3 -> PIO0, 4-7 ->
-                    PIO1, 8-11 -> PIO2 on RP2350). A GPIO's function select
-                    routes to one PIO block at a time, and inter-SM IRQs only
-                    reach state machines on the same block.
-                (2) Exactly state_machine_id + 1. TX and RX synchronise
-                    through relative IRQ addressing, which resolves to a flag
-                    derived from the executing state machine's own id; a fixed
-                    TX-to-RX offset is what gives every pair on a shared block
-                    its own private flag (see dshot_bidir_tx).
-                start() activates both state machines. From then on RX
-                synchronises itself to each TX frame with no further calls -
-                the application only has to drain it (see drain_rx(), which
-                MotorGroup.update() calls every tick).
+            dshot_speed: DSHOT300 or DSHOT600 (a BIDIR_PROFILES entry).
+            rx_state_machine_id: Required; the receiver's state machine. It
+                must be state_machine_id + 1, because TX and RX meet on a
+                relative IRQ flag, and in the same PIO block (ids 0-3 PIO0,
+                4-7 PIO1, 8-11 PIO2), because a pin and inter-state-machine
+                IRQs reach one block only.
+
+        Raises ValueError otherwise, before claiming any hardware.
         """
-        # Validate before claiming any hardware: a constructor that raises
-        # partway through shouldn't leave a stray, half-configured state
-        # machine bound to the pin behind it.
         if rx_state_machine_id is None:
             raise ValueError("rx_state_machine_id is required for BidirectionalDShot")
 
@@ -453,8 +311,7 @@ class BidirectionalDShot(DShotPIO):
                 "own docstring"
             )
 
-        # Ids 0-3 are PIO0, 4-7 PIO1, 8-11 PIO2: with the +1 offset, a TX on the
-        # last state machine of a block would put its RX in the next block
+        # A TX on the last state machine of a block would put its RX in the next one
         if state_machine_id // 4 != rx_state_machine_id // 4:
             raise ValueError(
                 "state_machine_id " + str(state_machine_id) + " and rx_state_machine_id " +
@@ -467,20 +324,12 @@ class BidirectionalDShot(DShotPIO):
                               "BIDIR_PROFILES entry (DSHOT300 or DSHOT600 currently)")
         rx_speed = frame_rx_speed(dshot_speed)
 
-        # Both sides release the line between frames (see dshot_bidir_tx), so
-        # for part of each frame nobody drives it. An undriven pad can float
-        # LOW, which dshot_bidir_rx_frame's wait(0, pin, 0) would read as the
-        # start of a reply. A weak pull-up holds the line at its idle-HIGH
-        # level while nobody drives, without resisting either side when they
-        # do. Pad pull configuration is independent of which peripheral owns
-        # the pin, so it still applies once the state machines below take over.
+        # Holds the released line at its idle high; a floating low would read as a reply
         pin.init(Pin.IN, Pin.PULL_UP)
 
         super().__init__(state_machine_id, pin, dshot_speed, dshot_bidir_tx)
 
-        # jmp_pin wires the pin dshot_bidir_rx_frame's jmp(pin, ...) instructions
-        # read. Kept on self, alongside the clock, so start() can replay the
-        # same rx_sm.init() call on every run, not only the first.
+        # jmp_pin is the pin the receiver's jmp(pin, ...) reads
         rx_init_kwargs = {"in_base": pin, "jmp_pin": pin}
         self.rx_sm = StateMachine(rx_state_machine_id, dshot_bidir_rx_frame,
                                    freq=rx_speed, **rx_init_kwargs)
@@ -489,37 +338,18 @@ class BidirectionalDShot(DShotPIO):
 
         self.rx_state_machine_id = rx_state_machine_id
 
-        # Assembles replies from the RX FIFO and holds the latest one for the
-        # application to read from another core.
-        #
-        # drain_rx() and discard_rx() empty the RX FIFO. Call one of them on
-        # every command-loop tick: an undrained FIFO stalls the RX state
-        # machine, losing replies until it is drained again (see ADR-002). They
-        # take whole (1-word) captures only, leaving fewer waiting words for
-        # the next call, so the grouping cannot slip. drain_rx() publishes: a
-        # completed capture replaces the single published one (read it with
-        # latest_capture()). discard_rx() drops them, for the arming window,
-        # when replies are not yet trusted. Both take at most RX_DRAIN_LIMIT
-        # captures per call, count AM32's not-running replies, do no decoding
-        # (that is the application's job, on its own schedule - see
-        # decode_capture()), and must be called from one place only
-        # (MotorGroup.update()): while the loop runs it is the only writer of
-        # the published capture.
-        #
-        # It is the mailbox's own method, bound here, rather than a method of
-        # this class that calls the mailbox: it runs on every tick, and a
-        # Python-level call layer per tick measurably slowed the command loop.
+        # drain_rx() publishes captures for latest_capture(); discard_rx() drops
+        # them (arming). One of them on every tick, from one caller only: an
+        # undrained RX FIFO stalls the receiver. Bound directly to the mailbox's
+        # methods, as a call layer per tick costs loop time.
         self.mailbox = CaptureMailbox(self.rx_sm, self.RX_DRAIN_LIMIT)
         self.drain_rx = self.mailbox.drain
         self.discard_rx = self.mailbox.discard
 
     def init_state_machines(self):
         """
-        Fresh TX and RX state machines, with an empty RX FIFO and no stored
-        capture left over from a previous run.
-
-        Leftover words would misalign the first new capture, and a stale
-        published capture must not survive into the new run.
+        Fresh TX and RX state machines, an empty RX FIFO and no published
+        capture, so nothing from a previous run reaches the next one.
         """
         super().init_state_machines()
         self.rx_sm.init(dshot_bidir_rx_frame, freq=self.rx_clock_hz, **self.rx_init_kwargs)
@@ -528,33 +358,22 @@ class BidirectionalDShot(DShotPIO):
         self.mailbox.reset()
 
     def start(self):
-        # Reclaim the pin from stop()'s SIO hand-off (see stop()'s own
-        # comment) before touching either state machine. Re-applying the
-        # pull-up here, not just once at construction, means the very first
-        # start() and every one after a stop() both get it - and the pin's
-        # pull configuration is independent of which peripheral owns it, so
-        # this is safe to redo even on a pin that never left PIO.
+        # Take the pin back from stop()'s plain output, with the pull-up
         self.pin.init(Pin.IN, Pin.PULL_UP)
 
-        # RX listens before TX can release the pin and raise its first
-        # irq(rel(1)) (see dshot_bidir_rx_frame's irq(clear, rel(0)) comment
-        # for the other half of this), so it is activated first.
+        # RX first, so it is waiting before TX raises its first irq(rel(1))
         self.init_state_machines()
         self.rx_sm.active(1)
         super().start()
 
     def rx_read(self):
         """
-        Return the next raw captured word from the RX FIFO, or None if empty.
+        Return the next raw word from the RX FIFO, or None if it is empty.
 
-        The receiver synchronises itself to every TX frame via a PIO IRQ - no
-        per-read setup call is needed. Each real reply produces one word: the
-        already-reconstructed 21-bit frame (see dshot_bidir_rx_frame's
-        comments). Raw and unpaired: decoding into eRPM is a separate step
-        (decode_capture()).
-
-        Diagnostic access. Use either this or drain_rx() on a given motor,
-        never both - they consume the same FIFO.
+        One word per capture: a 21-bit reply frame, or the driver's own next
+        frame when the ESC is silent. Undecoded (see decode_capture()).
+        Diagnostic access: use this or drain_rx() on a motor, never both, as
+        they consume the same FIFO.
         """
         if not self.rx_sm.rx_fifo():
             return None
@@ -565,53 +384,36 @@ class BidirectionalDShot(DShotPIO):
         Return the latest published capture as one integer, or None while
         nothing has been published since start().
 
-        The integer is the reply frame in its low 21 bits and a token above
-        them that steps on every publish (see CaptureMailbox), so a caller
-        that keeps the last value it saw knows a capture is new when the value
-        differs. It carries no timestamp: a caller that wants a time takes its
-        own when the value changes. Pass it to decode_capture() as it is.
-        One load of one array element, so safe to call from a different core
-        than drain_rx() and never retried.
+        The low 21 bits are the frame; the bits above are a token that changes
+        on every publish, so a value that differs from the last one seen is a
+        new capture. No timestamp. Pass it to decode_capture() unchanged. Safe
+        to call from another core than drain_rx().
         """
         return self.mailbox.latest()
 
     def decode_capture(self, value):
         """
-        Decode one capture, as latest_capture() returned it, and return
-        gcr_decode.analyze_frame()'s result
-        dict - crc_ok is the validity signal, a capture that is complete and
-        correctly framed can still fail it. The receiver already did the
-        reconstruction, so this is decode() plus check_crc() and a small
-        dict - see ADR-002 for the measured cost.
+        Decode one capture as latest_capture() returned it; returns
+        gcr_decode.analyze_frame()'s dict.
+
+        crc_ok False means the capture is not a valid reply. crc_ok True does
+        not prove a reply: a capture of the driver's own frame from a silent
+        ESC passes the CRC at some throttles.
         """
         return gcr_decode.analyze_frame(value & FRAME_MASK)
 
-    # One shutdown-only wait, not on any hot path: the ESC's reply to the last
-    # frame TX sent is still in flight for a while after TX's own last bit -
-    # dshot_bidir_rx_frame's own predelay is explicitly a lower bound on when that
-    # reply starts, not a measured one, so the actual turnaround can't be
-    # computed exactly here. A generous fixed margin, comfortably longer than
-    # a whole reply at either supported speed, before handing the pin to SIO
-    # avoids fighting the ESC's own drive.
+    # Wait in stop() for a reply still in flight; longer than a whole reply at either speed
     STOP_REPLY_MARGIN_US = 300
 
     def stop(self):
         """
-        Deactivate both state machines, reset them, then hand the pin to SIO,
-        driven low.
+        Deactivate both state machines, reset them, and leave the pin a plain
+        output driven low.
 
-        AM32 ESCs reboot into their bootloader after a signal-loss timeout,
-        and a bootloader that finds the line permanently high never escapes -
-        which is exactly what merely deactivating a released, pulled-up-high
-        BidirectionalDShot line leaves behind. Driving it low instead means
-        that reboot's own bootloader check sees an actively low line and
-        jumps straight back to the application - the same path a
-        unidirectional motor's frozen-low line already takes for free. Call
-        start() to reclaim the pin for PIO and resume.
-
-        Like UnidirectionalDShot.stop(), nothing is transmitted on the way out
-        and the state machines are left freshly initialised, so no queued
-        frame or captured reply survives into the next start().
+        Low, not released high: an AM32 ESC reboots into its bootloader after
+        a signal-loss timeout and stays there while the line is held high.
+        Nothing is transmitted on the way out; no queued frame or capture
+        survives into the next start().
         """
         self.sm.active(0)
         self.rx_sm.active(0)

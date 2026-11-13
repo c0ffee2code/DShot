@@ -41,7 +41,7 @@ Setting `Core1Runner`'s interval to 1000 us (the writer then publishes at most a
 
 ## Who is affected
 
-- **Any application that polls `raw_telemetry()` while running `update()` at the library's default unpaced rate.** CLAUDE.md's usage example does exactly that (`motors.UPDATE_INTERVAL_US`, which is 0).
+- **Any application that polls `raw_telemetry()` while running `update()` at the library's default unpaced rate.** CLAUDE.md's usage example does exactly that (`motors.UPDATE_INTERVAL_US`, which is 0). *Note 2026-11-12:* the usage example is now in README.md, "Quick Start"; CLAUDE.md holds none.
 - **The scenario runner** also runs unpaced. It still delivers about 276 records/s (`largest_gap` 17 ms in the 2026-10-17 run), but it samples only a small share of what is published (15,881 of 18,091 captures went unseen in that run). Its loop does extra work between polls, which changes the timing against the writer; that is why it does not starve completely. Its record-rate thresholds hide this.
 - **Not affected:** arming (the group's own gate reads the mailbox's counters, not `latest()`), the motor commands, and the ESC.
 
@@ -49,11 +49,11 @@ Setting `Core1Runner`'s interval to 1000 us (the writer then publishes at most a
 
 - Whether raising `LATEST_ATTEMPTS` removes it, or only moves the problem.
 - Why one step in five worked, in both throttle orders.
-- Whether a fixed 1 ms pace is safe for arming reliability in general. The arming evidence in CLAUDE.md (104/104) was gathered with maximum-rate pacing; the RPM test armed once per run at 1 ms pacing (2,108 ms) but this is not a batch.
+- Whether a fixed 1 ms pace is safe for arming reliability in general. The arming evidence in CLAUDE.md (104/104) was gathered with maximum-rate pacing; the RPM test armed once per run at 1 ms pacing (2,108 ms) but this is not a batch. *Note 2026-11-12:* CLAUDE.md holds no arming evidence; the figures now published are in README.md, "Operational Envelope".
 - Whether the reader being slow comes from both cores fetching code from flash at the same time (the 2026-09 perf findings measured the interpreter about 10x slow).
 
 ## Options
 
-1. **Document and pace.** State in CLAUDE.md that a telemetry-reading application should pace `update()` (about 1 ms), and change the usage example. No driver change; needs an arming batch at that pace before it becomes the recommendation.
+1. **Document and pace.** State in CLAUDE.md that a telemetry-reading application should pace `update()` (about 1 ms), and change the usage example. No driver change; needs an arming batch at that pace before it becomes the recommendation. *Note 2026-11-12:* CLAUDE.md holds no usage guidance; the usage example is in README.md, "Quick Start".
 2. **Make the read cheaper or more patient.** More attempts, or a copy that cannot be overtaken (for example two slots the reader alternates between). Changes `driver/`, so it needs the unit tests and a bench pass.
 3. **Make the scenario runner measure it.** Add a threshold on the share of polls that returned `None`, so a regression shows.

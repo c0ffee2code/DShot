@@ -179,7 +179,7 @@ scenario, `decode_every` 50, spy recording; telemetry-based, because the optical
 - **Held:** in 28 of 28 runs all four motors ran the full 20 s with no cut and no dip that stayed. **The unit is the run, not the motor-start:** the four motors
   start at the same moment from the same power and ESC, so their starts are not independent trials and 112 motor-starts are not 112 pieces of evidence. 28 of 28
   runs support about 90% at 95% confidence (exact one-sided bound; the first write-up said 88% with a different method); per motor it is also 28 of 28, so 90% for each of GPIO 6, 7, 8 and 9 (pooling them would hide the
-  weakest). This is not progress toward the 99% promise, which needs about 300 clean runs (CLAUDE.md, Operational Envelope). **GPIO 9, the motor that cut in 5 of 7 runs at 150, never cut at 215.** All 28 runs armed within 3.0 s (27 at 2,112-2,114 ms;
+  weakest). This is not progress toward the 99% promise, which needs about 300 clean runs (CLAUDE.md, Operational Envelope). *Note 2026-11-12:* the Operational Envelope is in README.md; CLAUDE.md holds no table. **GPIO 9, the motor that cut in 5 of 7 runs at 150, never cut at 215.** All 28 runs armed within 3.0 s (27 at 2,112-2,114 ms;
   the first run, after a pause of a few minutes, at 2,635 ms). No schedule slip in any run. `decode_every` 50 on a real ESC: 34 decodes per motor, all CRC ok.
 - **Time from the throttle step to 38,000 eRPM (about 80% of the 48,000 these props read at 215), median / slowest:** GPIO 8 89 / 103 ms, GPIO 7 115 / 125 ms,
   GPIO 6 117 / **1,052** ms, GPIO 9 160 / 325 ms. GPIO 9 is consistently the slowest to speed (124-325 ms) but always gets there. **GPIO 6 had two slow starts**
@@ -267,8 +267,8 @@ throttle 60): a disturbance shorter than that is invisible. A disk with more slo
 **Removed 2026-11-02 (owner).** The optical recording test (`tests/bench/start_quality/`: `record_motor_start.py` and 14 start configs) and its KPI runner
 (`scripts/run_start_quality.py`, with its test) were deleted: the configs had grown to differ in every aspect and nobody could say what each tested. They are in git
 (the commit before this removal) if the optical judging is wanted again; the KPI definition above stands, but nothing records or judges it from the shaft now.
-Start health is read from ordinary scenario runs: the spy's spin-up and final cut in each session's `summary.json`. Keep README.md and CLAUDE.md's
-"Operational Envelope" tables in agreement once limits exist.
+Start health is read from ordinary scenario runs: the spy's spin-up and final cut in each session's `summary.json`. Keep README.md's
+"Operational Envelope" table in agreement once limits exist.
 
 ## Before touching this: BUG-005 (now fixed) is why a ramp from 0 cannot be written
 
@@ -348,10 +348,11 @@ of those throttles. That only means the model, as it stands, doesn't predict thi
 throttles - the model itself has not been independently validated against a known-real echo from
 this bench's own history, so this is evidence against the echo explanation, not a ruled-out
 verdict. (`driver/gcr_decode.py`'s docstring says the same thing - keep both in agreement if either
-changes.)
+changes.) *Note 2026-11-13:* `driver/gcr_decode.py` no longer carries this account; its `decode_result()` docstring
+says only that a CRC-valid reply can carry `data12=2` right after a start. This report is the record.
 
 **On the wire, 2026-10-28: the `data12=2` word is the ESC's own reply, not an echo.** A second Pico recorded the
-signal line (every edge, 0.1us resolution, decoded from the waveform alone - CLAUDE.md's "wingman"). Three
+signal line (every edge, 0.1us resolution, decoded from the waveform alone - CLAUDE.md's "wingman"). *Note 2026-11-12:* the wingman is described in `.claude/rules/bench-harness.md` and `tests/README.md`; CLAUDE.md holds no such section. Three
 single-motor runs, channel 1 on GPIO 6, throttle 0 -> 100, the scenario runner's own mechanics: DSHOT600 twice and
 DSHOT300 once. In every run, the reply to the first throttle-100 frame is still the not-running word (0xFFF);
 the next replies are `data12 = 0x002` (30,000,000 eRPM) for 6, 9 and 8 consecutive replies (about 6-9 ms), then

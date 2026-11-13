@@ -201,6 +201,43 @@ if not runner.stop():   # waits for the loop to really exit; False = it did not
 motors.disarm()
 ```
 
+### With Telemetry (Bidirectional Motors)
+
+A bidirectional motor uses two state machines: its own and, one id above it, the receiver for the ESC's reply. The pair
+fills its PIO block (ids 0-3 are PIO0, 4-7 PIO1, 8-11 PIO2): a second bidirectional pair fits in the same block, a
+unidirectional motor does not and goes on another block.
+
+```python
+from machine import Pin
+from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
+from motor_group import MotorGroup
+import utime
+
+motors = MotorGroup([
+    BidirectionalDShot(0, Pin(6), DSHOT_SPEEDS.DSHOT600, rx_state_machine_id=1),  # PIO0: TX on 0, RX on 1
+    BidirectionalDShot(2, Pin(7), DSHOT_SPEEDS.DSHOT600, rx_state_machine_id=3),  # PIO0: a second pair fits
+    UnidirectionalDShot(8, Pin(8), DSHOT_SPEEDS.DSHOT600),                        # PIO2: not beside a pair
+])
+
+# ...start the loop, arm and set throttles as above. Arming now also waits until
+# every bidirectional ESC is replying, so poll is_armed() as before.
+
+last = None
+while True:
+    capture = motors.raw_telemetry(0)       # the latest capture of motor 0, or None before ARMED
+    if capture is not None and capture != last:
+        last = capture                      # a new capture: the value differs from the one seen last
+        reply = motors.decode_telemetry(0, capture)   # too slow for the command loop: decode here
+        if reply["crc_ok"] and not reply["not_running"]:
+            print("motor 0:", reply["erpm"], "eRPM")  # electrical RPM; shaft RPM = eRPM / pole pairs
+    utime.sleep_ms(10)
+```
+
+A capture is not proof that the ESC replied. When an ESC is silent the receiver captures the driver's own next frame, and
+at some throttle values that capture passes the CRC and decodes to a plausible eRPM. Judging whether an ESC is alive is
+the application's job ([ADR-004](decision/ADR-004-client-owned-command-loop.md)): for example, treat a motor that reports
+"not running", or no real eRPM, while it is commanded to spin as failed.
+
 ### Without a Second Core
 
 The same group works when you pump it from your own main loop - useful when
@@ -236,6 +273,9 @@ are not comparable and are no longer kept.
 An attempt that has not reached `ARMED` within 3.0 s counts as a failure, even if it arms later
 after an ESC reboot. Not guaranteed: DShot commands, other ESC firmware, motor behaviour after
 arming.
+
+The 3.0 s bound is the constant `CLEAN_ARM_THRESHOLD_MS` (3000) in `scripts/arming_bound.py`, used by both the batch runner
+(`scripts/run_scenarios.py`) and the session verdict (`scripts/session_summary.py`); this table quotes it and must agree with it.
 
 **Evidence for the arming figures.** The 3.0 s bound sits in the empty gap between clean arms (2.08-2.59 s) and arms that
 needed an ESC reboot (4.06 s or more) across 698 archived bench sessions (mostly earlier code); that archive justifies the
@@ -326,12 +366,16 @@ a reference flight-controller host drives it.
 
 ## Roadmap
 
-| Feature | Status | Dependencies |
-|---------|--------|--------------|
+The project's goals and their status.
+
+| Goal | Status | Details |
+|------|--------|---------|
+| **Improve arming sequence** | Done | Evidence-gated arming on a 2000ms floor, not a timer alone: BUG-002, BUG-003; what pacing has been bench-confirmed: "Verified Parameters" above; what is guaranteed: "Operational Envelope" above |
+| **Invert core assignment to client** | Done | ADR-004: library exposes `update()`, application owns the loop |
 | **DShot commands** | TODO | No driver-side command API yet (BUG-005's prerequisite is done: `MotorGroup` rejects 1-47, so a command API needs its own entry point, not `set_throttle()`). AM32 itself implements commands (`specification/AM32.md`#7), and this bench has already heard a `BEEP1` while armed (see above - sent as throttle value 1, not through a real command API) - ADR-003's original "several different ESCs required" blocker no longer applies now that AM32 is the only ESC in scope |
-| **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, in production use |
-| **Smooth start** | In progress | KPI defined in BUG-009; recording test built; the first baselines ran on the old unpaced loop and must be recorded again on the paced one before any limit is set |
-| **ESC configuration access** | Read and write done | ADR-006: `tools/esc_buddy/` reads all four ESCs' settings (JSON), gives the AM32 web configurator read-only passthrough, and writes named motor, start-up and protection settings to one ESC at a time with a backup and read-back (only KV, poles and beeper volume tried on real ESCs so far); firmware flash (`--flash`, ADR-007) has put AM32 2.22 on all eight ESCs; bootloader update is not built (`tools/esc_buddy/README.md`) |
+| **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, the sole production receiver |
+| **Smooth start** | In progress | Definition, scope and baseline: BUG-009 ("Current KPI"); target and current figures: "Operational Envelope" above. The baselines of 2026-11-01/02 were recorded on the paced loop with AM32 2.16; the baseline restarts on 2.22. Limits other than the provisional 0.5 s spin-up are not set yet |
+| **ESC configuration access** | Read and write done | ADR-006, `tools/esc_buddy/README.md` and the `esc-buddy` skill: `tools/esc_buddy/` reads all four ESCs' settings (JSON), gives the AM32 web configurator read-only passthrough, and writes named motor, start-up and protection settings to one ESC at a time with a backup and read-back (only KV, poles and beeper volume tried on real ESCs so far); firmware flash (`--flash`, ADR-007) has put AM32 2.22 on all eight ESCs (both boards); the buddy's settings code speaks layout 4 only (no older layouts); bootloader update is not built |
 | **Extended telemetry (EDT)** | TODO | Current AM32 source already implements it (`specification/AM32.md`#10) - the bench ran AM32 2.16 until 2026-11-10 and runs 2.22 now (`specification/KM55A2_DEFAULTS.md`); whether 2.22 implements it is not checked yet. This driver's own decoder doesn't yet discriminate an EDT frame from an eRPM frame either way |
 
 See `decision/` folder for Architecture Decision Records (ADRs); the bench's division of work between the main Pico and the PC is

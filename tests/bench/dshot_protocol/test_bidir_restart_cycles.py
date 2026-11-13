@@ -76,8 +76,8 @@ def run_one_cycle(group, runner, cycle):
                         erpms.append(result["erpm"])
         utime.sleep_ms(20)
 
-    # Documented shutdown order (see CLAUDE.md's disarm() bullet and the
-    # usage example): throttle 0 while the loop runs, then stop the loop
+    # Documented shutdown order (README.md, "Quick Start", "Multiple
+    # Motors"): throttle 0 while the loop runs, then stop the loop
     # before disarm() touches any state machine, so a reclaim failure can't
     # be confused with this race.
     if not fast_stop(group, runner):

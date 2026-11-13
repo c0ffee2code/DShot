@@ -10,7 +10,7 @@
 # actually look like, and whether they could pass CRC by chance.
 #
 # Method: single-threaded, no MotorGroup/Core1Runner - this drives the motors
-# directly with DShotPIO's own low-level API (see CLAUDE.md's usage example)
+# directly with DShotPIO's own low-level API (README.md, "Quick Start", "Single Motor")
 # so the same core that sends commands also drains rx_read() every iteration,
 # with no second core/thread reading the same FIFO concurrently. Commands are
 # paced at BURST_INTERVAL_US, well above a full reply's duration (see

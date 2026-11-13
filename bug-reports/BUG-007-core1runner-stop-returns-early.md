@@ -3,7 +3,7 @@
 **Update 2026-10-19:** the loop this report describes as "unpaced" / "maximum rate" (`UPDATE_INTERVAL_US = 0`, `update()` back to back) no longer exists. The only mode is the paced loop at 1045us, and a scenario cannot choose its own period. What follows records the earlier unpaced loop and was not re-measured on the paced one.
 
 **Status:** FIXED 2026-10-13. Healthy path bench-verified (3/3 re-arm cycles, 20/20 arming runs, a spinning scenario and the stalled-drain test, all with `stop()` returning True). The timeout path - the actual bug - is unit-tested only; it was never forced on hardware, and this report's own device check with a forced `gc.collect()` on Core 1 was not written.
-**Severity:** Medium. It reopens the `disarm()`/`update()` race that CLAUDE.md tells callers to
+**Severity:** Medium. It reopens the `disarm()`/`update()` race that README.md ("Quick Start") tells callers to
 avoid by stopping the loop first.
 **Component:** `tests/harness/core1_runner.py` (example application code that projects copy),
 `driver/dshot_pio.py` (`UnidirectionalDShot` start/stop)
@@ -42,7 +42,7 @@ still inside `update()`:
    `disarm()` (stopping the motors comes first), but report the race loudly so the run is marked.
 3. **`UnidirectionalDShot.start()`** re-initialises its state machine, as `BidirectionalDShot.start()`
    does, so no queued word survives a `stop()`.
-4. **CLAUDE.md usage example:** show checking `runner.stop()`'s result.
+4. **CLAUDE.md usage example:** show checking `runner.stop()`'s result. *Note 2026-11-12:* the usage example is now in README.md, "Quick Start" (it checks `runner.stop()`'s result); CLAUDE.md holds none.
 
 ## Verification
 

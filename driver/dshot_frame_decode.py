@@ -1,22 +1,17 @@
-# Reads bidirectional DShot command frames from a list of edges: the frames our transmitter
-# (driver/dshot_pio.py, dshot_bidir_tx) put on the line, decoded from the waveform alone. The command-frame
-# counterpart of gcr_decode.py (the ESC's reply frames).
+# Decodes the bidirectional DShot command frames dshot_bidir_tx puts on the line
+# from a list of edges, (time, level) in 0.1 us units. The command-frame
+# counterpart of gcr_decode.py. Not used by the driver: it lives here because it
+# is pure Python shared by the wingman's PC tools and a pin test on the Pico.
 #
-# Not used by the library at runtime. It lives in driver/ because it is pure Python (no rp2 or machine) that two
-# kinds of code need: the PC tools that read the wingman's observer recording (tests/bench/wingman/tools/observer_edge_log.py)
-# and the pin test that runs on the Pico (tests/bench/pio_and_cores/test_wire_frames.py, edges from pin_sampler.py),
-# the same reason gcr_decode.py and dshot_profiles.py are here. tests/pc exercises it on a PC.
-#
-# The waveform (8 PIO cycles per bit, the line idles high): every bit starts with 2 cycles high, then
-# goes low; a "1" stays low for 6 cycles (75% of the bit), a "0" for 3 cycles (37.5%) and then goes
-# high again. So each bit has exactly one falling edge, the falling edges are one bit period apart,
-# and the length of the low part says the bit. Edges are (time, level) in units of 0.1us.
+# Waveform: 8 PIO cycles per bit, line idle high. Each bit is 2 cycles high, then
+# low for 6 cycles (1) or 3 cycles (0); one falling edge per bit, so falling
+# edges are a bit period apart and the low length gives the bit.
 
 UNIT_NS = 100
 BIT_UNITS = 16.667          # DSHOT600: 1.667us
 ONE_LOW_UNITS = 12.5        # 6 of 8 cycles
 ZERO_LOW_UNITS = 6.25       # 3 of 8 cycles
-FRAME_GAP_UNITS = 200       # 20us without an edge ends a frame (a frame's own edges are at most 12.5 units apart)
+FRAME_GAP_UNITS = 200       # 20us without an edge ends a frame; far longer than any gap inside one
 FRAME_BITS = 16
 
 
@@ -36,8 +31,8 @@ def split_frames(edges, gap_units=FRAME_GAP_UNITS):
 
 
 def crc_ok(word, inverted=True):
-    """The CRC of a frame: the 4 low bits are the xor of the three nibbles above them, complemented for
-    bidirectional DShot (inverted=True) and as it is for unidirectional."""
+    """True when the 4 low bits are the XOR of the three nibbles above them, complemented for
+    bidirectional DShot (inverted=True), plain for unidirectional."""
     value = word >> 4
     crc = (value ^ (value >> 4) ^ (value >> 8)) & 0xF
     return ((~crc & 0xF) if inverted else crc) == (word & 0xF)

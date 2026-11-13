@@ -1,6 +1,6 @@
 # tests/ - what each folder checks and how the scripts work
 
-Moved out of CLAUDE.md on 2026-10-31 (CLAUDE.md keeps one rule per folder; this page keeps the detail). Text is
+Moved out of CLAUDE.md on 2026-10-31 (the rule per folder is in `.claude/rules/bench-harness.md`; this page keeps the detail). Text is
 verbatim as of the move.
 
 **`tests/`** is split first by whether it needs hardware, then by what it checks. `tests/pc/` runs on a PC; everything under `tests/bench/` runs on the Pico with the bench attached. Each folder has one rule; a file that breaks its folder's rule goes elsewhere, not into a catch-all:
@@ -14,7 +14,7 @@ verbatim as of the move.
 
 ## Bench rules and mechanics
 
-Moved out of CLAUDE.md on 2026-11-08 (CLAUDE.md keeps the rules, this page keeps the detail). Text is verbatim as of the move.
+Moved out of CLAUDE.md on 2026-11-08 (the rules are in `.claude/rules/bench-harness.md` and, for running hardware, CLAUDE.md; this page keeps the detail). Text is verbatim as of the move.
 
 **One run is one session.** `scripts/run_session.py` (and the batch runner `scripts/run_scenarios.py`) names the session on the PC, records what was run in `session.json` (scenario, git commit, and the required `--load`: what the motors carry, `none` for bare shafts), has the **wingman** (a second board, found by ID, that records every wire edge; a permanent part of the bench) record the lines, pulls the Pico's SD record, and computes `summary.json`. **The main Pico reports facts, the PC judges (owner, 2026-11-11; ADR-008):** the main Pico reports what happened and may bail out of a run (outcome `aborted: <reason>`), and the session verdict is made only by `scripts/session_summary.py` from the wire recording; a run without that recording is `unknown`. Only the session format the current runner writes is read. **Owner's rule (2026-10-31): while the main Pico controls motors its I/O is the bare minimum (ESC I/O excepted); the observer records every wire edge.** A threshold that has too few replies on the wire to be judged is reported as not judged, never failed.
 
