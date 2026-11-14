@@ -104,6 +104,18 @@ and keeps no older layout (`.claude/rules/esc-buddy.md`).
   listed above): the stuck-rotor protection switches
   from its long limit (2.27 s) to its short one (0.25 s) at adjusted throttle 300 instead of 150, so every throttle up to the bench's
   250 ceiling now gets the long limit (BUG-009, amendment 2026-11-14).
+- **Amendment 2026-11-14: the unidirectional DSHOT600 speed-detection margin is accepted.**
+  *Decision:* the driver sends the same pulse shape in every frame; there is no separate transmit program or shorter pulse
+  for the arming frames to widen the 0.075 us margin (owner).
+  *Motivation:* a second transmit path is permanent complexity, and its benefit is not visible. A PC model of the 2.22
+  classification (2026-11-14, a model, not a measurement) finds DSHOT600 at every starting phase with nominal clocks: our bit
+  is 9.52 ticks long, so the counting phase moves by about half a tick per pulse, and any 8 consecutive pulses of a frame
+  include one counted as 3 ticks. A DSHOT300 decision becomes possible only if the pulse as the ESC sees it is at least about
+  0.05 us longer than designed (certain at 0.075 us) or the ESC's clock is more than about 4% off nominal; neither is
+  measured, and no run has shown a wrong decision (every unidirectional DSHOT600 run on 2.22 armed).
+  *Consequences:* unidirectional DSHOT600 is a documented limit (README, Operational Envelope). The observer's check keeps
+  reporting it as a warning. What an ESC does after it settles on DSHOT300 while receiving DSHOT600 is not established. The
+  decision is revisited on evidence of a wrong decision, or when the firmware changes the classification.
 - A flash takes a few minutes per ESC (108 chunks of about 0.2 s, then a read-back of the same size).
 - A retried chunk that does not start a page programs over flash that is already written. Real flash might reject that; it has not been
   observed. The remedy would be the same as for any stopped flash: run it again (the boot byte is still 0).
