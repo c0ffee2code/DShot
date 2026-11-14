@@ -194,7 +194,7 @@ motors.deactivate()
 ### With Telemetry (Bidirectional Motors)
 
 A bidirectional motor uses two state machines: its own and, one id above it, the receiver for the ESC's reply. The pair
-fills its PIO block (ids 0-3 are PIO0, 4-7 PIO1, 8-11 PIO2): a second bidirectional pair fits in the same block, a
+takes 31 of the 32 instruction slots of its PIO block (ids 0-3 are PIO0, 4-7 PIO1, 8-11 PIO2): a second bidirectional pair fits in the same block, a
 unidirectional motor does not and goes on another block.
 
 ```python
@@ -235,13 +235,23 @@ Core 1 is busy or unavailable:
 
 ```python
 motors.arm()
+period = motors.UPDATE_INTERVAL_US
 next_due = utime.ticks_us()
 while True:
     motors.update()          # must happen at a steady period, without long gaps
     ...your work here, well under UPDATE_INTERVAL_US...
-    next_due = utime.ticks_add(next_due, motors.UPDATE_INTERVAL_US)
-    utime.sleep_us(max(0, utime.ticks_diff(next_due, utime.ticks_us())))
+    next_due = utime.ticks_add(next_due, period)
+    remaining = utime.ticks_diff(next_due, utime.ticks_us())
+    while remaining <= 0:    # late: skip to the next deadline, do not catch up
+        next_due = utime.ticks_add(next_due, period)
+        remaining = utime.ticks_diff(next_due, utime.ticks_us())
+    utime.sleep_us(remaining)
 ```
+
+When the loop runs late it skips whole periods; it does not make up for lost calls with a burst
+(`tests/bench/core1_runner.py` paces the same way). Should `update()` still be called too early, it waits until every
+transmitter has taken its previous frame and then sends, so no frame is dropped and none is stacked behind another
+([ADR-004](decision/ADR-004-client-owned-command-loop.md), amendment of 2026-11-14 (2)).
 
 ## Operational Envelope
 
@@ -286,6 +296,7 @@ measured requirements.
 | Protocol | DShot300 and DShot600. DSHOT600: the arming and start batches. DSHOT300: single-motor runs (ADR-002) and, on 2026-11-14, one four-motor run each of the bidirectional and the unidirectional scenario (both armed, spin confirmed; bidirectional also by about 19,160 real-eRPM replies per motor). One run per scenario is not an arming rate: no DSHOT300 arming rate is established (the command-interval and arming-duration rows below don't depend on which speed) |
 | Minimum throttle | 60 confirmed spinning (DShot300, ADR-002; BUG-009 tracks an open rough-start question at low throttle) - 1-47 are special commands, not throttle: `MotorGroup.set_throttle()` rejects them (see `specification/DSHOT.md`, BUG-005) |
 | Command interval | One mechanism: `Core1Runner`'s deadline-anchored pacing at `MotorGroup.UPDATE_INTERVAL_US` = 1045us (20/20 clean, then 13/13 in later spot checks, see BUG-002.md). It is the only mode: an unpaced loop (`update()` back to back, as fast as it returns) was the library default until 2026-10-19 and was removed, and a scenario can no longer set its own period. The 2026-10-13/14 arming evidence (104/104) was gathered on the old unpaced loop and has to be repeated on this one. An earlier (2026-08-23) bring-up failure at "1kHz/500ms" was never a clean test of pacing specifically - its 500ms arm window is well under AM32's own >1.6s gate (`specification/AM32.md`#16) by itself, so that result doesn't isolate what role pacing played, if any |
+| Frame spacing | Bidirectional: the transmitter starts a frame at least 135.4us (DSHOT600) or 270.8us (DSHOT300) after the previous one started, however early it is queued, so that a frame is not sent while the ESC replies. Measured on the Pico without an ESC; that the spacing is long enough for AM32 is derived from its source (reply over about 50us / 80us after our frame, plus its work before it listens again) and not yet tested with an ESC ([ADR-002](decision/ADR-002-bidirectional-dshot.md), amendment of 2026-11-14 (2)). Unidirectional: no minimum, the transmitter sends queued frames with no gap. Through `MotorGroup.update()` at most one frame per motor is ever queued (it waits for the transmitters first), and at the 1045us command interval neither limit is reached |
 | Arming duration | The published promise is >=99% within 3.0 s (see "Operational Envelope"). Window: 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below. With bidirectional motors it is a floor: `ARMED` also waits until every ESC has replied "not running" for 2s without a reboot-length gap (`READY_SPAN_MS`, bug-reports/BUG-003) - measured about 2.03s on the 100-run batch of 2026-10-14 (99 of 100 runs between 2026 and 2028ms, one at 2516ms), several seconds if an ESC reboots while arming |
 
 Earlier revisions of this table claimed 500ms (down to 300ms) armed cleanly, "confirmed via

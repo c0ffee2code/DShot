@@ -330,6 +330,70 @@ class UpdateOrderTest(GroupTestCase):
         self.assert_drains_come_first(log, "drain")
 
 
+class TxWaitTest(GroupTestCase):
+    """update() sends only when every transmitter has taken its previous frame (StateMachine.tx_fifo() is 0)."""
+
+    def test_no_queue_is_asked_while_inactive(self):
+        group = self.make([uni(0, 6)])
+        group.update()
+        self.assertEqual(group.motors[0].sm.tx_polls, 0)
+
+    def test_update_waits_until_every_transmitter_has_taken_its_frame(self):
+        group = GroupWithoutReplyGate([bidir(0, 6), bidir(2, 7)])
+        self.arm_fully(group)
+        first, second = (motor.sm for motor in group.motors)
+        second.tx_busy_polls = 3            # the second motor's frame of the last tick stays queued for 3 polls
+        polls = second.tx_polls
+        before = [len(first.sent), len(second.sent)]
+        group.update()
+        self.assertEqual(second.tx_polls - polls, 5)     # 3 busy, the one that sees it taken, the empty one
+        self.assertEqual([len(first.sent), len(second.sent)], [n + 1 for n in before])
+
+    def test_update_waits_while_arming_too(self):
+        group = self.make([uni(0, 6)])
+        group.arm(ARM_MS)
+        group.update()
+        sm = group.motors[0].sm
+        sm.tx_busy_polls = 2
+        group.update()
+        self.assertEqual(sm.tx_polls, 1 + 4)     # first tick: one; second: 2 busy, the one that sees it taken, the empty one
+        self.assertEqual(len(sm.sent), 2)
+
+    def test_update_never_queues_a_frame_behind_another(self):
+        group = GroupWithoutReplyGate([bidir(0, 6), uni(8, 8)])
+        self.arm_fully(group)
+        queued_before_put = []
+        for motor in group.motors:
+            def put(value, shift=0, sm=motor.sm, real=motor.sm.put):
+                queued_before_put.append(len(sm.pending))
+                real(value, shift)
+            motor.sm.put = put
+        group.motors[0].sm.tx_busy_polls = 5
+        for _ in range(4):
+            group.update()
+        self.assertEqual(queued_before_put, [0] * 8)
+
+    def test_deactivate_ends_the_wait_and_nothing_is_sent(self):
+        group = GroupWithoutReplyGate([uni(0, 6)])
+        self.arm_fully(group)
+        sm = group.motors[0].sm
+        sent = len(sm.sent)
+        polls = []
+
+        def never_empty():
+            """The queue never empties; the third poll happens as another core deactivates the group."""
+            polls.append(1)
+            if len(polls) == 3:
+                group.deactivate()
+            return 1
+
+        sm.tx_fifo = never_empty
+        group.update()
+        self.assertEqual(len(polls), 3)
+        self.assertEqual(group.state, INACTIVE)
+        self.assertEqual(len(sm.sent), sent)
+
+
 class DisarmTest(GroupTestCase):
     def test_deactivate_transmits_nothing_and_deactivates_everything(self):
         group = self.make([uni(0, 6), uni(1, 7)])

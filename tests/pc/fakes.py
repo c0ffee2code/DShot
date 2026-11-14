@@ -105,6 +105,8 @@ class StateMachine:
         self.restarts = 0
         self.sent = []      # every word ever put(), in order
         self.pending = []   # words the fake transmitter has not yet "sent"
+        self.tx_polls = 0       # tx_fifo() calls
+        self.tx_busy_polls = 0  # a test sets this: that many polls find the queued words still there
         self.rx = []        # words a test fed for the program to have "captured"
         self.init_calls = []  # every init(program, freq=..., **kwargs) call, in order
 
@@ -137,9 +139,14 @@ class StateMachine:
         self.sent.append(word)
         self.pending.append(word)
 
-    # A poll finds the transmitter has taken everything queued so far
+    # A poll finds the transmitter has taken everything queued so far, unless a test
+    # made it busy: then that many polls still find the words waiting
     def tx_fifo(self):
+        self.tx_polls += 1
         waiting = len(self.pending)
+        if waiting and self.tx_busy_polls > 0:
+            self.tx_busy_polls -= 1
+            return waiting
         self.pending = []
         return waiting
 

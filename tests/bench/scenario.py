@@ -236,7 +236,7 @@ def build_scenario(data, historic=False):
         motors.append(MotorSpec(pin, sm_id, bidirectional, rx_sm_id, profile, hardware))
 
     # A bidirectional motor's frame receiver fills its own PIO block alone
-    # (dshot_bidir_tx + dshot_bidir_rx_frame use all 32 of the block's
+    # (dshot_bidir_tx + dshot_bidir_rx_frame use 31 of the 32 of the block's
     # instruction slots between them - see BidirectionalDShot's constructor
     # docstring), so a unidirectional motor sharing that block would fail
     # with ENOMEM at construction time. Caught here instead, before anything

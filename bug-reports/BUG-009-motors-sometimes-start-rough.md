@@ -426,6 +426,10 @@ throttle 60, 21,800 at 100) for 1% or more of the window, or return to the not-r
   program as it stands: the TX/RX pair fills its PIO block (13 + 19 of 32 words). A check in `update()` (skip the tick if a reply is in progress) is possible
   but costs Core 1 time on the loop whose pacing matters. Whether the ESC would accept such a frame is not known: in both cases it did not start, even
   with a word that passes the CRC (0x8007, throttle 1024).
+  *Note 2026-11-14:* the transmitter program is 12 instructions now and waits 512 PIO cycles after releasing the line before it takes the next word
+  (ADR-002, amendment 2026-11-14 (2)). That keeps a frame of ours that is queued early out of the reply to the frame before it. It does not cover the
+  case recorded here: the wait counts from our own frame and still does not look at the line, so a reply that the ESC sends a whole frame period late
+  can meet our next frame as before.
 - **Arming 2.6 s in 2 of 21 starts** (first of a batch, channel 1 and 2): one frame, then 1.9-2.0 s with no frames, then normal. The ESC
   behaved normally relative to our first frame; the extra time is on the main Pico's side, cause not found.
 

@@ -27,13 +27,15 @@ class MotorGroup:
     The application builds the motors (UnidirectionalDShot or
     BidirectionalDShot, choosing their state machines and pins) and owns the
     command loop: it calls update() every UPDATE_INTERVAL_US from whichever
-    core, timer or main loop it chooses. Keep the period steady by anchoring
-    each deadline to the previous one; there is no unpaced mode, and an ESC
-    stops when frames stop arriving. arm() starts arming, update() completes
-    it, is_armed() reports it. Stopping the motors is the application's job:
-    it sets throttle 0 and keeps update() running; deactivate() only ends the
-    signal. Throttles may be set from another core than the one calling
-    update(). Examples: README.md, "Quick Start".
+    core, timer or main loop it chooses. Keep the period steady: anchor each
+    deadline to the previous one, and after a late call skip to the next
+    deadline instead of catching up. There is no unpaced mode, and an ESC
+    stops when frames stop arriving. A call that comes before the
+    transmitters have taken the previous frames waits for them. arm() starts
+    arming, update() completes it, is_armed() reports it. Stopping the motors
+    is the application's job: it sets throttle 0 and keeps update() running;
+    deactivate() only ends the signal. Throttles may be set from another core
+    than the one calling update(). Examples: README.md, "Quick Start".
     """
 
     # Period at which the application calls update(), in us (README, "Verified Parameters")
@@ -91,6 +93,9 @@ class MotorGroup:
 
         self.motor_count = len(motors)
         self.motors = list(motors)
+
+        # update() sends only when the TX FIFO of every one of these is empty
+        self.tx_state_machines = [motor.sm for motor in self.motors]
 
         # Resolved once, so update() does no per-tick type checks
         self.bidir_motors = [m for m in self.motors if m.mailbox is not None]
@@ -173,8 +178,9 @@ class MotorGroup:
                 motor.deactivate()
 
         # Again: an update() past its state check may have set ARMED meanwhile,
-        # and ARMED over inactive state machines blocks the next update() for
-        # good. This narrows the race; stopping the loop first closes it.
+        # and ARMED over inactive state machines leaves a later update() waiting
+        # for a frame nobody takes. This narrows the race; stopping the loop
+        # first closes it.
         self.state = INACTIVE
 
     @micropython.native
@@ -183,16 +189,27 @@ class MotorGroup:
         One command-loop tick: drain bidirectional replies, send one frame to
         every motor, advance arming.
 
-        Call it every UPDATE_INTERVAL_US, at a steady period. The drain is part
-        of the tick, and comes before the sends, because an undrained RX FIFO
-        stalls the receiver. While ARMING every motor is sent 0 whatever its
-        throttle, and replies are only counted for the reply gate, never
-        published. Does nothing while inactive, so it is safe before arm() and
-        after deactivate().
+        Call it every UPDATE_INTERVAL_US, at a steady period. A call that
+        comes while a transmitter still holds a queued frame waits, busy,
+        until all have taken theirs, then sends: no frame is dropped, and
+        update() never queues more than one per motor. The drain comes before
+        the sends, because an undrained RX FIFO stalls the receiver. While
+        ARMING every motor is sent 0 whatever its throttle, and replies are
+        only counted for the reply gate, never published. Does nothing while
+        inactive, so it is safe before arm() and after deactivate().
         """
-        state = self.state
-        if state == INACTIVE:
-            return
+        # The state is read again on every pass, so the one acted on below is
+        # as fresh as the last look at the queues, and deactivate() ends the wait
+        tx_state_machines = self.tx_state_machines
+        while True:
+            state = self.state
+            if state == INACTIVE:
+                return
+            for sm in tx_state_machines:
+                if sm.tx_fifo():
+                    break
+            else:
+                break
 
         now = utime.ticks_ms()
 
@@ -219,7 +236,7 @@ class MotorGroup:
             if (utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms
                     and self.bidir_ready(now)):
                 # Re-read, not the snapshot: a deactivate() on another core may have
-                # landed since, and ARMED over it would make put() block for good
+                # landed since, and ARMED over it would leave update() waiting for good
                 if self.state == ARMING:
                     self.state = ARMED
         else:

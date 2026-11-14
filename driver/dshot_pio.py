@@ -42,30 +42,35 @@ def dshot():
 # Bidirectional DShot TX. dshot()'s bit timing with every level inverted: the
 # line idles high, which is how AM32 detects bidirectional mode while disarmed.
 # After the 16th bit it releases the pin (input, held high by the pull-up) so
-# the ESC can reply, and raises irq(rel(1)) to start the paired receiver; it
-# reclaims the pin when the next word arrives. Bits are counted by hand with a
-# manual pull(), because autopull gives no point at which to release. Each bit
-# path has its own release tail, because an instruction carries one side-set
-# value; both tails release from a driven-high line. rel(1) reaches the
-# receiver only if it runs on state machine id + 1 of the same block.
+# the ESC can reply, and raises irq(rel(1)) to start the paired receiver. It
+# then holds off for 512 cycles (64 bit times) before it takes the next word,
+# so a word queued early is not sent while the ESC replies: AM32 drives the
+# line for its reply and listens again only afterwards. Bits are counted by
+# hand with a manual pull(), because autopull gives no point at which to
+# release. Both bit paths end in one tail, which drives the line high before
+# it releases it; a last 0 bit takes one more cycle to reach it. rel(1)
+# reaches the receiver only if it runs on state machine id + 1 of the same
+# block.
 @asm_pio(sideset_init=PIO.OUT_HIGH, set_init=PIO.OUT_HIGH, out_shiftdir=PIO.SHIFT_LEFT, autopull=False)
 def dshot_bidir_tx():
-    label("frame_start")
-    pull()                     .side(1)   [1] # pin released; waits here between frames (reply window)
+    wrap_target()
+    pull()                     .side(1)   [1] # pin released; waits here for the next word
     set(pindirs, 1)            .side(1)   [1] # reclaim pin
     set(y, 15)                 .side(1)   [1] # 16 bits
     label("bitloop")
     out(x, 1)                  .side(1)   [1] # 2 cycles, HIGH
     jmp(not_x, "zero")         .side(0)   [2] # 3 cycles, LOW
     jmp(y_dec, "bitloop")      .side(0)   [2] # 3 cycles, LOW: bit 1
-    irq(rel(1))                .side(1)   [0] # after bit 16 (bit 1): HIGH, signal RX
+    label("tail")
+    irq(rel(1))                .side(1)   [0] # after bit 16: HIGH, signal RX
     set(pindirs, 0)            .side(1)   [1] # release
-    jmp("frame_start")         .side(1)   [0]
+    set(x, 31)                 .side(1)   [0] # hold-off: 32 passes
+    label("hold")
+    jmp(x_dec, "hold")         .side(1)   [15] # 16 cycles a pass
+    wrap()
     label("zero")
     jmp(y_dec, "bitloop")      .side(1)   [2] # 3 cycles, HIGH: bit 0
-    set(pindirs, 0)            .side(1)   [1] # after bit 16 (bit 0): release
-    irq(rel(1))                .side(1)   [0] # signal RX
-    jmp("frame_start")         .side(1)   [0]
+    jmp("tail")                .side(1)   [0] # after bit 16 (bit 0)
 
 # Bidirectional DShot RX, paired with dshot_bidir_tx on state machine id + 1 of
 # the same block. After the TX's irq(rel(1)) it waits for the line high plus
@@ -75,7 +80,7 @@ def dshot_bidir_tx():
 # Autopush hands the CPU one word per capture: the 21-bit frame, marker on top.
 # With a silent ESC it captures the driver's own next frame instead.
 # A full RX FIFO stalls it holding a complete word; captures are then lost
-# until room frees. With dshot_bidir_tx (13 words) it fills the 32-word block.
+# until room frees. With dshot_bidir_tx (12 words) it takes 31 of the block's 32 words.
 # scripts/simulate_frame_receiver.py transcribes it by hand: change both.
 @asm_pio(in_shiftdir=PIO.SHIFT_LEFT, autopush=True, push_thresh=21)
 def dshot_bidir_rx_frame():
@@ -216,13 +221,14 @@ class BidirectionalDShot(DShotPIO):
     reply on a second state machine on the same pin.
 
     AM32 detects bidirectional mode only while disarmed, so this class must
-    drive the motor through the whole arm sequence. Its TX/RX pair fills a PIO
-    block (dshot_bidir_tx and dshot_bidir_rx_frame): no unidirectional motor
-    fits beside it, a second bidirectional pair does. The application drains
-    the receiver on every command-loop tick (drain_rx() or discard_rx()).
-    A capture is not proof of a reply: with a silent ESC the receiver captures
-    the driver's own next frame, and at some throttles that capture passes the
-    CRC.
+    drive the motor through the whole arm sequence. Its TX/RX pair takes 31 of
+    a PIO block's 32 words: no unidirectional motor fits beside it, a second
+    bidirectional pair does. Frames start at least 650 PIO cycles apart (135us
+    at DSHOT600, 271us at DSHOT300), however early one is queued; a send
+    blocks while four are queued. The application drains the receiver on
+    every command-loop tick (drain_rx() or discard_rx()). A capture is not
+    proof of a reply: with a silent ESC the receiver captures the driver's own
+    next frame, and at some throttles that capture passes the CRC.
     """
 
     # Most captures one drain_rx() or discard_rx() call takes; bounds the call's time

@@ -18,5 +18,6 @@ How the driver behaves is in the decision records and the README. These are the 
 - The receiver and its PIO cost, and the reply mailbox: ADR-002, ADR-005.
 - Arming, `update()` while inactive, and `deactivate()` and the line state: ADR-004, ADR-002 and BUG-002/BUG-003.
 - Lock-free throttle values: ADR-001.
+- Frame spacing: the bidirectional transmitter's wait for the ESC's reply (ADR-002, amendment 2026-11-14 (2)), and `update()` waiting until the transmitters have taken their previous frames, through `StateMachine.tx_fifo()` and not PIO registers (ADR-004, amendment 2026-11-14 (2)).
 - The DShot wire protocol (packet structure, bit timing for all variants, special commands 0-47, bidirectional DShot and eRPM telemetry, CRC): `specification/DSHOT.md`. How AM32, the target ESC firmware, implements it: `specification/AM32.md`. How a reference flight-controller host drives it: `specification/BETAFLIGHT.md`.
 - The bench ESC itself (AM32 2.22 since 2026-11-10, shipped with 2.16; older bootloader): `specification/KM55A2_DEFAULTS.md` (vendor settings as read). What the ESCs hold now: the README's "ESC settings as configured".
