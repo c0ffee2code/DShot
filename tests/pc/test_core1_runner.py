@@ -222,7 +222,7 @@ class StopTest(unittest.TestCase):
 
 
 class FastStopTest(unittest.TestCase):
-    """fast_stop(): throttle 0 while the loop runs, then stop it, then disarm."""
+    """fast_stop(): throttle 0 while the loop runs, then stop it, then deactivate."""
 
     class FakeRunner:
         def __init__(self, running=True, error=None):
@@ -246,18 +246,18 @@ class FastStopTest(unittest.TestCase):
         def set_all_throttles(self, values):
             self.log.append(("set_all_throttles", list(values)))
 
-        def disarm(self):
-            self.log.append("disarm")
+        def deactivate(self):
+            self.log.append("deactivate")
 
     def setUp(self):
         Clock.reset()
 
-    def test_zeros_are_commanded_before_the_loop_stops_and_disarm_comes_last(self):
+    def test_zeros_are_commanded_before_the_loop_stops_and_deactivate_comes_last(self):
         runner = self.FakeRunner()
         group = self.FakeGroup(runner.log)
         fast_stop(group, runner)
         self.assertEqual(runner.log,
-                         [("set_all_throttles", [0, 0]), "runner.stop", "disarm"])
+                         [("set_all_throttles", [0, 0]), "runner.stop", "deactivate"])
 
     def test_the_loop_gets_time_to_send_the_zeros(self):
         runner = self.FakeRunner()
@@ -267,23 +267,23 @@ class FastStopTest(unittest.TestCase):
     def test_a_dead_loop_is_not_waited_for(self):
         runner = self.FakeRunner(running=True, error=RuntimeError("core 1 died"))
         fast_stop(self.FakeGroup(runner.log), runner)
-        self.assertEqual(runner.log, ["runner.stop", "disarm"])
+        self.assertEqual(runner.log, ["runner.stop", "deactivate"])
         self.assertEqual(Clock.microseconds, 0)
 
-    def test_it_reports_a_loop_that_did_not_exit_but_still_disarms(self):
+    def test_it_reports_a_loop_that_did_not_exit_but_still_deactivates(self):
         runner = self.FakeRunner()
         runner.stop_result = False
         self.assertFalse(fast_stop(self.FakeGroup(runner.log), runner))
-        self.assertEqual(runner.log[-1], "disarm")
+        self.assertEqual(runner.log[-1], "deactivate")
 
     def test_it_reports_a_clean_exit(self):
         runner = self.FakeRunner()
         self.assertTrue(fast_stop(self.FakeGroup(runner.log), runner))
 
-    def test_a_runner_that_never_started_still_disarms(self):
+    def test_a_runner_that_never_started_still_deactivates(self):
         runner = self.FakeRunner(running=False)
         fast_stop(self.FakeGroup(runner.log), runner)
-        self.assertEqual(runner.log, ["runner.stop", "disarm"])
+        self.assertEqual(runner.log, ["runner.stop", "deactivate"])
 
 
 if __name__ == "__main__":

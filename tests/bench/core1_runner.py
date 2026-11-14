@@ -150,7 +150,7 @@ class Core1Runner:
         Returns True once the loop is out of update() and finished. Returns
         False if it was still running after timeout_ms, and sets self.error to
         say so: the caller then knows Core 1 may still be inside update(), and
-        that disarm() would race it. A later stop() waits again.
+        that deactivate() would race it. A later stop() waits again.
         """
         self.running = False
 
@@ -219,19 +219,19 @@ def fast_stop(group, runner):
     """
     End a session with the motors stopped at once, then reset everything.
 
-    MotorGroup.disarm() transmits nothing - it cuts the signal and leaves the
-    ESC's own timeout (AM32: up to 500ms at the last throttle) to stop the
-    motor. A session that wants the motor stopped immediately says so first:
-    command throttle 0 and let the still-running loop send it, then stop the
-    loop, then disarm. The order matters - throttle 0 only goes out while the
-    loop runs, and the loop must be stopped before disarm() touches the state
+    Stopping the motors is the application's job, and this is how the bench
+    does it. MotorGroup.deactivate() transmits nothing - it ends the signal
+    and the ESC holds the last throttle until its own timeout (AM32: up to
+    500ms). So: command throttle 0 and let the still-running loop send it,
+    then stop the loop, then deactivate. The order matters - throttle 0 only goes out while the
+    loop runs, and the loop must be stopped before deactivate() touches the state
     machines.
 
     If the loop has already died (runner.error), nothing can send the zeros;
     the ESC's timeout stops the motors, as for any lost signal.
 
     Returns whether the loop really exited (Core1Runner.stop()'s result).
-    disarm() runs either way - cutting the signal comes first - but on False
+    deactivate() runs either way - cutting the signal comes first - but on False
     it ran while Core 1 may still have been inside update(), and the caller
     should report that rather than carry on as if the shutdown was clean.
     """
@@ -239,5 +239,5 @@ def fast_stop(group, runner):
         group.set_all_throttles([0] * group.motor_count)
         utime.sleep_ms(FAST_STOP_SETTLE_MS)
     exited = runner.stop()
-    group.disarm()
+    group.deactivate()
     return exited

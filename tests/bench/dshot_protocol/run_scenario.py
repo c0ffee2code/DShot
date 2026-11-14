@@ -20,7 +20,7 @@
 # scenario's window plus ARM_TIMEOUT_MARGIN_MS, a Core 1 error, the scenario's max_gap_ms or
 # min_record_rate_hz missed (both measure how well this script's own polling keeps up, not the
 # ESC), a motor commanded to spin with no real eRPM for longer than NOT_RUNNING_LIMIT_MS
-# (SpinWatch), the over-speed limit, Ctrl-C, and a Core 1 loop that did not stop before disarm().
+# (SpinWatch), the over-speed limit, Ctrl-C, and a Core 1 loop that did not stop before deactivate().
 # Every one still runs fast_stop() in `finally`. A bail-out's reason states the measured value
 # against its limit and draws no conclusion from it: the conclusion is the PC's (ADR-008).
 #
@@ -184,7 +184,7 @@ def arm_group(group, scenario, runner, arm_times):
     already guaranteed by
     MotorGroup.raw_telemetry() itself (`if self.state != ARMED: return None`)
     and already covered, with no hardware timing cost, by
-    tests/pc/test_motor_group.py's `test_no_capture_is_handed_out_while_disarmed_or_arming`
+    tests/pc/test_motor_group.py's `test_no_capture_is_handed_out_while_inactive_or_arming`
     and `test_the_group_itself_refuses_captures_while_arming` - so this bench
     check added no safety value a real application's documented usage
     (README.md's Quick Start, `while not motors.is_armed(): sleep_ms(10)`, which never calls
@@ -385,10 +385,10 @@ def run_scenario():
 
     finally:
         print("Stopping...")
-        # fast_stop(): throttle 0 goes out while the loop still runs (disarm()
+        # fast_stop(): throttle 0 goes out while the loop still runs (deactivate()
         # transmits nothing, so without this a motor keeps its last throttle
         # until the ESC's own timeout), then the loop is stopped before
-        # disarm() touches the state machines, so the two cannot race.
+        # deactivate() touches the state machines, so the two cannot race.
         loop_exited = True
         if runner is not None and group is not None:
             loop_exited = fast_stop(group, runner)
@@ -396,17 +396,17 @@ def run_scenario():
             if runner is not None:
                 loop_exited = runner.stop()
             if group is not None:
-                group.disarm()
+                group.deactivate()
         if not loop_exited:
-            # disarm() ran while Core 1 may still have been inside update():
+            # deactivate() ran while Core 1 may still have been inside update():
             # mark the run so it cannot pass as clean (BUG-007).
-            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
+            print("WARNING: Core 1 loop did not stop - deactivate() raced update()")
             if outcome == "completed":
-                outcome = ABORTED + "Core 1 loop did not stop before disarm()"
+                outcome = ABORTED + "Core 1 loop did not stop before deactivate()"
             else:
-                outcome += "; Core 1 loop did not stop before disarm()"
+                outcome += "; Core 1 loop did not stop before deactivate()"
         line.value(0)
-        print("Motors stopped and disarmed.")
+        print("Motors stopped and deactivated.")
 
         # Formatted and printed only now - runner.stop() above already
         # returned, so Core 1 is idle and nothing here can affect its

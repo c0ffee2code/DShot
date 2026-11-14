@@ -88,4 +88,4 @@ Where things live is found with a file search. The rules each folder's code must
 
 ## Usage
 
-Code examples live in README.md (Quick Start: single motor, several motors, without a second core), not here. This file holds conventions and methodology.
+Code examples live in README.md (Quick Start: motors through `MotorGroup`, with telemetry, without a second core), not here. This file holds conventions and methodology.

@@ -76,7 +76,7 @@ def main():
     finally:
         sampler.close()
         if not fast_stop(group, runner):
-            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
+            print("WARNING: Core 1 loop did not stop - deactivate() raced update()")
     behind = runner.schedule_behind_count
 
     failures = []

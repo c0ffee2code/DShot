@@ -10,6 +10,8 @@ of the driver. The driver exposes bidirectional telemetry through `Bidirectional
 the frame receiver as its only receiver. What is and is not verified is in the
 "Verification status" table below; all of it was measured on AM32 2.16. Still
 open and not part of what is accepted: decoding extended telemetry frames.
+*Amendment 2026-11-14:* extended telemetry is no longer open; it is out of
+scope (see the amendment under the "Verification status" table).
 *Earlier status, until 2026-11-11:* "Deferred", then pending a formal flip to
 Accepted while non-eRPM frames (extended telemetry, the stopped-motor value) and
 the motor pole count were open. The stopped-motor value is now recognised
@@ -57,9 +59,21 @@ on 2.22.
 | Two or more bidirectional motors at once | Channels 1 and 3 (separate blocks, and sharing one block) verified at 100% CRC-valid; channel 2 replies; channel 4's earlier failure was a defect in this project's own code, not the PIO state machines or the channel (owner's correction, 2026-10-19; the specific defect is not recorded here). Four bidirectional motors, two per PIO block, ran through `MotorGroup` and the scenario runner on the paced loop at DSHOT600 in 60 runs of 20s (BUG-009 Results 3 and 4, 2026-11-01/02): every run armed within 3.0s, all four motors spun up and held, and the sampled decodes met the runner's 99% CRC-valid threshold. One of those runs failed the session summary's CRC check on two motors (98.1% and 97.7%, all in its first 0.75s). Four motors at DSHOT300: one 20s run on 2026-11-14 (see the update note of 2026-11-14 before "Idea, not built: run-length capture in the PIO receiver"): armed in 2112 ms, all four spun up, about 19,160 real-eRPM replies per motor; one run, no arming rate |
 | Public API integration | Implemented (`BidirectionalDShot`, `MotorGroup`); one, two and four bidirectional motors verified through the facade (rows above) |
 | DShot600 bidirectional | Verified for settled-throttle captures, in 60-second two-motor runs (ADR-005) and in the 20-second four-motor runs above; no saturation or stall-recovery run |
-| Non-eRPM frames (extended telemetry, stopped-motor value) | Stopped-motor value recognised (`not_running` in `gcr_decode.analyze_frame()`; the arming gate compares with `AM32_NOT_RUNNING_FRAME`). Extended telemetry not handled |
+| Non-eRPM frames (extended telemetry, stopped-motor value) | Stopped-motor value recognised (`not_running` in `gcr_decode.analyze_frame()`; the arming gate compares with `AM32_NOT_RUNNING_FRAME`). Extended telemetry not handled, and not planned (amendment 2026-11-14 below) |
 | Telemetry loss and health tracking | Not in the library, by decision: the library reports facts and the application judges health (ADR-004, "The library reports facts, not health") |
 | Post-disarm line state (bidirectional) | Verified: `stop()` drives the line low instead of releasing it; the ESC recovers with no reset; re-arm works |
+
+#### Amendment 2026-11-14: Extended DShot Telemetry is out of scope
+
+**Decision.** The driver will not enable and will not decode Extended DShot Telemetry (EDT: temperature, voltage and current frames interleaved with eRPM replies). It is no longer an open item of this record.
+
+**Motivation.** Nothing in the project needs temperature, voltage or current from the ESC today. The feature is not built ahead of a need; the decision is revisited when a concrete need appears.
+
+**Consequences.**
+
+- The driver never asks an ESC for EDT. AM32 sends EDT frames only after DShot command 13 (specification/AM32.md#10), and the driver sends no DShot commands (`MotorGroup` refuses values 1 to 47).
+- `gcr_decode.analyze_frame()` keeps treating every CRC-valid reply as an eRPM frame or the not-running value. It has no EDT discrimination and gets none.
+- An ESC that has EDT enabled by other means is outside what the driver supports: its EDT frames would decode as wrong eRPM values. The observer's AM32 check on the bench reports any reply shaped like an EDT frame.
 
 ## Context
 

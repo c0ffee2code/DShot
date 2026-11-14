@@ -3,8 +3,10 @@
 # Licensed under GNU General Public License v3.0
 #
 # DShot transmit and bidirectional-telemetry receive on the RP2350's PIO, one
-# motor per object. Wire protocol: specification/DSHOT.md.
-# Design: ADR-002, ADR-005.
+# motor per object: PIO and pin I/O only. It sends the values it is given;
+# which values are valid is the concern of MotorGroup, the library's public API.
+# Wire protocol: specification/DSHOT.md.
+# Design: ADR-002, ADR-004, ADR-005.
 
 import micropython
 import utime
@@ -19,13 +21,6 @@ from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES, frame_rx_speed
 # Highest value of the 11-bit throttle field of a DShot packet.
 MAX_THROTTLE = 2047
 
-# TEMPORARY: highest throttle accepted until higher ones are tested (BUG-005).
-THROTTLE_CEILING = 250
-
-
-class InvalidThrottleException(Exception):
-    def __init__(self,message):
-        self.message=message
 
 class UnsupportedOperationException(Exception):
     def __init__(self,message):
@@ -116,10 +111,11 @@ def dshot_bidir_rx_frame():
 class DShotPIO:
     """
     Common base of UnidirectionalDShot and BidirectionalDShot; construct one of
-    those, not this. Holds the TX state machine, start(), stop() and the senders.
+    those, not this. Holds the TX state machine, activate(), deactivate() and
+    the senders.
     """
 
-    # Creates the state machine inactive; start() enables it. crc_xor is what the
+    # Creates the state machine inactive; activate() enables it. crc_xor is what the
     # CRC is XORed with: 0x0 for plain DShot, 0xF for bidirectional (inverted CRC).
     def __init__(self, state_machine_id, pin, dshot_speed, program, crc_xor):
         self.state_machine_id = state_machine_id
@@ -131,7 +127,7 @@ class DShotPIO:
         # The CaptureMailbox holding the latest reply capture; None on a motor with no receiver
         self.mailbox = None
 
-        # For re-initialising on every start() and stop()
+        # For re-initialising on every activate() and deactivate()
         self.dshot_speed = dshot_speed
         self.program = program
 
@@ -153,58 +149,41 @@ class DShotPIO:
         self.sm.init(self.program, freq=self.dshot_speed,
                      sideset_base=self.pin, set_base=self.pin)
 
-    def start(self):
+    def activate(self):
+        """Activate the state machine: frames queued from now on go out."""
         self.sm.active(1)
 
-    def stop(self):
+    def deactivate(self):
         """
-        Deactivate the state machine and leave this motor reset.
+        Deactivate the state machine and leave it reset.
 
-        Nothing is transmitted on the way out: the ESC stops the motor on its
-        own signal-loss timeout (specification/AM32.md#15). A caller that needs
-        it stopped sooner sends throttle 0 first. Queued frames are discarded
-        and the pin is left a plain output driven low. start() runs it again.
+        Does not stop the motor: nothing is transmitted on the way out, and
+        the ESC holds the last throttle until its own signal-loss timeout
+        (specification/AM32.md#15). Queued frames are discarded and the pin is
+        left a plain output driven low. activate() runs it again.
         """
         self.sm.active(0)
         self.init_state_machines()
         self.pin.init(Pin.OUT, value=0)
 
     @micropython.native
-    def send_throttle_command(self, throttle):
+    def send_frame(self, value):
         """
-        Queue one frame with this throttle, after checking its range.
+        Queue one frame carrying this 11-bit value, as given.
 
-        Args:
-            throttle: 0 to THROTTLE_CEILING.
-
-        Raises InvalidThrottleException for a negative value or one above
-        THROTTLE_CEILING. Values 1-47 are sent as given, and AM32 executes
-        them as DShot commands; MotorGroup.set_throttle() refuses them.
+        No range check and no meaning attached: 0 is stop, 1-47 are DShot
+        commands, 48-MAX_THROTTLE are throttles, and the caller answers for
+        which it sends. A value outside 0..MAX_THROTTLE builds a wrong packet.
+        The telemetry-request bit is always 0; AM32 replies in bidirectional
+        mode regardless.
         """
-        if throttle < 0:
-            raise InvalidThrottleException("Throttle cannot be negative.")
-        if throttle > THROTTLE_CEILING:
-            raise InvalidThrottleException("Throttle value is too high. The temporary bench ceiling is " + str(THROTTLE_CEILING) + ".")
-
-        self.send_unchecked(throttle)
-
-    @micropython.native
-    def send_unchecked(self, throttle):
-        """
-        Queue one frame with this throttle, without a range check.
-
-        For callers that validated the value already, such as
-        MotorGroup.update(); others use send_throttle_command(). A value
-        outside 0..2047 builds a wrong packet. The telemetry-request bit is
-        always 0; AM32 replies in bidirectional mode regardless.
-        """
-        # 11-bit throttle, telemetry bit 0
-        packet_value = throttle << 1
+        # 11-bit value, telemetry bit 0
+        packet_value = value << 1
 
         # 4-bit CRC; crc_xor inverts it for bidirectional DShot
         crc = ((packet_value ^ (packet_value >> 4) ^ (packet_value >> 8)) ^ self.crc_xor) & 0x0F
 
-        # SSSSSSSSSSSTCCCC: throttle, telemetry bit, CRC
+        # SSSSSSSSSSSTCCCC: value, telemetry bit, CRC
         dshot_packet = (packet_value << 4) | crc
 
         # put() shifts the 16 bits to the top of the word; a Python shift would allocate
@@ -213,8 +192,8 @@ class DShotPIO:
     @micropython.native
     def send_zero(self):
         """
-        Queue one frame with throttle 0; same as send_throttle_command(0),
-        without building the packet. For MotorGroup.update()'s arming ticks.
+        Queue one frame with throttle 0; same as send_frame(0), without
+        building the packet. For MotorGroup.update()'s arming ticks.
         """
         self.sm.put(self.zero_packet, 16)
 
@@ -225,10 +204,10 @@ class UnidirectionalDShot(DShotPIO):
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         super().__init__(state_machine_id, pin, dshot_speed, dshot, 0x0)
 
-    def start(self):
-        # Reloading the program takes the pin back from stop()'s plain output
+    def activate(self):
+        # Reloading the program takes the pin back from deactivate()'s plain output
         self.init_state_machines()
-        super().start()
+        super().activate()
 
 
 class BidirectionalDShot(DShotPIO):
@@ -322,19 +301,19 @@ class BidirectionalDShot(DShotPIO):
             self.rx_sm.get()
         self.mailbox.reset()
 
-    def start(self):
-        # Take the pin back from stop()'s plain output, with the pull-up
+    def activate(self):
+        # Take the pin back from deactivate()'s plain output, with the pull-up
         self.pin.init(Pin.IN, Pin.PULL_UP)
 
         # RX first, so it is waiting before TX raises its first irq(rel(1))
         self.init_state_machines()
         self.rx_sm.active(1)
-        super().start()
+        super().activate()
 
     def latest_capture(self):
         """
         Return the latest published capture as one integer, or None while
-        nothing has been published since start().
+        nothing has been published since activate().
 
         The low 21 bits are the frame; the bits above are a token that changes
         on every publish, so a value that differs from the last one seen is a
@@ -354,21 +333,21 @@ class BidirectionalDShot(DShotPIO):
         """
         return gcr_decode.analyze_frame(value & FRAME_MASK)
 
-    # Wait in stop() for a reply still in flight; longer than a whole reply at either speed
-    STOP_REPLY_MARGIN_US = 300
+    # Wait in deactivate() for a reply still in flight; longer than a whole reply at either speed
+    DEACTIVATE_REPLY_MARGIN_US = 300
 
-    def stop(self):
+    def deactivate(self):
         """
         Deactivate both state machines, reset them, and leave the pin a plain
         output driven low.
 
         Low, not released high: an AM32 ESC reboots into its bootloader after
         a signal-loss timeout and stays there while the line is held high.
-        Nothing is transmitted on the way out; no queued frame or capture
-        survives into the next start().
+        Nothing is transmitted on the way out, so the motor is not stopped;
+        no queued frame or capture survives into the next activate().
         """
         self.sm.active(0)
         self.rx_sm.active(0)
-        utime.sleep_us(self.STOP_REPLY_MARGIN_US)
+        utime.sleep_us(self.DEACTIVATE_REPLY_MARGIN_US)
         self.init_state_machines()
         self.pin.init(Pin.OUT, value=0)

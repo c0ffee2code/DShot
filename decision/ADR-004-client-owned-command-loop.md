@@ -64,6 +64,8 @@ A second problem followed from the first: `arm()` blocked for 500ms in `utime.sl
 
 *Update 2026-11-11:* `update()` no longer calls `send_throttle_command(throttle)`. Once armed it sends each motor's throttle through `send_unchecked(throttle)`, which builds and queues the packet with no range check; while arming it sends the precomputed `send_zero()`. The range check moved to the boundary: `MotorGroup.set_throttle()` and `set_all_throttles()` reject anything other than 0 or 48 to the bench ceiling (`validate_throttle()`). `send_throttle_command()` keeps its own check for code that drives a motor without a group. See ADR-002, "Command-loop and decode performance", update note of 2026-11-11 (the change ran on the Pico and the bench on 2026-11-11: in 15 runs (AM32 2.22, four bidirectional motors, DSHOT600, throttle 0 to 215 held 20 s, bare shafts; none of them KPI evidence) 14 armed and spun, 12 of them in 2112 to 2113 ms and 3 in 2630 to 2659 ms. This shows that the changed path arms and drives the motors. It establishes no arming rate (five runs per batch), and nothing was measured about per-tick timing.).
 
+*Update 2026-11-14:* names in the diagram and in the note above are those of their dates. `send_throttle_command()` no longer exists, `send_unchecked()` is `send_frame()`, `start()` / `stop()` are `activate()` / `deactivate()` and `disarm()` is `deactivate()`: see "Amendment 2026-11-14" under "`arm()` / `disarm()` own the PIO lifecycle".
+
 ### No runner abstraction in the library
 
 The library ships no `MotorRunner` interface for the application to implement. The shape of such an interface — callback versus poll, who owns the interval, restart semantics, how failures surface — is precisely what varies between projects, so defining it in `driver/` would re-create the same coupling one layer up.
@@ -146,6 +148,33 @@ Draining before deactivating also parks the signal line low, because an idle sta
 State machines are deactivated, not destroyed. Constructing them per arm cycle would reload the PIO program into the 32-instruction store each time, requiring `PIO.remove_program()` bookkeeping to avoid exhausting it; `active(0)`/`active(1)` is cheap and cleanly re-armable. (2026-10-13: they are now also re-initialised with the same program object on every start and stop, as `BidirectionalDShot.start()` already did; this does not construct new state machines.)
 
 `DShotPIO` gains the `stop()` that `start()` never had.
+
+#### Amendment 2026-11-14: each layer is named for, and limited to, what it does
+
+**Decision.**
+
+1. *Layers.* `MotorGroup` is the library's public API. `DShotPIO` (`UnidirectionalDShot`, `BidirectionalDShot`) is the low-level I/O core beneath it: PIO state machines and the pin.
+2. *Names.* No public method or state is named after stopping or disarming a motor. `MotorGroup` keeps the names of what it does: `arm()`, the arming states, and setting the throttles that `update()` sends. Its teardown `disarm()` becomes `deactivate()`, and the state `DISARMED` becomes `INACTIVE`. `DShotPIO` names its lifecycle in PIO terms: `start()` and `stop()` become `activate()` and `deactivate()`.
+3. *Validation.* `DShotPIO` does not judge values. It sends the 11-bit value it is given through `send_frame(value)`; `send_throttle_command()` and `InvalidThrottleException` are removed. The valid throttle range, the temporary bench ceiling included (`THROTTLE_CEILING`), is defined and checked in `MotorGroup` only.
+
+Behaviour does not change. No aliases for the old names are kept.
+
+**Motivation.**
+
+- The only way the library stops a motor is `update()` transmitting throttle 0. The renamed methods transmit nothing: the ESC holds the last throttle until its signal-loss timeout (AM32: 500 ms while armed, specification/AM32.md#15) and then resets.
+- A method named `disarm()` or `stop()` invites an application to treat it as the stop. Stopping is the application's duty (amendment 2026-11-11).
+- Arming keeps its name because the library performs and observes it: zero throttle for the arming window, and the reply gate. It has no counterpart: the library never commands an ESC to disarm.
+- The low-level sender held a weaker copy of a rule the group owns in full: it refused values above the ceiling but sent 1 to 47, which AM32 executes as DShot commands. What a value means (stop, command, throttle) and which values are allowed belong to the layer that has that meaning.
+
+**Consequences.**
+
+- To stop motors, the application sets throttle 0 and keeps its command loop running until the ESCs have received it, then stops the loop and calls `deactivate()`. How long it keeps sending (a fixed time, or until telemetry shows the motor at rest) is its own decision.
+- `deactivate()` at a non-zero throttle is a signal loss for the ESC. It remains the only action available when the command loop is dead.
+- Code that uses a `DShotPIO` object directly answers for the values it sends: nothing below `MotorGroup` refuses a command value or a throttle above the bench ceiling. The README's single-motor example on the low-level class is removed; a single motor is a `MotorGroup` of one. The two bench probes that drove a motor without a group (`test_frame_arming_echo.py`, `test_frame_stalled_drain.py`) are deleted.
+- This replaces the sentence in the update note of 2026-11-11 under the layer diagram ("`send_throttle_command()` keeps its own check for code that drives a motor without a group").
+- Records written before this amendment use the old names: `disarm()` and `stop()` are `deactivate()`, `start()` is `activate()`, `DISARMED` is `INACTIVE`, `send_unchecked()` is `send_frame()`.
+
+**Verification.** PC tests pass (675). On the Pico alone, with no ESC (`tests/bench/pio_and_cores/test_pio_lifecycle.py`, unused GPIO 10 and 11, 2026-11-14): 30 build/arm/deactivate cycles, both lines low after `deactivate()`, 15 re-arms each capturing again. With the ESCs (2026-11-14, one run, AM32 2.22, four bidirectional motors, DSHOT600, throttle 0 to 215 held 20 s, bare shafts): armed after 2111 ms, all four motors spun and held, every line's last frames carried throttle 0, session verdict pass from the wire recording. One run shows that the renamed path arms, drives and ends a session; it establishes no rate.
 
 ## What Carries Over From ADR-001
 

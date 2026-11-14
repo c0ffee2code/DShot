@@ -26,7 +26,7 @@ The verdict is built from required proofs, not from the absence of failures. Eac
   not shown        it could not be judged from the evidence in the folder (a missing file, too few replies for a threshold, ...)
   not applicable   it does not apply to this session (see below)
 The verdict is "fail" when any proof failed, "pass" only when every applicable proof is shown, and "unknown" otherwise. The proofs:
-  1. run finished cleanly         the Pico's outcome is "completed" (this includes the command loop having stopped before disarm()); an
+  1. run finished cleanly         the Pico's outcome is "completed" (this includes the command loop having stopped before deactivate()); an
                                   outcome "aborted: <reason>" fails it with that reason; a session that did not start (session.json
                                   "start_failure": who and message, written by run_session.py) fails it with "the wingman / the main
                                   Pico did not start: <message>", and then every other proof is "not shown" ("the session did not
@@ -386,7 +386,7 @@ def proof_finished(device, is_script):
     if outcome != "completed":
         return judge(name, ["the Pico's record does not say the run completed (outcome: %s%s)" % (
             outcome, "; " + device["error"] if device["error"] else "")], [], "")
-    return proof(name, SHOWN, "the Pico reports outcome completed (the command loop stopped before disarm)")
+    return proof(name, SHOWN, "the Pico reports outcome completed (the command loop stopped before deactivate())")
 
 
 def proof_armed(device, is_script, esc_mock, bound_ms=CLEAN_ARM_THRESHOLD_MS):

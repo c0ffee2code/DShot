@@ -74,7 +74,7 @@ def main():
             results.append((name, probe.measure(work)))
     finally:
         if not probe.close():
-            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
+            print("WARNING: Core 1 loop did not stop - deactivate() raced update()")
 
     print(pacing_probe.HEADER)
     for name, stats in results:

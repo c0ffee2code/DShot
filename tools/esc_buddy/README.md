@@ -115,7 +115,7 @@ With an ESC attached every action puts signals on its line (no throttle). The `e
 - **Line handling copies Betaflight's:** every line idles as an input on the Pico's pull-up and is never driven while idle; a byte is driven
   from one extra idle bit before its start bit to its last data bit. The PIO program releases the line the moment the last stop bit ends,
   because the ESC replies 172-176 us later. Never put `sm.exec(str)` on a timing path (MicroPython assembles the string per call, 4.7 ms).
-- **Getting back to normal running.** On exit every line is driven low (the state `MotorGroup.disarm()` leaves); the bootloader starts the
+- **Getting back to normal running.** On exit every line is driven low (the state `MotorGroup.deactivate()` leaves); the bootloader starts the
   firmware after 20 ms of low, and the ESC resumes its no-signal beeps.
 - **Startup.** The Pico's USB port belongs to the buddy while it runs (no REPL, Ctrl-C off: a request byte `0x03` would otherwise interrupt
   the program while it starts, so the start command switches it off first and the PC tools send a harmless request until the buddy answers).

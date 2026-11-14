@@ -88,7 +88,9 @@ wire facts: `specification/KM55A2_DEFAULTS.md`). Last read 2026-11-09/10 (after 
 
 ## Architecture
 
-The driver uses a three-layer architecture. The library is deliberately
+The driver uses a three-layer architecture. `MotorGroup` is the library's public
+API; `DShotPIO` below it is the low-level I/O core (PIO and pin), which sends the
+values it is given and judges none of them. The library is deliberately
 core-agnostic: it exposes `update()`, and **your application decides where that
 runs** - a dedicated Core 1 thread, a timer IRQ, or its own main loop. See
 [ADR-004](decision/ADR-004-client-owned-command-loop.md) for why, and
@@ -105,17 +107,24 @@ requirements that drive it.
                    │ set_throttle()
                    ▼
 ┌─────────────────────────────────────┐
-│         MotorGroup Facade           │
-│  Throttle state, arming sequence,   │
-│  PIO lifecycle. Core-agnostic.      │
+│      MotorGroup (public API)        │
+│  Throttle values and their valid    │
+│  range, arming sequence.            │
+│  Core-agnostic.                     │
 └──────────────────┬──────────────────┘
-                   │ send_throttle_command()
+                   │ activate() / deactivate()
+                   │ send_frame()
                    ▼
 ┌─────────────────────────────────────┐
-│          DShotPIO Driver            │
-│     PIO state machine, encoding     │
+│    DShotPIO (low-level I/O core)    │
+│  PIO state machines, pin, encoding  │
 └─────────────────────────────────────┘
 ```
+
+**Stopping the motors is the application's job.** The library has no call that stops a motor: the application sets
+throttle 0 and keeps `update()` running so the ESCs receive it. `MotorGroup.deactivate()` only ends the signal; an ESC
+that was still commanded to spin holds that throttle until its own signal-loss timeout (AM32: 500 ms) and then resets
+([ADR-004](decision/ADR-004-client-owned-command-loop.md), amendment of 2026-11-14).
 
 ESCs disarm if commands stop arriving, so whatever context you choose must call
 `update()` at a steady period (`MotorGroup.UPDATE_INTERVAL_US`), without long or irregular gaps. How fast depends on
@@ -133,32 +142,9 @@ wingman's recording of every reply on the wire (`scripts/session_summary.py`).
 
 ## Quick Start
 
-### Single Motor (Low-Level Driver)
+### Motors (`MotorGroup`)
 
-```python
-from machine import Pin
-from dshot_pio import UnidirectionalDShot, DSHOT_SPEEDS
-import utime
-
-motor = UnidirectionalDShot(0, Pin(4), DSHOT_SPEEDS.DSHOT600)  # SM 0, GPIO 4
-motor.start()  # Activate PIO state machine
-
-# Arm ESC (send throttle=0 back-to-back for 2000ms, matching
-# MotorGroup.DEFAULT_ARM_DURATION_MS - AM32's own gate needs more than 1s of
-# continuous zero throttle after a 600ms startup tune; see "Verified
-# Parameters" below).
-arm_start = utime.ticks_ms()
-while utime.ticks_diff(utime.ticks_ms(), arm_start) < 2000:
-    motor.send_throttle_command(0)
-
-# Run motor
-while True:
-    motor.send_throttle_command(100)
-
-motor.stop()  # Deactivate - the ESC times out and the motor cannot spin
-```
-
-### Multiple Motors (Recommended)
+A group drives one to four motors; a single motor is a group of one.
 
 ```python
 from machine import Pin
@@ -190,15 +176,19 @@ motors.set_throttle(1, 150)  # Motor 2
 # Or update all at once
 motors.set_all_throttles([100, 150])
 
-# Stop the loop first: while it's running, Core 1 can call update() at the same
-# time disarm() resets the same state machines from this core, and nothing
-# serialises the two. disarm() transmits nothing: it cuts the signal and resets
-# every motor, and the ESC's own timeout stops the motor (AM32: up to 500ms at
-# the last throttle). To stop sooner, set_throttle(i, 0) and let update() send
-# it before calling disarm().
+# Stopping the motors is your job: set throttle 0 and keep the loop running so
+# the ESCs receive it.
+motors.set_all_throttles([0, 0])
+utime.sleep_ms(20)
+
+# Then end the signal. Stop the loop first: while it's running, Core 1 can call
+# update() at the same time deactivate() resets the same state machines from
+# this core, and nothing serialises the two. deactivate() transmits nothing and
+# does not stop a motor: an ESC still commanded to spin holds that throttle
+# until its own signal-loss timeout (AM32: 500ms).
 if not runner.stop():   # waits for the loop to really exit; False = it did not
     print("Core 1 still in update():", runner.error)
-motors.disarm()
+motors.deactivate()
 ```
 
 ### With Telemetry (Bidirectional Motors)
@@ -309,7 +299,7 @@ zero throttle after it starts listening, plus a 600ms startup tune after a cold 
 2000ms default with margin. Likewise, the ESC's beep pattern was previously read as decoding
 commands "regardless of whether its arm state machine has ever been satisfied" - per source, AM32
 only executes DShot commands (including `BEEP1`) while armed, so a `BEEP1` heard on this bench
-(sent as throttle value 1 through the low-level `send_throttle_command()`, not a dedicated command
+(sent as throttle value 1 through the low-level sender of that time, `send_throttle_command()`, not a dedicated command
 API - BUG-005's exact path; `MotorGroup` has refused that value since 2026-10-13) that audibly beeped actually confirms the ESC **was** armed at that moment,
 not that arm state is irrelevant to command
 execution. The ESC's own "3 short beeps, then 2 deeper beeps" arm confirmation tone, and current
@@ -332,7 +322,7 @@ that the motor is actually armed and spinning.
 │       ├── dshot_frame_decode.py    # decoder for the DShot frames the bench records on the wire (PC and Pico)
 │       ├── group_without_reply_gate.py  # a MotorGroup that arms without waiting for replies, for Pico-only scripts with no ESC
 │       ├── session_recorder/        # SD-card session recorder
-│       ├── dshot_protocol/          # scenario runner + JSON scenarios (the four-channel bidirectional and unidirectional pair, each at DSHOT600 and DSHOT300), single-motor ESC probes
+│       ├── dshot_protocol/          # scenario runner + JSON scenarios (the four-channel bidirectional and unidirectional pair, each at DSHOT600 and DSHOT300), the restart-cycles ESC probe
 │       ├── pio_and_cores/           # PIO and two-core checks (Pico only, no ESC)
 │       ├── wingman/                 # the second Pico: records every wire edge (observer), plays the ESC (ESC mock)
 ├── tools/
@@ -378,7 +368,7 @@ The project's goals and their status.
 | **Bidirectional DShot** | Done | ADR-002: frame receiver bench-validated on AM32, the sole production receiver |
 | **Smooth start** | In progress | Definition, scope and baseline: BUG-009 ("Current KPI"); target and current figures: "Operational Envelope" above. The baselines of 2026-11-01/02 were recorded on the paced loop with AM32 2.16; the baseline restarts on 2.22. Limits other than the provisional 0.5 s spin-up are not set yet |
 | **ESC configuration access** | Read and write done | ADR-006, `tools/esc_buddy/README.md` and the `esc-buddy` skill: `tools/esc_buddy/` reads all four ESCs' settings (JSON), gives the AM32 web configurator read-only passthrough, and writes named motor, start-up and protection settings to one ESC at a time with a backup and read-back (only KV, poles and beeper volume tried on real ESCs so far); firmware flash (`--flash`, ADR-007) has put AM32 2.22 on all eight ESCs (both boards); the buddy's settings code speaks layout 4 only (no older layouts); bootloader update is not built |
-| **Extended telemetry (EDT)** | TODO | Current AM32 source already implements it (`specification/AM32.md`#10) - the bench ran AM32 2.16 until 2026-11-10 and runs 2.22 now (`specification/KM55A2_DEFAULTS.md`); whether 2.22 implements it is not checked yet. This driver's own decoder doesn't yet discriminate an EDT frame from an eRPM frame either way |
+| **Extended telemetry (EDT)** | Not planned | Out of scope (owner, 2026-11-14) until a concrete need appears: the driver will not enable or decode Extended DShot Telemetry. AM32 sends EDT frames only after DShot command 13 (`specification/AM32.md`#10), and the driver sends no commands, so every reply is an eRPM frame or the not-running value and the decoder treats it as such. The observer's AM32 check reports any reply shaped like an EDT frame |
 
 See `decision/` folder for Architecture Decision Records (ADRs); the bench's division of work between the main Pico and the PC is
 [ADR-008](decision/ADR-008-main-pico-reports-pc-judges.md).

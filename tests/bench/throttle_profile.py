@@ -19,7 +19,7 @@
 # is also loaded PC-side (see DSHOT_SPEED_NAMES in scenario.py for the same
 # pattern). Update both places together if it ever changes.
 MAX_THROTTLE = 2047
-# Mirrors driver/dshot_pio.py's THROTTLE_CEILING, the temporary bench ceiling: a profile above it is a load
+# Mirrors MotorGroup.THROTTLE_CEILING (driver/motor_group.py), the temporary bench ceiling: a profile above it is a load
 # error, so a scenario never reaches the point where MotorGroup would reject it mid-run.
 THROTTLE_CEILING = 250
 # Mirrors MotorGroup.MIN_THROTTLE: DShot values 1-47 are commands, which

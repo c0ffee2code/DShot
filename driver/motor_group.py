@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# MotorGroup: throttle values and arming lifecycle of a group of DShot motors,
-# driven by a command loop the application owns.
+# MotorGroup, the library's public API: throttle values and arming lifecycle
+# of a group of DShot motors, driven by a command loop the application owns.
 # Design: ADR-001, ADR-004, ADR-005; arming gate: BUG-003.
 
 import micropython
 import utime
 from array import array
 
-from dshot_pio import THROTTLE_CEILING, UnsupportedOperationException
+from dshot_pio import UnsupportedOperationException
 
 # Lifecycle states, as reported by MotorGroup.state
-DISARMED = 0
+INACTIVE = 0
 ARMING = 1
 ARMED = 2
 
@@ -30,8 +30,10 @@ class MotorGroup:
     core, timer or main loop it chooses. Keep the period steady by anchoring
     each deadline to the previous one; there is no unpaced mode, and an ESC
     stops when frames stop arriving. arm() starts arming, update() completes
-    it, is_armed() reports it. Throttles may be set from another core than
-    the one calling update(). Examples: README.md, "Quick Start".
+    it, is_armed() reports it. Stopping the motors is the application's job:
+    it sets throttle 0 and keeps update() running; deactivate() only ends the
+    signal. Throttles may be set from another core than the one calling
+    update(). Examples: README.md, "Quick Start".
     """
 
     # Period at which the application calls update(), in us (README, "Verified Parameters")
@@ -47,7 +49,7 @@ class MotorGroup:
     READY_FRESH_MS = 50    # the latest at most this long ago
 
     # TEMPORARY: highest throttle set_throttle() accepts until higher ones are tested (BUG-005)
-    THROTTLE_CEILING = THROTTLE_CEILING
+    THROTTLE_CEILING = 250
     # Lowest non-zero throttle; 1-47 are DShot commands, which this class does not send
     MIN_THROTTLE = 48
 
@@ -103,8 +105,8 @@ class MotorGroup:
         # Written from any core, read by update(): one element's write is atomic
         self.throttles = array('H', [0] * self.motor_count)
 
-        # One of DISARMED / ARMING / ARMED
-        self.state = DISARMED
+        # One of INACTIVE / ARMING / ARMED
+        self.state = INACTIVE
 
         self.arm_duration_ms = self.DEFAULT_ARM_DURATION_MS
         self.arm_started_ms = 0
@@ -124,16 +126,16 @@ class MotorGroup:
         Args:
             duration_ms: least time ARMING lasts.
 
-        Raises MotorGroupException unless DISARMED; disarm() first to start over.
+        Raises MotorGroupException unless INACTIVE; deactivate() first to start over.
         """
-        if self.state != DISARMED:
+        if self.state != INACTIVE:
             raise MotorGroupException("arm() called while already arming or armed")
 
         for i in range(self.motor_count):
             self.throttles[i] = 0
 
         for motor in self.motors:
-            motor.start()
+            motor.activate()
 
         now = utime.ticks_ms()
         self.arm_duration_ms = duration_ms
@@ -145,34 +147,35 @@ class MotorGroup:
         # Set last: update() must not run before the state machines are active
         self.state = ARMING
 
-    def disarm(self):
+    def deactivate(self):
         """
-        Stop every motor and leave it in a fresh, never-run state. Idempotent.
+        End the signal to every motor and leave the group in its fresh,
+        never-run state. Idempotent.
 
-        Nothing is transmitted: the state machines are deactivated and reset
-        and the lines driven low. The ESC holds the last throttle until its
-        signal-loss timeout stops the motor (AM32: 500 ms armed,
-        specification/AM32.md#15); to stop sooner, set throttle 0 and let
+        Does not stop the motors. Nothing is transmitted: the state machines
+        are deactivated and reset and the lines driven low, and each ESC holds
+        its last throttle until its signal-loss timeout (AM32: 500 ms armed,
+        specification/AM32.md#15). To stop them, set throttle 0 and let
         update() send it first. Blocks a few hundred microseconds per
         bidirectional motor. Stop the command loop first: nothing serialises
         this against an update() running on another core.
         """
         # Cleared first, so a concurrent update() returns before the signal is
         # cut. The prior value says whether there are live motors to reset.
-        was_live = self.state != DISARMED
-        self.state = DISARMED
+        was_live = self.state != INACTIVE
+        self.state = INACTIVE
 
         for i in range(self.motor_count):
             self.throttles[i] = 0
 
         if was_live:
             for motor in self.motors:
-                motor.stop()
+                motor.deactivate()
 
         # Again: an update() past its state check may have set ARMED meanwhile,
         # and ARMED over inactive state machines blocks the next update() for
         # good. This narrows the race; stopping the loop first closes it.
-        self.state = DISARMED
+        self.state = INACTIVE
 
     @micropython.native
     def update(self):
@@ -184,11 +187,11 @@ class MotorGroup:
         of the tick, and comes before the sends, because an undrained RX FIFO
         stalls the receiver. While ARMING every motor is sent 0 whatever its
         throttle, and replies are only counted for the reply gate, never
-        published. Does nothing while disarmed, so it is safe before arm() and
-        after disarm().
+        published. Does nothing while inactive, so it is safe before arm() and
+        after deactivate().
         """
         state = self.state
-        if state == DISARMED:
+        if state == INACTIVE:
             return
 
         now = utime.ticks_ms()
@@ -215,7 +218,7 @@ class MotorGroup:
 
             if (utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms
                     and self.bidir_ready(now)):
-                # Re-read, not the snapshot: a disarm() on another core may have
+                # Re-read, not the snapshot: a deactivate() on another core may have
                 # landed since, and ARMED over it would make put() block for good
                 if self.state == ARMING:
                     self.state = ARMED
@@ -227,7 +230,7 @@ class MotorGroup:
             throttles = self.throttles
             motors = self.motors
             for i in range(self.motor_count):
-                motors[i].send_unchecked(throttles[i])
+                motors[i].send_frame(throttles[i])
 
         self.last_update_ms = now
 
@@ -347,7 +350,7 @@ class MotorGroup:
                 temporary bench ceiling). Negative values, 1-47 and anything
                 above the ceiling raise MotorGroupException.
 
-        Accepted while disarmed, but nothing is transmitted until the group is
+        Accepted while inactive, but nothing is transmitted until the group is
         armed, and arm() resets all throttles to zero.
 
         Lock-free: safe to call from another core than the one calling
@@ -395,7 +398,7 @@ class MotorGroup:
     def update_age_ms(self):
         """
         Milliseconds since update() last sent frames (or since arm(), before
-        its first tick). Not refreshed while disarmed.
+        its first tick). Not refreshed while inactive.
 
         A fact, not a health verdict: the application sets its own threshold,
         well under the ESC's signal-loss timeout.

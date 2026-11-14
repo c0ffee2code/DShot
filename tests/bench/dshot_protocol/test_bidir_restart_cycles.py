@@ -1,17 +1,17 @@
-# Test: BidirectionalDShot survives repeated arm/disarm cycles in one session
+# Test: BidirectionalDShot survives repeated arm/deactivate cycles in one session
 #
 # Purpose: every scenario in tests/bench/dshot_protocol/ builds its motors once, arms once,
-# and disarms once - run_test.py resets the Pico (via deploy.py) before each run, so nothing has
-# ever exercised BidirectionalDShot.start() reclaiming the pin from PIO after
-# stop() hands it to SIO (see stop()'s own comment). A scenario passing proves
-# the FIRST start() works; it says nothing about the second.
+# and deactivates once - run_test.py resets the Pico (via deploy.py) before each run, so nothing has
+# ever exercised BidirectionalDShot.activate() reclaiming the pin from PIO after
+# deactivate() hands it to SIO (see deactivate()'s own comment). A scenario passing
+# proves the FIRST activate() works; it says nothing about the second.
 #
-# This arms, spins and disarms the same motor three times in a row, on one
-# Pico session, with a gap between cycles long enough for the disarmed ESC to
+# This arms, spins, stops and deactivates the same motor three times in a row, on one
+# Pico session, with a gap between cycles long enough for the ESC, its signal gone, to
 # time out, reboot and settle - the same condition every real flight would hit
 # between arming sequences. Each cycle's own command loop runs on a fresh
 # Core1Runner start/stop, in the documented order (stop the loop, then
-# disarm) so a race between them can't be mistaken for a reclaim failure.
+# deactivate) so a race between them can't be mistaken for a reclaim failure.
 #
 # Wiring matches the former single_channel_bidirectional_300 scenario (removed from the repo, in git history)
 # exactly (channel 1 bidirectional, channels 2-4 unidirectional at zero) so channel
@@ -78,7 +78,7 @@ def run_one_cycle(group, runner, cycle):
 
     # Documented shutdown order (README.md, "Quick Start", "Multiple
     # Motors"): throttle 0 while the loop runs, then stop the loop
-    # before disarm() touches any state machine, so a reclaim failure can't
+    # before deactivate() touches any state machine, so a reclaim failure can't
     # be confused with this race.
     if not fast_stop(group, runner):
         raise Exception("Core 1 loop did not stop in cycle " + str(cycle))
@@ -110,7 +110,7 @@ def main():
         for cycle in range(1, CYCLES + 1):
             results.append(run_one_cycle(group, runner, cycle))
             if cycle < CYCLES:
-                print("  disarmed - waiting %dms for the ESC to time out and reboot" % GAP_MS)
+                print("  deactivated - waiting %dms for the ESC to time out and reboot" % GAP_MS)
                 utime.sleep_ms(GAP_MS)
     finally:
         if not fast_stop(group, runner):

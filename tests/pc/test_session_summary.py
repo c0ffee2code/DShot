@@ -484,7 +484,7 @@ class ProofTest(unittest.TestCase):
     def test_every_proof_can_fail_and_fails_the_run(self):
         late = "Armed after %dms.\n" % session_summary.CLEAN_ARM_THRESHOLD_MS
         cases = {
-            "run finished cleanly": dict(manifest={"device": {"outcome": "aborted: Core 1 loop did not stop before disarm()"}}),
+            "run finished cleanly": dict(manifest={"device": {"outcome": "aborted: Core 1 loop did not stop before deactivate()"}}),
             "armed within the bound": dict(files={"run.log": late, "signal_observation.bin": "x"}),
             "wire recording complete": dict(valid=False),
             "our frames were correct": dict(lines=[wire_line(frames_reasons=["line 0 (channel 1): AM32 check failed: CRC"])]),

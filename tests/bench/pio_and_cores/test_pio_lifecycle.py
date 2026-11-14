@@ -1,17 +1,17 @@
-# Test: what the PIO state machines are left in across arm/disarm cycles
+# Test: what the PIO state machines are left in across arm/deactivate cycles
 #
 # Purpose: the driver never releases its state machines or the programs it loaded;
-# stop() only deactivates and restarts a state machine. This shows that is enough
+# deactivate() only deactivates and restarts a state machine. This shows that is enough
 # for the ways an application uses a MotorGroup:
-#   1. Building a new group, arming and disarming it, over and over (as a test
+#   1. Building a new group, arming and deactivating it, over and over (as a test
 #      script or an application that re-creates its motors does) must not use up
 #      the block's instruction slots or its state machines.
 #   2. Disarming must leave everything quiet: state machines inactive, the TX FIFO
 #      empty, and each signal line at the level the ESC should see - driven low for
 #      both kinds of motor now (a bidirectional line used to be merely released and
 #      pulled up, which left some ESC firmware unable to recover on its own after
-#      disarm - see driver/dshot_pio.py's BidirectionalDShot.stop()).
-#   3. Arming the same group again after a disarm must work as the first time did:
+#      deactivate - see driver/dshot_pio.py's BidirectionalDShot.deactivate()).
+#   3. Arming the same group again after a deactivate must work as the first time did:
 #      the receiver captures again.
 #
 # No ESC and no motor: the motors sit on unused GPIO 10 (bidirectional, state
@@ -79,22 +79,22 @@ def test_pio_lifecycle():
         group = build()
         arm_fully(group)
         run_for(group, 10)
-        group.disarm()
+        group.deactivate()
         group = None
     gc.collect()
     print("  heap free before/after: %d / %d bytes" % (free_before, gc.mem_free()))
-    check(True, "%d build/arm/disarm cycles raised nothing (no ENOMEM from programs or state machines)" % REBUILD_CYCLES)
+    check(True, "%d build/arm/deactivate cycles raised nothing (no ENOMEM from programs or state machines)" % REBUILD_CYCLES)
 
-    print("State left behind by disarm()...")
+    print("State left behind by deactivate()...")
     group = build()
     bidir, uni = group.motors
     arm_fully(group)
     run_for(group, RUN_MS)
-    group.disarm()
+    group.deactivate()
     check(not bidir.sm.active() and not bidir.rx_sm.active() and not uni.sm.active(),
           "all three state machines are inactive")
     check(bidir.sm.tx_fifo() == 0 and uni.sm.tx_fifo() == 0, "both TX FIFOs are empty")
-    print("  RX FIFO words left after disarm: %d" % bidir.rx_sm.rx_fifo())
+    print("  RX FIFO words left after deactivate: %d" % bidir.rx_sm.rx_fifo())
     print("  pin levels: bidirectional GPIO%d = %d, unidirectional GPIO%d = %d" % (
         BIDIR_PIN, Pin(BIDIR_PIN).value(), UNI_PIN, Pin(UNI_PIN).value()))
     check(Pin(BIDIR_PIN).value() == 0, "the bidirectional line is handed to SIO, driven low")
@@ -110,11 +110,11 @@ def test_pio_lifecycle():
         token = capture >> FRAME_BITS
         if cycle == 0 or cycle == REARM_CYCLES - 1:
             print("  cycle %d: token %d after %dms" % (cycle, token, RUN_MS))
-        group.disarm()
+        group.deactivate()
         if group.raw_telemetry(0) is not None:
-            raise Exception("FAIL cycle %d: a capture was handed out after disarm" % cycle)
+            raise Exception("FAIL cycle %d: a capture was handed out after deactivate" % cycle)
         if bidir.latest_capture() is not None:
-            raise Exception("FAIL cycle %d: the published capture survived disarm" % cycle)
+            raise Exception("FAIL cycle %d: the published capture survived deactivate" % cycle)
     check(True, "every re-arm captured again")
 
     print()

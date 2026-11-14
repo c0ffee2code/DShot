@@ -58,7 +58,7 @@ def _install_utime():
 class CallLog:
     """Global order of state-changing fake calls, across every Pin/StateMachine
     instance - not a real hardware concept, just what a test checking one
-    object's calls happen before another's (e.g. "stop() deactivates before
+    object's calls happen before another's (e.g. "deactivate() turns it off before
     it touches the pin") needs to see. Reset per test; nothing reads it
     otherwise."""
 
@@ -122,7 +122,7 @@ class StateMachine:
         CallLog.record(("sm", self.id, "init"))
         # Models pico-sdk's pio_sm_init(), which MicroPython's init() calls:
         # both FIFOs are emptied. Confirmed on the device by
-        # tests/bench/pio_and_cores/test_stop_clears_queues.py, not by this fake.
+        # tests/bench/pio_and_cores/test_deactivate_clears_queues.py, not by this fake.
         self.pending = []
         self.rx = []
         if program is not None:

@@ -99,7 +99,7 @@ def main():
         except OSError as error:
             print("WARNING: could not delete the throwaway session folder", sink.run_dir, error)
         if not clean:
-            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
+            print("WARNING: Core 1 loop did not stop - deactivate() raced update()")
 
     print(pacing_probe.HEADER)
     for name, stats in results:

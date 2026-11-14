@@ -142,7 +142,7 @@ def main():
             process(name, expected, [channel_frames(probe, bit) for bit in range(pacing_probe.CHANNELS)])
     finally:
         if not probe.close():
-            print("WARNING: Core 1 loop did not stop - disarm() raced update()")
+            print("WARNING: Core 1 loop did not stop - deactivate() raced update()")
 
     print()
     print("bit timing over all frames (in us; expected period 1.667, low of a 1 bit 1.250, of a 0 bit 0.625):")

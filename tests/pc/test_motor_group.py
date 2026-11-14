@@ -2,8 +2,8 @@
 # telemetry accessors, against fake state machines and a hand-moved clock.
 #
 # The lifecycle checks are about what the group transmits and when: nothing
-# while disarmed, literal zeros for the whole arming window, the set throttles
-# once armed, then silence from disarm() on (it transmits nothing; the ESC's
+# while inactive, literal zeros for the whole arming window, the set throttles
+# once armed, then silence from deactivate() on (it transmits nothing; the ESC's
 # own timeout stops the motor - see ADR-004). On real hardware a group that
 # kept writing to a deactivated state machine would block its caller forever;
 # that is the reason for most of the "inert" checks here.
@@ -22,7 +22,7 @@ from dshot_profiles import frame_rx_speed
 from capture_mailbox import FRAME_BITS, FRAME_MASK
 from gcr_decode import AM32_NOT_RUNNING_FRAME
 from motor_group import (MotorGroup, MotorGroupException,
-                                  DISARMED, ARMING, ARMED)
+                                  INACTIVE, ARMING, ARMED)
 from group_without_reply_gate import GroupWithoutReplyGate
 
 SPEED = DSHOT_SPEEDS.DSHOT300
@@ -93,11 +93,11 @@ class ConstructionTest(GroupTestCase):
         group = self.make([uni(0, 6), bidir(2, 7)])
         for motor in group.motors:
             self.assertFalse(motor.sm.is_active)
-        self.assertEqual(group.state, DISARMED)
+        self.assertEqual(group.state, INACTIVE)
 
 
 class ArmingTest(GroupTestCase):
-    def test_update_is_inert_while_disarmed(self):
+    def test_update_is_inert_while_inactive(self):
         group = self.make([uni(0, 6), bidir(2, 7)])
         group.update()
         for motor in group.motors:
@@ -276,7 +276,7 @@ class ArmingGateTest(GroupTestCase):
 
     def test_arm_again_needs_new_replies(self):
         self.arm_fully(self.group)
-        self.group.disarm()
+        self.group.deactivate()
         self.group.arm(ARM_MS)
         self.tick(ARM_MS + self.group.READY_SPAN_MS, words=())
         self.assertFalse(self.group.is_armed())
@@ -289,12 +289,12 @@ class UpdateOrderTest(GroupTestCase):
         log = []
         motors = [bidir(0, 6), uni(2, 7), bidir(4, 8), uni(6, 9)]
         for i, motor in enumerate(motors):
-            def send(throttle, i=i, real=motor.send_unchecked):
+            def send(throttle, i=i, real=motor.send_frame):
                 log.append(("send", i))
                 real(throttle)
-            motor.send_unchecked = send
+            motor.send_frame = send
             # update()'s ARMING branch sends through send_zero(), not
-            # send_unchecked(0) (see dshot_pio.py's own note on why) -
+            # send_frame(0) (see dshot_pio.py's own note on why) -
             # patched the same way so "while arming" sees the same log shape
             # as "while armed".
             def send_zero(i=i, real=motor.send_zero):
@@ -331,74 +331,74 @@ class UpdateOrderTest(GroupTestCase):
 
 
 class DisarmTest(GroupTestCase):
-    def test_disarm_transmits_nothing_and_deactivates_everything(self):
+    def test_deactivate_transmits_nothing_and_deactivates_everything(self):
         group = self.make([uni(0, 6), uni(1, 7)])
         self.arm_fully(group)
         group.set_throttle(0, 200)
         group.update()
         sent = [list(motor.sm.sent) for motor in group.motors]
-        group.disarm()
+        group.deactivate()
         for motor, before in zip(group.motors, sent):
             self.assertEqual(motor.sm.sent, before)
             self.assertFalse(motor.sm.is_active)
             self.assertEqual(motor.sm.pending, [])
-        self.assertEqual(group.state, DISARMED)
+        self.assertEqual(group.state, INACTIVE)
         self.assertEqual(group.get_all_throttles(), [0, 0])
 
-    def test_a_word_queued_behind_disarm_is_not_sent_at_the_next_arm(self):
+    def test_a_word_queued_behind_deactivate_is_not_sent_at_the_next_arm(self):
         group = self.make([uni(0, 6)])
         self.arm_fully(group)
         group.set_throttle(0, 200)
         group.update()
-        group.disarm()
+        group.deactivate()
         # Another core's update() put one more word after the reset
         group.motors[0].sm.put(0x0E100000)
         group.arm(ARM_MS)
         self.assertEqual(group.motors[0].sm.pending, [])
 
-    def test_disarm_is_idempotent_and_sends_nothing_the_second_time(self):
+    def test_deactivate_is_idempotent_and_sends_nothing_the_second_time(self):
         group = self.make([uni(0, 6)])
         self.arm_fully(group)
-        group.disarm()
+        group.deactivate()
         sent = len(group.motors[0].sm.sent)
-        group.disarm()
+        group.deactivate()
         self.assertEqual(len(group.motors[0].sm.sent), sent)
 
-    def test_a_redundant_disarm_does_not_stop_the_motors_again(self):
-        # stop() is only meaningful on a state machine that was actually live -
-        # a repeat disarm() (or one before ever arming) has nothing to stop.
+    def test_a_redundant_deactivate_does_not_reset_the_state_machines_again(self):
+        # A motor's deactivate() is only meaningful on a state machine that was
+        # actually live - a repeat (or one before ever arming) has nothing to reset.
         group = self.make([uni(0, 6), bidir(2, 8)])
         self.arm_fully(group)
-        group.disarm()
+        group.deactivate()
         restarts = [motor.sm.restarts for motor in group.motors]
         rx_restarts = group.motors[1].rx_sm.restarts
-        group.disarm()
+        group.deactivate()
         self.assertEqual([motor.sm.restarts for motor in group.motors], restarts)
         self.assertEqual(group.motors[1].rx_sm.restarts, rx_restarts)
 
-    def test_disarm_before_arming_does_not_stop_the_motors(self):
+    def test_deactivate_before_arming_does_not_reset_the_state_machines(self):
         group = self.make([uni(0, 6), bidir(2, 8)])
-        group.disarm()
+        group.deactivate()
         self.assertEqual([motor.sm.restarts for motor in group.motors], [0, 0])
         self.assertEqual(group.motors[1].rx_sm.restarts, 0)
 
-    def test_disarm_before_arming_sends_nothing(self):
+    def test_deactivate_before_arming_sends_nothing(self):
         group = self.make([uni(0, 6)])
-        group.disarm()
+        group.deactivate()
         self.assertEqual(group.motors[0].sm.sent, [])
 
-    def test_update_is_inert_again_after_disarm(self):
+    def test_update_is_inert_again_after_deactivate(self):
         group = self.make([uni(0, 6)])
         self.arm_fully(group)
-        group.disarm()
+        group.deactivate()
         sent = len(group.motors[0].sm.sent)
         group.update()
         self.assertEqual(len(group.motors[0].sm.sent), sent)
 
-    def test_the_group_can_be_armed_again_after_disarm(self):
+    def test_the_group_can_be_armed_again_after_deactivate(self):
         group = self.make([uni(0, 6)])
         self.arm_fully(group)
-        group.disarm()
+        group.deactivate()
         self.arm_fully(group)
         self.assertTrue(group.is_armed())
 
@@ -513,7 +513,7 @@ class TelemetryTest(GroupTestCase):
         with self.assertRaises(MotorGroupException):
             self.group.raw_telemetry(9)
 
-    def test_no_capture_is_handed_out_while_disarmed_or_arming(self):
+    def test_no_capture_is_handed_out_while_inactive_or_arming(self):
         self.assertIsNone(self.group.raw_telemetry(0))
         self.group.arm(ARM_MS)
         for _ in range(20):
@@ -553,19 +553,19 @@ class TelemetryTest(GroupTestCase):
             self.group.update()
         self.assertEqual(self.group.raw_telemetry(0) & FRAME_MASK, 3)
 
-    def test_disarm_takes_the_captures_away_again(self):
+    def test_deactivate_takes_the_captures_away_again(self):
         self.arm_fully(self.group)
         self.motor.rx_sm.feed(self.CAPTURE)
         self.group.update()
         self.assertIsNotNone(self.group.raw_telemetry(0))
-        self.group.disarm()
+        self.group.deactivate()
         self.assertIsNone(self.group.raw_telemetry(0))
 
     def test_a_new_run_starts_without_the_previous_capture(self):
         self.arm_fully(self.group)
         self.motor.rx_sm.feed(self.CAPTURE)
         self.group.update()
-        self.group.disarm()
+        self.group.deactivate()
         self.group.arm(ARM_MS)
         self.run_until_armed(self.group)
         self.assertIsNone(self.group.raw_telemetry(0))
@@ -592,8 +592,8 @@ class TelemetryTest(GroupTestCase):
             self.group.decode_telemetry(5, self.CAPTURE)
 
     def test_every_arm_reinitializes_the_receiver_program_and_jmp_pin(self):
-        # start() calls rx_sm.init() on every arm(), the first one included,
-        # not only a restart after a stop() - and dshot_bidir_rx_frame fills its
+        # activate() calls rx_sm.init() on every arm(), the first one included,
+        # not only a restart after a deactivate() - and dshot_bidir_rx_frame fills its
         # PIO block on its own (see BidirectionalDShot's constructor
         # docstring), so it is worth checking both calls get it right.
         self.arm_fully(self.group)
@@ -602,7 +602,7 @@ class TelemetryTest(GroupTestCase):
         self.assertEqual(first_freq, frame_rx_speed(SPEED))
         self.assertEqual(first_kwargs["jmp_pin"], self.motor.pin)
 
-        self.group.disarm()
+        self.group.deactivate()
         self.group.arm(ARM_MS)
         program, freq, kwargs = self.motor.rx_sm.init_calls[-1]
         self.assertEqual(program, dshot_bidir_rx_frame)

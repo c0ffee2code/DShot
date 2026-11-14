@@ -12,7 +12,7 @@ Line handling copies Betaflight's (src/main/io/serial_4way.c, serial_4way_avroot
 input with the Pico's pull-up and is never driven while idle; a byte is driven only from one extra idle bit before its
 start bit to its last data bit, and the stop bit is held by the pull-up. Bench result 2026-11-04 (Skystars KM55A2, an
 older AM32 bootloader, protocol version 1): it answered every request this way, and none while the Pico drove idle lines
-high and sent bytes back to back. On exit every line is driven low, the state MotorGroup.disarm() leaves, which makes the
+high and sent bytes back to back. On exit every line is driven low, the state MotorGroup.deactivate() leaves, which makes the
 bootloader start the ESC's firmware.
 """
 

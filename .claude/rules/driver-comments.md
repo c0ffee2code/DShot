@@ -44,7 +44,7 @@ A fact that exists only in a comment (a measurement, the reason for a value, the
 
 ## Examples: before and after
 
-Taken from `driver/dshot_pio.py`. The "after" versions are in the file today.
+Taken from `driver/dshot_pio.py` as it was when the convention was written; names have changed since (`send_throttle_command()` is gone, `stop()` is `deactivate()`).
 
 **A method docstring.** History, a backlog ID and the reason for an optimisation go; the purpose stays.
 
