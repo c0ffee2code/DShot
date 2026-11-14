@@ -293,7 +293,7 @@ measured requirements.
 
 | Parameter | AM32 (Skystar KM55A2) |
 |-----------|------------------------|
-| Protocol | DShot300 and DShot600, both bench-verified (the command-interval and arming-duration rows below don't depend on which) |
+| Protocol | DShot300 and DShot600. DSHOT600: the arming and start batches. DSHOT300: single-motor runs (ADR-002) and, on 2026-11-14, one four-motor run each of the bidirectional and the unidirectional scenario (both armed, spin confirmed; bidirectional also by about 19,160 real-eRPM replies per motor). One run per scenario is not an arming rate: no DSHOT300 arming rate is established (the command-interval and arming-duration rows below don't depend on which speed) |
 | Minimum throttle | 60 confirmed spinning (DShot300, ADR-002; BUG-009 tracks an open rough-start question at low throttle) - 1-47 are special commands, not throttle: `MotorGroup.set_throttle()` rejects them (see `specification/DSHOT.md`, BUG-005) |
 | Command interval | One mechanism: `Core1Runner`'s deadline-anchored pacing at `MotorGroup.UPDATE_INTERVAL_US` = 1045us (20/20 clean, then 13/13 in later spot checks, see BUG-002.md). It is the only mode: an unpaced loop (`update()` back to back, as fast as it returns) was the library default until 2026-10-19 and was removed, and a scenario can no longer set its own period. The 2026-10-13/14 arming evidence (104/104) was gathered on the old unpaced loop and has to be repeated on this one. An earlier (2026-08-23) bring-up failure at "1kHz/500ms" was never a clean test of pacing specifically - its 500ms arm window is well under AM32's own >1.6s gate (`specification/AM32.md`#16) by itself, so that result doesn't isolate what role pacing played, if any |
 | Arming duration | The published promise is >=99% within 3.0 s (see "Operational Envelope"). Window: 2000ms (`driver/motor_group.py`'s `DEFAULT_ARM_DURATION_MS`), grounded in AM32 source rather than bench measurement - see below. With bidirectional motors it is a floor: `ARMED` also waits until every ESC has replied "not running" for 2s without a reboot-length gap (`READY_SPAN_MS`, bug-reports/BUG-003) - measured about 2.03s on the 100-run batch of 2026-10-14 (99 of 100 runs between 2026 and 2028ms, one at 2516ms), several seconds if an ESC reboots while arming |
@@ -329,8 +329,10 @@ that the motor is actually armed and spinning.
 │   ├── pc/                          # PC unit tests (python -m unittest discover -s tests/pc)
 │   └── bench/                       # tests that run on the Pico with the bench attached
 │       ├── core1_runner.py          # Core 1 update() loop + fast_stop, shared by the groups below
+│       ├── dshot_frame_decode.py    # decoder for the DShot frames the bench records on the wire (PC and Pico)
+│       ├── group_without_reply_gate.py  # a MotorGroup that arms without waiting for replies, for Pico-only scripts with no ESC
 │       ├── session_recorder/        # SD-card session recorder
-│       ├── dshot_protocol/          # scenario runner + JSON scenarios, single-motor ESC probes
+│       ├── dshot_protocol/          # scenario runner + JSON scenarios (the four-channel bidirectional and unidirectional pair, each at DSHOT600 and DSHOT300), single-motor ESC probes
 │       ├── pio_and_cores/           # PIO and two-core checks (Pico only, no ESC)
 │       ├── wingman/                 # the second Pico: records every wire edge (observer), plays the ESC (ESC mock)
 ├── tools/

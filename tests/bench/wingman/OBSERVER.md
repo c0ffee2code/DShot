@@ -9,7 +9,7 @@ the ESC mock, is in `ESC_MOCK.md`; what the wingman is and how it is wired is in
 |-------|------|---------|
 | Recorder | `board/observer.py` | wingman |
 | Start/end line (GPIO 15) | `main_pico/start_line.py` (the scenario runner drives it; `deploy.py` uploads it) | main Pico |
-| Frame decoder | `driver/dshot_frame_decode.py` (shared with the main Pico's own pin sampler, a different instrument) | PC and Pico |
+| Frame decoder | `tests/bench/dshot_frame_decode.py` (shared with the main Pico's own pin sampler, a different instrument) | PC and Pico |
 | Run a recording (board handling in `wingman_board.py`) | `tools/wingman_run.py` | PC |
 | Read the stream | `tools/observer_edge_log.py` | PC |
 | Print / plot a recording | `tools/observer_analyze.py`, `tools/observer_stats.py` | PC |

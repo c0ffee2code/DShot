@@ -11,7 +11,7 @@
 #
 # Method: single-threaded, no MotorGroup/Core1Runner - this drives the motors
 # directly with DShotPIO's own low-level API (README.md, "Quick Start", "Single Motor")
-# so the same core that sends commands also drains rx_read() every iteration,
+# so the same core that sends commands also drains the RX FIFO every iteration,
 # with no second core/thread reading the same FIFO concurrently. Commands are
 # paced at BURST_INTERVAL_US, well above a full reply's duration (see
 # test_frame_stalled_drain.py's header on why this matters - too fast corrupts
@@ -37,6 +37,7 @@ BUCKET_MS = 500
 SPIN_MS = 2000
 THROTTLE = 100
 BURST_INTERVAL_US = 200  # see test_frame_stalled_drain.py's header - must exceed a full reply
+QUEUED_FRAMES_WAIT_US = 500  # five 16-bit frames at DSHOT300 (53 us each): the 4-word TX FIFO plus the frame in the shifter
 DISARM_FRAMES = 4
 
 
@@ -47,7 +48,7 @@ def drive_and_tally(motor, others, duration_ms, throttle, buckets, start):
         for other in others:
             other.send_throttle_command(throttle)
         while motor.rx_sm.rx_fifo() >= 1:
-            word = motor.rx_read()
+            word = motor.rx_sm.get()
             result = gcr_decode.analyze_frame(word)
             elapsed = utime.ticks_diff(utime.ticks_ms(), start)
             bucket = elapsed // BUCKET_MS
@@ -105,8 +106,7 @@ def main():
             for m in all_motors:
                 m.send_throttle_command(0)
             utime.sleep_us(BURST_INTERVAL_US)
-        for m in all_motors:
-            m.drain()
+        utime.sleep_us(QUEUED_FRAMES_WAIT_US)
         for m in all_motors:
             m.stop()
         print("Motors stopped.")

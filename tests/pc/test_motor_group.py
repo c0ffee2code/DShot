@@ -8,7 +8,11 @@
 # kept writing to a deactivated state machine would block its caller forever;
 # that is the reason for most of the "inert" checks here.
 
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 
 import fakes
 from fakes import Clock, Pin
@@ -19,6 +23,7 @@ from capture_mailbox import FRAME_BITS, FRAME_MASK
 from gcr_decode import AM32_NOT_RUNNING_FRAME
 from motor_group import (MotorGroup, MotorGroupException,
                                   DISARMED, ARMING, ARMED)
+from group_without_reply_gate import GroupWithoutReplyGate
 
 SPEED = DSHOT_SPEEDS.DSHOT300
 ARM_MS = 200
@@ -263,8 +268,8 @@ class ArmingGateTest(GroupTestCase):
         self.assertEqual(last_reply_ms_ago, 31)
         self.assertIsNone(self.group.arming_status()[1], "unidirectional")
 
-    def test_without_wait_for_replies_the_window_alone_arms(self):
-        self.group.wait_for_replies = False  # a bench test with no ESC attached
+    def test_a_group_without_the_reply_gate_arms_on_the_window_alone(self):
+        self.group = GroupWithoutReplyGate([bidir(0, 6), uni(2, 7)])  # the bench's no-ESC group
         self.group.arm(ARM_MS)
         self.tick(ARM_MS + 1, words=())
         self.assertTrue(self.group.is_armed())
@@ -296,7 +301,7 @@ class UpdateOrderTest(GroupTestCase):
                 log.append(("send", i))
                 real()
             motor.send_zero = send_zero
-            if motor.bidirectional:
+            if motor.mailbox is not None:
                 def drain(i=i, real=motor.drain_rx):
                     log.append(("drain", i))
                     return real()
@@ -571,7 +576,6 @@ class TelemetryTest(GroupTestCase):
         result = group.decode_telemetry(0, self.CAPTURE[0])
         self.assertTrue(result["crc_ok"])
         self.assertAlmostEqual(result["erpm"], 48859.9, places=1)
-        self.assertIsNone(result["period_cycles"], "the frame receiver measures no period per capture")
 
     def test_decode_telemetry_ignores_the_token_above_the_frame(self):
         motor = BidirectionalDShot(4, Pin(8), DSHOT_SPEEDS.DSHOT300, rx_state_machine_id=5)

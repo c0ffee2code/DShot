@@ -15,6 +15,7 @@ from machine import Pin
 from array import array
 from dshot_pio import BidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
+from group_without_reply_gate import GroupWithoutReplyGate
 from core1_runner import Core1Runner, fast_stop
 from pin_sampler import PinSampler, SAMPLE_HZ
 import pin_timing
@@ -44,8 +45,7 @@ class PacingProbe:
         self.scratch = array('I', [0] * 16384)
         motors = [BidirectionalDShot(2 * i, Pin(FIRST_PIN + i), DSHOT_SPEEDS.DSHOT600, rx_state_machine_id=2 * i + 1)
                   for i in range(CHANNELS)]
-        self.group = MotorGroup(motors)
-        self.group.wait_for_replies = False          # nothing replies on these pins
+        self.group = GroupWithoutReplyGate(motors)    # nothing replies on these pins
         self.runner = Core1Runner(self.group.update, self.group.UPDATE_INTERVAL_US)
         self.sampler = PinSampler(Pin(FIRST_PIN), sample_hz=sample_hz)
         self.incomplete = 0

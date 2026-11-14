@@ -14,7 +14,7 @@ import unittest
 import fakes
 from fakes import Pin, CallLog
 from dshot_pio import (BidirectionalDShot, UnidirectionalDShot, InvalidThrottleException,
-                       UnsupportedOperationException, DSHOT_SPEEDS, MAX_THROTTLE, THROTTLE_CEILING)
+                       DSHOT_SPEEDS, MAX_THROTTLE, THROTTLE_CEILING)
 
 
 def expected_word(throttle, inverted):
@@ -50,6 +50,12 @@ class SendThrottleCommandTest(unittest.TestCase):
             for throttle in range(THROTTLE_CEILING + 1):
                 self.assertEqual(self.send(motor, throttle), expected_word(throttle, inverted),
                                  "throttle %d inverted %s" % (throttle, inverted))
+
+    def test_the_two_polarities_differ_in_the_low_four_bits_by_xor_0xf(self):
+        plain, inverted = uni(), bidir()
+        for throttle in range(THROTTLE_CEILING + 1):
+            self.assertEqual(self.send(plain, throttle) ^ self.send(inverted, throttle), 0xF << 16,
+                             "throttle %d" % throttle)
 
     def test_the_telemetry_request_bit_is_never_set(self):
         motor = bidir()
@@ -210,15 +216,23 @@ class MotorConstructionTest(unittest.TestCase):
         self.assertEqual(motor.rx_sm.rx_fifo(), 0)
         self.assertIsNone(motor.latest_capture())
 
-    def test_unidirectional_motor_has_no_telemetry(self):
-        motor = uni()
-        for call in (motor.rx_read, motor.latest_capture, lambda: motor.decode_capture(0)):
-            with self.assertRaises(UnsupportedOperationException):
-                call()
+    def test_motors_report_their_state_machines_and_their_mailbox(self):
+        self.assertEqual(uni().state_machine_ids, (0,))
+        self.assertIsNone(uni().mailbox)
+        motor = bidir()
+        self.assertEqual(motor.state_machine_ids, (0, 1))
+        self.assertIsNotNone(motor.mailbox)
 
-    def test_kinds_are_told_apart_by_the_bidirectional_flag(self):
-        self.assertFalse(uni().bidirectional)
-        self.assertTrue(bidir().bidirectional)
+    def test_each_motor_holds_the_value_its_crc_is_xored_with(self):
+        self.assertEqual(uni().crc_xor, 0x0)
+        self.assertEqual(bidir().crc_xor, 0xF)
+
+    def test_the_zero_packet_is_the_crc_of_an_all_zero_payload(self):
+        for motor in (uni(), bidir()):
+            self.assertEqual(motor.zero_packet, motor.crc_xor)
+            motor.send_zero()
+            motor.send_throttle_command(0)
+            self.assertEqual(motor.sm.sent[0], motor.sm.sent[1])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # Decodes the bidirectional DShot command frames dshot_bidir_tx puts on the line
 # from a list of edges, (time, level) in 0.1 us units. The command-frame
-# counterpart of gcr_decode.py. Not used by the driver: it lives here because it
-# is pure Python shared by the wingman's PC tools and a pin test on the Pico.
+# counterpart of driver/gcr_decode.py. Test code, not part of the library: pure
+# Python shared by the wingman's PC tools and a pin test on the Pico.
 #
 # Waveform: 8 PIO cycles per bit, line idle high. Each bit is 2 cycles high, then
 # low for 6 cycles (1) or 3 cycles (0); one falling edge per bit, so falling

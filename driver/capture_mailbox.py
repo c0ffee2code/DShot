@@ -9,9 +9,6 @@ from micropython import const
 
 from gcr_decode import AM32_NOT_RUNNING_FRAME
 
-# Words per capture: dshot_bidir_rx_frame pushes one 21-bit frame
-WORDS = 1
-
 # The slot holds frame | token << FRAME_BITS. The token gets the 9 bits left
 # below 30, as a larger integer is a heap object per publish.
 # const(): folded in where used, so drain() pays nothing for them
@@ -39,8 +36,9 @@ class CaptureMailbox:
         """
         Args:
             source: Where captures come from - anything with rx_fifo() (how many
-                words are waiting) and get(buffer) (fill an array with that many
-                words, blocking if fewer are waiting), like an RX state machine.
+                words are waiting) and get() (take one word, blocking if none is
+                waiting), like an RX state machine. A word is one whole capture,
+                below 2**30 (dshot_bidir_rx_frame pushes 21 bits).
             limit: Most captures one drain() call takes.
         """
         self.source = source
@@ -48,8 +46,6 @@ class CaptureMailbox:
 
         # frame | token << FRAME_BITS, or 0 while nothing is published
         self.slot = array('I', [0])
-        # get() fills this preallocated buffer, so a read allocates nothing
-        self.scratch = array('I', [0] * WORDS)
         self.token = 0
 
     def reset(self):
@@ -74,12 +70,10 @@ class CaptureMailbox:
         remaining = self.limit
         not_running = AM32_NOT_RUNNING_FRAME
         replies = 0
-        scratch = self.scratch
         slot = self.slot
-        while remaining and source.rx_fifo() >= WORDS:
+        while remaining and source.rx_fifo():
             remaining -= 1
-            source.get(scratch)
-            value = scratch[0]
+            value = source.get()
             token = self.token + 1
             if token > TOKEN_MAX:
                 token = 1
@@ -100,10 +94,9 @@ class CaptureMailbox:
         remaining = self.limit
         not_running = AM32_NOT_RUNNING_FRAME
         replies = 0
-        while remaining and source.rx_fifo() >= WORDS:
+        while remaining and source.rx_fifo():
             remaining -= 1
-            source.get(self.scratch)
-            value = self.scratch[0]
+            value = source.get()
             if value == not_running:
                 replies += 1
         return replies

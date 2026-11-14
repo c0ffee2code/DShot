@@ -1,4 +1,4 @@
-# driver/dshot_frame_decode.py on synthetic edges built the way dshot_bidir_tx puts a frame on the line
+# tests/bench/dshot_frame_decode.py on synthetic edges built the way dshot_bidir_tx puts a frame on the line
 # (the line idles high; each bit starts with 2 of its 8 PIO cycles high, then low for 6 cycles for a "1"
 # and 3 cycles for a "0", then high for the rest). Times are in 0.1us; one PIO cycle at DSHOT600 is
 # 2.0833 units.
@@ -7,7 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "driver"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "bench"))
 
 import dshot_frame_decode as wd  # noqa: E402
 

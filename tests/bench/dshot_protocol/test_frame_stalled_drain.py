@@ -9,14 +9,14 @@
 #
 # Commands are paced at BURST_INTERVAL_US, wide enough for a full ESC reply to
 # complete before the next command re-arms TX - a tighter pacing (e.g.
-# motor.frame_us alone, which is only the TX bit-shift time) corrupts replies
+# the TX bit-shift time alone) corrupts replies
 # by TX interference on the wire, indistinguishable from a genuine RX-FIFO-
 # stall corruption in the drained result alone (see bidirectional_dshot_review.md's
 # W25a).
 #
 # Method: arm and settle normally, then take manual control of the command
 # loop (stop Core1Runner) and send a burst of frames with no drain at all in
-# between. Drain everything with rx_read() (the diagnostic raw read, not
+# between. Drain everything with rx_sm.get() (the raw FIFO, not
 # drain_rx()/the mailbox - this wants every word that piled up, not just the
 # latest) and decode each one. Resync briefly between the two bursts by
 # resuming normal draining for a short period.
@@ -52,7 +52,7 @@ BURST_INTERVAL_US = 200
 
 def run_burst(motor, count):
     """Send `count` frames with zero drains, then drain everything with
-    rx_read() and decode it. Returns (frames, bad)."""
+    rx_sm.get() and decode it. Returns (frames, bad)."""
     print("  sending a burst of %d frames with no drain at all..." % count)
     for _ in range(count):
         motor.send_throttle_command(THROTTLE)
@@ -63,7 +63,7 @@ def run_burst(motor, count):
 
     frames = []
     while motor.rx_sm.rx_fifo() >= 1:
-        frames.append(motor.rx_read())
+        frames.append(motor.rx_sm.get())
     print("  captures drained: %d" % len(frames))
 
     bad = []

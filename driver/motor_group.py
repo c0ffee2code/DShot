@@ -7,7 +7,7 @@ import micropython
 import utime
 from array import array
 
-from dshot_pio import DShotPIO, UnsupportedOperationException
+from dshot_pio import THROTTLE_CEILING, UnsupportedOperationException
 
 # Lifecycle states, as reported by MotorGroup.state
 DISARMED = 0
@@ -46,10 +46,8 @@ class MotorGroup:
     READY_GAP_MS = 450     # without a longer gap (a longer one restarts the span),
     READY_FRESH_MS = 50    # the latest at most this long ago
 
-    # Highest throttle the protocol can carry
-    MAX_THROTTLE = DShotPIO.MAX_THROTTLE
     # TEMPORARY: highest throttle set_throttle() accepts until higher ones are tested (BUG-005)
-    THROTTLE_CEILING = DShotPIO.THROTTLE_CEILING
+    THROTTLE_CEILING = THROTTLE_CEILING
     # Lowest non-zero throttle; 1-47 are DShot commands, which this class does not send
     MIN_THROTTLE = 48
 
@@ -79,10 +77,7 @@ class MotorGroup:
         used_state_machines = []
         used_pins = []
         for motor in motors:
-            ids = [motor.state_machine_id]
-            if motor.bidirectional:
-                ids.append(motor.rx_state_machine_id)
-            for state_machine_id in ids:
+            for state_machine_id in motor.state_machine_ids:
                 if state_machine_id in used_state_machines:
                     raise MotorGroupException(
                         "State machine " + str(state_machine_id) + " is used by more than one motor"
@@ -96,8 +91,8 @@ class MotorGroup:
         self.motors = list(motors)
 
         # Resolved once, so update() does no per-tick type checks
-        self.bidir_motors = [m for m in self.motors if m.bidirectional]
-        self.bidir_indices = [i for i in range(self.motor_count) if self.motors[i].bidirectional]
+        self.bidir_motors = [m for m in self.motors if m.mailbox is not None]
+        self.bidir_indices = [i for i in range(self.motor_count) if self.motors[i].mailbox is not None]
 
         # Reply-gate evidence per bidirectional motor, in ticks_ms: start of the
         # current run of not-running replies, the latest reply, any since arm()
@@ -110,10 +105,6 @@ class MotorGroup:
 
         # One of DISARMED / ARMING / ARMED
         self.state = DISARMED
-
-        # Reply gate on. Only bench code with no ESC attached turns it off, so
-        # its bidirectional motors arm on the window alone.
-        self.wait_for_replies = True
 
         self.arm_duration_ms = self.DEFAULT_ARM_DURATION_MS
         self.arm_started_ms = 0
@@ -245,10 +236,8 @@ class MotorGroup:
         True when every bidirectional motor passes the arming gate at `now`
         (ticks_ms): replying for READY_SPAN_MS without a longer gap than
         READY_GAP_MS, the latest reply at most READY_FRESH_MS old. True for a
-        group without bidirectional motors, or with wait_for_replies off.
+        group without bidirectional motors.
         """
-        if not self.wait_for_replies:
-            return True
         for i in self.bidir_indices:
             if not self.ready_seen[i]:
                 return False
@@ -307,7 +296,7 @@ class MotorGroup:
             )
 
         motor = self.motors[motor_index]
-        if not motor.bidirectional:
+        if motor.mailbox is None:
             raise UnsupportedOperationException("Motor " + str(motor_index) + " is unidirectional")
 
         if self.state != ARMED:
@@ -328,7 +317,7 @@ class MotorGroup:
             )
 
         motor = self.motors[motor_index]
-        if not motor.bidirectional:
+        if motor.mailbox is None:
             raise UnsupportedOperationException("Motor " + str(motor_index) + " is unidirectional")
 
         return motor.decode_capture(value)

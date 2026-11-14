@@ -58,20 +58,20 @@ def frame_for(symbols):
 class CrcTest(unittest.TestCase):
     def test_inverted_crc_is_accepted_and_returns_the_data(self):
         for data12 in (0, 1, 1330, 1881, 4095):
-            kind, data = gcr_decode.check_crc(reply_number(data12))
-            self.assertEqual((kind, data), ("inverted", data12))
+            ok, data = gcr_decode.check_crc(reply_number(data12))
+            self.assertEqual((ok, data), (True, data12))
 
     def test_plain_crc_is_rejected(self):
         for data12 in (0, 1330, 1881):
             plain = (data12 ^ (data12 >> 4) ^ (data12 >> 8)) & 0xF
-            kind, data = gcr_decode.check_crc((data12 << 4) | plain)
-            self.assertIsNone(kind)
+            ok, data = gcr_decode.check_crc((data12 << 4) | plain)
+            self.assertFalse(ok)
             self.assertEqual(data, data12)
 
     def test_a_flipped_bit_is_rejected(self):
         number = reply_number(1881)
         for bit in range(16):
-            self.assertIsNone(gcr_decode.check_crc(number ^ (1 << bit))[0], "bit %d" % bit)
+            self.assertFalse(gcr_decode.check_crc(number ^ (1 << bit))[0], "bit %d" % bit)
 
 
 class DecodeTest(unittest.TestCase):
@@ -100,12 +100,10 @@ class AnalyzeFrameTest(unittest.TestCase):
     tests/pc/test_simulate_frame_receiver.py (they must agree, since both
     ultimately decode the same wire format)."""
 
-    def test_period_fields_are_none(self):
+    def test_the_result_has_exactly_the_documented_keys(self):
         frame = frame_for([GCR_CODE[n] for n in (0xA, 0x5, 0x0, 0xF)])
         result = gcr_decode.analyze_frame(frame)
-        self.assertIsNone(result["period_cycles"])
-        self.assertIsNone(result["period_us"])
-        self.assertIsNone(result["bitrate_bps"])
+        self.assertEqual(sorted(result), ["crc_ok", "data12", "erpm", "full", "marker_ok", "not_running"])
 
     def test_every_12_bit_value_round_trips(self):
         for data12 in range(4096):

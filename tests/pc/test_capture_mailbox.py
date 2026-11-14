@@ -15,7 +15,7 @@ from gcr_decode import AM32_NOT_RUNNING_FRAME
 
 
 class FakeSource:
-    """Stands in for an RX state machine: rx_fifo() counts words, get(buf) fills buf."""
+    """Stands in for an RX state machine: rx_fifo() counts words, get() takes one."""
 
     def __init__(self):
         self.words = []
@@ -26,12 +26,11 @@ class FakeSource:
     def rx_fifo(self):
         return len(self.words)
 
-    def get(self, buf):
-        # a real bulk get() blocks when fewer words are waiting than the buffer holds
-        if len(self.words) < len(buf):
-            raise AssertionError("get() would have blocked: %d words waiting" % len(self.words))
-        for i in range(len(buf)):
-            buf[i] = self.words.pop(0)
+    def get(self):
+        # a real get() blocks when no word is waiting
+        if not self.words:
+            raise AssertionError("get() would have blocked")
+        return self.words.pop(0)
 
 
 def new_mailbox(source, limit=4):

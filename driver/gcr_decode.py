@@ -53,26 +53,23 @@ def decode(frame):
 
 def check_crc(dshot_full_number):
     """
-    Return ("inverted", data12) when the CRC is AM32's inverted one, else
-    (None, data12). AM32 always inverts; accepting the plain CRC too would
-    double the chance that a corrupt frame passes.
+    Return (crc_ok, data12): crc_ok is True when the CRC is AM32's inverted
+    one. AM32 always inverts; accepting the plain CRC too would double the
+    chance that a corrupt frame passes.
     """
     crc = dshot_full_number & 0xF
     data12 = (dshot_full_number >> 4) & 0xFFF
-    if crc == crc_inverted(data12):
-        return "inverted", data12
-    return None, data12
+    return crc == crc_inverted(data12), data12
 
 
-def decode_result(frame):
+def analyze_frame(frame):
     """
-    Decode a FRAME_LENGTH_BITS-bit frame (marker on top) into a dict:
-    analyze_frame() without its period fields.
+    Decode one frame as dshot_bidir_rx_frame pushes it, a
+    FRAME_LENGTH_BITS-bit integer with the marker on top, into a dict:
 
       full        - the 16-bit DShot number, or None if a GCR lookup failed
       marker_ok   - the marker bit read 0; False hints at a garbled first bit
       crc_ok      - the CRC matched (inverted polarity only)
-      crc_kind    - "inverted" on a CRC match, else None
       data12      - the 12-bit payload (mantissa, exponent), if decoded
       erpm        - electrical RPM, or None if not decoded or CRC-invalid
       not_running - data12 is AM32_NOT_RUNNING_DATA12; None if CRC-invalid.
@@ -86,35 +83,19 @@ def decode_result(frame):
         "full": full,
         "marker_ok": (frame >> (FRAME_LENGTH_BITS - 1)) == 0,
         "crc_ok": False,
-        "crc_kind": None,
         "data12": None,
         "erpm": None,
         "not_running": None,
     }
     if full is None:
         return result
-    crc_kind, data12 = check_crc(full)
-    result["crc_kind"] = crc_kind
+    crc_ok, data12 = check_crc(full)
     result["data12"] = data12
-    result["crc_ok"] = crc_kind is not None
-    if crc_kind is not None:
+    result["crc_ok"] = crc_ok
+    if crc_ok:
         result["not_running"] = data12 == AM32_NOT_RUNNING_DATA12
         mantissa = data12 & 0x1FF
         exponent = (data12 >> 9) & 0x7
         eperiod_us = mantissa << exponent
         result["erpm"] = None if eperiod_us == 0 else 60_000_000 / eperiod_us
-    return result
-
-
-def analyze_frame(frame):
-    """
-    Decode one frame as dshot_bidir_rx_frame pushes it: a
-    FRAME_LENGTH_BITS-bit integer, marker on top. Returns decode_result()'s
-    dict plus period_cycles, period_us and bitrate_bps, always None: the
-    receiver's bit period is fixed by its clock, not measured.
-    """
-    result = decode_result(frame)
-    result["period_cycles"] = None
-    result["period_us"] = None
-    result["bitrate_bps"] = None
     return result

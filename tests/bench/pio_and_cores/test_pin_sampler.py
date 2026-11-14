@@ -30,6 +30,7 @@ from machine import Pin
 from array import array
 from dshot_pio import BidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
+from group_without_reply_gate import GroupWithoutReplyGate
 from core1_runner import Core1Runner, fast_stop
 from pin_sampler import PinSampler, SAMPLE_HZ
 import pin_timing
@@ -56,8 +57,7 @@ def main():
     scratch = array('I', [0] * EDGE_CAPACITY)
     motors = [BidirectionalDShot(2 * i, Pin(FIRST_PIN + i), DSHOT_SPEEDS.DSHOT600, rx_state_machine_id=2 * i + 1)
               for i in range(CHANNELS)]
-    group = MotorGroup(motors)
-    group.wait_for_replies = False          # nothing replies on these pins
+    group = GroupWithoutReplyGate(motors)   # nothing replies on these pins
     runner = Core1Runner(group.update, group.UPDATE_INTERVAL_US)
     sampler = PinSampler(Pin(FIRST_PIN))
     completed = False

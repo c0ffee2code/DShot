@@ -23,7 +23,7 @@ class BidirProfilesTest(unittest.TestCase):
 
     def test_profiles_carry_the_fields_the_driver_reads(self):
         for speed, profile in BIDIR_PROFILES.items():
-            self.assertEqual(sorted(profile), ["expected_ratio", "ratio_tolerance", "rx_speed"], speed)
+            self.assertEqual(sorted(profile), ["expected_ratio", "rx_speed"], speed)
 
     def test_the_reply_runs_at_five_quarters_of_the_command_rate_within_a_few_percent(self):
         # AM32 answers at 5/4 of the DShot bit rate; oscillators run a few percent off
@@ -35,10 +35,6 @@ class BidirProfilesTest(unittest.TestCase):
     def test_the_receiver_clock_gives_about_nine_cycles_per_reply_bit(self):
         for profile in BIDIR_PROFILES.values():
             self.assertTrue(8.5 < profile["expected_ratio"] < 9.0, profile["expected_ratio"])
-
-    def test_the_bare_divisor_path_is_used(self):
-        for profile in BIDIR_PROFILES.values():
-            self.assertEqual(profile["ratio_tolerance"], 0.0)
 
 
 class RunLengthReceiverClockTest(unittest.TestCase):

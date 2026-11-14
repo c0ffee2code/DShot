@@ -58,13 +58,13 @@ class FakeRxStateMachine:
 
     def rx_fifo(self):
         # The frame is worked out here, outside the writer's publish, so get()
-        # below is as cheap as the real bulk read
+        # below is as cheap as the real read
         self.next_frame = frame_for(self.n % TOKEN_MAX + 1)
         return 1
 
-    def get(self, buf):
-        buf[0] = self.next_frame
+    def get(self):
         self.n += 1
+        return self.next_frame
 
 
 class Writer:

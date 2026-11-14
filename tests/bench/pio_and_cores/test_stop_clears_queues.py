@@ -16,7 +16,7 @@ from machine import Pin
 from dshot_pio import UnidirectionalDShot, BidirectionalDShot, DSHOT_SPEEDS
 
 SPEED = DSHOT_SPEEDS.DSHOT600
-DEPTH = UnidirectionalDShot.TX_FIFO_DEPTH
+DEPTH = 4  # words the TX FIFO holds before put() blocks
 
 failures = 0
 

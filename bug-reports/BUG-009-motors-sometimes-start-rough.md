@@ -349,7 +349,7 @@ throttles - the model itself has not been independently validated against a know
 this bench's own history, so this is evidence against the echo explanation, not a ruled-out
 verdict. (`driver/gcr_decode.py`'s docstring says the same thing - keep both in agreement if either
 changes.) *Note 2026-11-13:* `driver/gcr_decode.py` no longer carries this account; its `decode_result()` docstring
-says only that a CRC-valid reply can carry `data12=2` right after a start. This report is the record.
+says only that a CRC-valid reply can carry `data12=2` right after a start. This report is the record. *Note 2026-11-14:* `decode_result()` no longer exists; `gcr_decode.analyze_frame()` is the one decoder entry point.
 
 **On the wire, 2026-10-28: the `data12=2` word is the ESC's own reply, not an echo.** A second Pico recorded the
 signal line (every edge, 0.1us resolution, decoded from the waveform alone - CLAUDE.md's "wingman"). *Note 2026-11-12:* the wingman is described in `.claude/rules/bench-harness.md` and `tests/README.md`; CLAUDE.md holds no such section. Three

@@ -242,7 +242,7 @@ def replay(session, dshot_speed, mistune, rng):
             continue
         reference = reconstruct_frame(words, edges, ratio)
         number = decode(reference)
-        if number is None or check_crc(number)[0] is None:
+        if number is None or not check_crc(number)[0]:
             continue
         valid += 1
         frame = run(waveform(words), scale, rng.random() * scale)

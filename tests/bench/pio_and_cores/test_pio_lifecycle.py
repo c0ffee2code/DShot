@@ -25,6 +25,7 @@ import gc
 from machine import Pin
 from dshot_pio import BidirectionalDShot, UnidirectionalDShot, DSHOT_SPEEDS
 from motor_group import MotorGroup
+from group_without_reply_gate import GroupWithoutReplyGate
 from capture_mailbox import FRAME_BITS
 import utime
 
@@ -38,7 +39,7 @@ RUN_MS = 60
 
 
 def build():
-    return MotorGroup([
+    return GroupWithoutReplyGate([
         BidirectionalDShot(0, Pin(BIDIR_PIN), DSHOT_SPEED, rx_state_machine_id=1),
         UnidirectionalDShot(4, Pin(UNI_PIN), DSHOT_SPEED),
     ])
@@ -52,9 +53,7 @@ def run_for(group, milliseconds):
 
 
 def arm_fully(group):
-    # No ESC is attached, so nothing will ever pass MotorGroup's reply gate;
-    # arm on the window alone
-    group.wait_for_replies = False
+    # No ESC is attached; the group is a GroupWithoutReplyGate, so the window alone arms it
     group.arm(ARM_MS)
     end = utime.ticks_add(utime.ticks_ms(), ARM_MS + 500)
     while not group.is_armed():

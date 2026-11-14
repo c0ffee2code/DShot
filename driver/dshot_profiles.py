@@ -20,13 +20,11 @@ class DSHOT_SPEEDS:
 #                    times its reply from its MCU's own timer, so the rate is
 #                    a fixed offset from nominal. frame_rx_speed() derives the
 #                    frame receiver's clock from these two.
-#   ratio_tolerance  half-width of a band a decoder may search around
-#                    expected_ratio; 0.0 means none. The driver does not read it.
 BIDIR_PROFILES = {
     # rx_speed = 9 x the nominal 375kHz reply rate
-    DSHOT_SPEEDS.DSHOT300: {"rx_speed": 3_375_000, "expected_ratio": 8.7069, "ratio_tolerance": 0.0},
+    DSHOT_SPEEDS.DSHOT300: {"rx_speed": 3_375_000, "expected_ratio": 8.7069},
     # rx_speed = 9 x the nominal 750kHz reply rate
-    DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129, "ratio_tolerance": 0.0},
+    DSHOT_SPEEDS.DSHOT600: {"rx_speed": 6_750_000, "expected_ratio": 8.7129},
 }
 
 # Cycles per reply bit in dshot_pio.dshot_bidir_rx_frame, fixed by its instructions

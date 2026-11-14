@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "driver"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import fakes  # noqa: F401  puts driver/ on sys.path for utime etc.
-from gcr_decode import decode, check_crc, decode_result, FRAME_LENGTH_BITS
+from gcr_decode import decode, check_crc, analyze_frame, FRAME_LENGTH_BITS
 from simulate_frame_receiver import sample_cycle, find_edges, reconstruct_frame
 from dshot_profiles import BIDIR_PROFILES, DSHOT_SPEEDS
 
@@ -104,7 +104,7 @@ def synthetic_capture(number, period, edge_offset=0.0):
 def analyze_capture(words, rx_clock_hz, expected_ratio):
     """
     Test-only reassembly of the old driver pipeline (find_edges ->
-    reconstruct_frame -> decode_result), now that it is no longer one
+    reconstruct_frame -> analyze_frame), now that it is no longer one
     production function - each piece lives wherever it is actually used, and
     this helper just chains them the way the removed analyze_capture() did,
     for tests that want that whole-pipeline result shape.
@@ -112,12 +112,7 @@ def analyze_capture(words, rx_clock_hz, expected_ratio):
     edges = find_edges(words)
     if not edges:
         return None
-    result = decode_result(reconstruct_frame(words, edges, expected_ratio))
-    period_us = expected_ratio / rx_clock_hz * 1_000_000
-    result["period_cycles"] = expected_ratio
-    result["period_us"] = period_us
-    result["bitrate_bps"] = int(1_000_000 / period_us) if period_us else None
-    return result
+    return analyze_frame(reconstruct_frame(words, edges, expected_ratio))
 
 
 class SampleTimingTest(unittest.TestCase):
@@ -167,18 +162,11 @@ class RealCaptureTest(unittest.TestCase):
     def test_dshot600_captures_from_the_bench(self):
         self.check_all("DSHOT600", REAL_DSHOT600)
 
-    def test_the_reported_bit_period_is_the_profiles(self):
-        profile = PROFILES["DSHOT300"]
-        result = analyze_capture(REAL_DSHOT300[0][0], profile["rx_speed"], profile["expected_ratio"])
-        self.assertEqual(result["period_cycles"], profile["expected_ratio"])
-        self.assertAlmostEqual(result["period_us"], profile["expected_ratio"] / profile["rx_speed"] * 1e6)
-
     def test_matches_analyze_frame_on_the_same_reply(self):
         """The reconstruction math here and gcr_decode.analyze_frame() must
         agree on a real reply, since dshot_bidir_rx_frame hands the CPU
         exactly the frame this file's reconstruct_frame() would also build
         from the same raw samples."""
-        from gcr_decode import analyze_frame
         for words, number, erpm in REAL_DSHOT300:
             profile = PROFILES["DSHOT300"]
             edges = find_edges(words)

@@ -26,7 +26,9 @@ so no scenario is always first or always last in a round - without it, a
 fixed order confounds "which scenario" with "which position" and "how long
 since the batch started."
 
-Example, interleaving the two four-motor scenarios for 10 rounds:
+The four-motor pair (bidirectional and unidirectional) exists at both speeds: `four_channel_bidirectional_600.json` and `four_channel_unidirectional_600.json`, and the same two with `_300` (identical except for `dshot_speed`).
+
+Example, interleaving the two DSHOT600 four-motor scenarios for 10 rounds:
 ```
 python scripts/run_scenarios.py \
   --scenario tests/bench/dshot_protocol/scenarios/four_channel_bidirectional_600.json \

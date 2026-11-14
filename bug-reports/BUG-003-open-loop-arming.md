@@ -26,6 +26,9 @@ gap-reset entirely; the floor is now plain elapsed time since `arm()`.
   raised to `arm_duration_ms + 16000`, `run_scenario.py`'s `ARM_TIMEOUT_MARGIN_MS`).
 - `MotorGroup.wait_for_replies` (default `True`) keeps the gate on; set it `False` to turn the
   gate off. Only `tests/device/test_pio_lifecycle.py` does that, because it has no ESC attached.
+  *Update 2026-11-13:* the attribute no longer exists. Bench code with no ESC attached uses
+  `GroupWithoutReplyGate` (`tests/bench/group_without_reply_gate.py`), a `MotorGroup` whose
+  `bidir_ready()` returns True.
 - Unit tests: `ArmingGateTest` in `tests/unit/test_motor_group.py`, the not-running count in
   `test_capture_mailbox.py`, and the constant's derivation in `test_gcr_decode.py`.
 - *Paths (2026-11-11):* `tests/unit/` is now `tests/pc/`, and `tests/device/test_pio_lifecycle.py`

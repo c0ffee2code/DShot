@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "driver"))
+sys.path.insert(0, str(ROOT / "tests" / "bench"))
 import gcr_decode
 import dshot_frame_decode
 

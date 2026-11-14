@@ -14,7 +14,7 @@ from rp2 import PIO, StateMachine, asm_pio
 import gcr_decode
 from capture_mailbox import CaptureMailbox, FRAME_MASK
 # DSHOT_SPEEDS and BIDIR_PROFILES are also imported from here by callers
-from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES, FRAME_CYCLES_PER_BIT, frame_rx_speed
+from dshot_profiles import DSHOT_SPEEDS, BIDIR_PROFILES, frame_rx_speed
 
 # Highest value of the 11-bit throttle field of a DShot packet.
 MAX_THROTTLE = 2047
@@ -75,7 +75,7 @@ def dshot_bidir_tx():
 # Bidirectional DShot RX, paired with dshot_bidir_tx on state machine id + 1 of
 # the same block. After the TX's irq(rel(1)) it waits for the line high plus
 # 26 cycles, then for the reply's falling marker edge, and reads exactly
-# 21 bits, 16 cycles per bit (FRAME_CYCLES_PER_BIT): one read per bit, the count
+# 21 bits, 16 cycles per bit (dshot_profiles.FRAME_CYCLES_PER_BIT): one read per bit, the count
 # restarting at every flip so timing error cannot build up across a frame.
 # Autopush hands the CPU one word per capture: the 21-bit frame, marker on top.
 # With a silent ESC it captures the driver's own next frame instead.
@@ -116,23 +116,20 @@ def dshot_bidir_rx_frame():
 class DShotPIO:
     """
     Common base of UnidirectionalDShot and BidirectionalDShot; construct one of
-    those, not this. Holds the TX state machine, start(), stop(), drain() and
-    the senders.
+    those, not this. Holds the TX state machine, start(), stop() and the senders.
     """
 
-    # Words the TX FIFO holds before put() blocks
-    TX_FIFO_DEPTH = 4
-
-    MAX_THROTTLE = MAX_THROTTLE
-    THROTTLE_CEILING = THROTTLE_CEILING
-
-    # True on BidirectionalDShot: its packets carry the inverted CRC
-    bidirectional = False
-
-    # Creates the state machine inactive; start() enables it
-    def __init__(self, state_machine_id, pin, dshot_speed, program):
+    # Creates the state machine inactive; start() enables it. crc_xor is what the
+    # CRC is XORed with: 0x0 for plain DShot, 0xF for bidirectional (inverted CRC).
+    def __init__(self, state_machine_id, pin, dshot_speed, program, crc_xor):
         self.state_machine_id = state_machine_id
         self.pin = pin
+
+        # Every state machine id this motor uses; the group checks them for sharing
+        self.state_machine_ids = (state_machine_id,)
+
+        # The CaptureMailbox holding the latest reply capture; None on a motor with no receiver
+        self.mailbox = None
 
         # For re-initialising on every start() and stop()
         self.dshot_speed = dshot_speed
@@ -141,11 +138,10 @@ class DShotPIO:
         self.sm = StateMachine(state_machine_id, program, freq=dshot_speed,
                                 sideset_base=pin, set_base=pin)
 
-        # Duration of one 16-bit frame at 8 PIO cycles per bit, rounded up, in us
-        self.frame_us = (16 * 8 * 1_000_000 + dshot_speed - 1) // dshot_speed
+        self.crc_xor = crc_xor
 
-        # Packet for throttle 0, fixed for this instance; see send_zero()
-        self.zero_packet = 0x000F if self.bidirectional else 0x0000
+        # Packet for throttle 0, fixed for this instance; see send_zero(). Its CRC is crc_xor.
+        self.zero_packet = crc_xor
 
     def init_state_machines(self):
         """
@@ -159,23 +155,6 @@ class DShotPIO:
 
     def start(self):
         self.sm.active(1)
-
-    def drain(self):
-        """
-        Block until every queued frame has gone out on the wire.
-
-        Call it before stop() when queued frames must still reach the ESC;
-        stop() discards them. Afterwards the line is at its idle level (low;
-        for a bidirectional motor high and released). Meant for an active
-        state machine; on an inactive one it returns after a few frame times.
-        """
-        for _ in range(self.TX_FIFO_DEPTH):
-            if not self.sm.tx_fifo():
-                break
-            utime.sleep_us(self.frame_us)
-
-        # An empty FIFO means the last word is in the shift register, still being sent
-        utime.sleep_us(self.frame_us)
 
     def stop(self):
         """
@@ -220,18 +199,16 @@ class DShotPIO:
         always 0; AM32 replies in bidirectional mode regardless.
         """
         # 11-bit throttle, telemetry bit 0
-        packetValue = throttle << 1
+        packet_value = throttle << 1
 
-        # 4-bit CRC, inverted for bidirectional DShot
-        crc = (packetValue ^ (packetValue >> 4) ^ (packetValue >> 8)) & 0x0F
-        if self.bidirectional:
-            crc = (~crc) & 0x0F
+        # 4-bit CRC; crc_xor inverts it for bidirectional DShot
+        crc = ((packet_value ^ (packet_value >> 4) ^ (packet_value >> 8)) ^ self.crc_xor) & 0x0F
 
         # SSSSSSSSSSSTCCCC: throttle, telemetry bit, CRC
-        dShotPacket = (packetValue << 4) | crc
+        dshot_packet = (packet_value << 4) | crc
 
         # put() shifts the 16 bits to the top of the word; a Python shift would allocate
-        self.sm.put(dShotPacket, 16)
+        self.sm.put(dshot_packet, 16)
 
     @micropython.native
     def send_zero(self):
@@ -241,23 +218,12 @@ class DShotPIO:
         """
         self.sm.put(self.zero_packet, 16)
 
-    # Telemetry interface. Only BidirectionalDShot captures replies; on any
-    # other motor these raise, as the application asked the wrong kind of motor.
-    def rx_read(self):
-        raise UnsupportedOperationException("This motor captures no telemetry")
-
-    def latest_capture(self):
-        raise UnsupportedOperationException("This motor captures no telemetry")
-
-    def decode_capture(self, value):
-        raise UnsupportedOperationException("This motor captures no telemetry")
-
 
 class UnidirectionalDShot(DShotPIO):
     """Sends commands only, with the plain DShot waveform; no reply capture."""
 
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
-        super().__init__(state_machine_id, pin, dshot_speed, dshot)
+        super().__init__(state_machine_id, pin, dshot_speed, dshot, 0x0)
 
     def start(self):
         # Reloading the program takes the pin back from stop()'s plain output
@@ -279,8 +245,6 @@ class BidirectionalDShot(DShotPIO):
     the driver's own next frame, and at some throttles that capture passes the
     CRC.
     """
-
-    bidirectional = True
 
     # Most captures one drain_rx() or discard_rx() call takes; bounds the call's time
     RX_DRAIN_LIMIT = 4
@@ -327,7 +291,8 @@ class BidirectionalDShot(DShotPIO):
         # Holds the released line at its idle high; a floating low would read as a reply
         pin.init(Pin.IN, Pin.PULL_UP)
 
-        super().__init__(state_machine_id, pin, dshot_speed, dshot_bidir_tx)
+        super().__init__(state_machine_id, pin, dshot_speed, dshot_bidir_tx, 0xF)
+        self.state_machine_ids = (state_machine_id, rx_state_machine_id)
 
         # jmp_pin is the pin the receiver's jmp(pin, ...) reads
         rx_init_kwargs = {"in_base": pin, "jmp_pin": pin}
@@ -365,19 +330,6 @@ class BidirectionalDShot(DShotPIO):
         self.init_state_machines()
         self.rx_sm.active(1)
         super().start()
-
-    def rx_read(self):
-        """
-        Return the next raw word from the RX FIFO, or None if it is empty.
-
-        One word per capture: a 21-bit reply frame, or the driver's own next
-        frame when the ESC is silent. Undecoded (see decode_capture()).
-        Diagnostic access: use this or drain_rx() on a motor, never both, as
-        they consume the same FIFO.
-        """
-        if not self.rx_sm.rx_fifo():
-            return None
-        return self.rx_sm.get()
 
     def latest_capture(self):
         """

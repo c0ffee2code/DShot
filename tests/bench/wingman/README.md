@@ -21,7 +21,7 @@ test groups, not a test group: the scenario runner imports `main_pico/start_line
 
 The session-level scripts that use them stay in `scripts/` and reach them through `scripts/bench_paths.py` (one `import` that puts the wingman tools and `driver/` on the path; the unit tests do the same): `run_session.py` (starts the wingman for a session),
 `session_summary.py` (the session verdict: the only judge of a run, from the observer's recording; the main Pico reports facts only), `session_timeline.py` (the observer's record and the main Pico's on one time axis).
-The frame decoder both the observer tools and the main Pico's pin test read is `driver/dshot_frame_decode.py`.
+The frame decoder both the observer tools and the main Pico's pin test read is `tests/bench/dshot_frame_decode.py`.
 
 ## What the wingman is told, and by what
 
