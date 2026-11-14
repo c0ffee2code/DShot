@@ -90,6 +90,20 @@ and keeps no older layout (`.claude/rules/esc-buddy.md`).
   median eRPM at throttle 215 read about 11 % lower on the two ESCs with a motor (a few decoded samples per run). One discarded four-channel
   run on 2.22 did not arm: one ESC gave no reply for 18 s; the next run, after a power cycle, armed. One occurrence, not counted as evidence
   either way for the arming rate, which has to be measured again anyway.
+  *Update 2026-11-14:* 2.22 also changes how the F421 tells DSHOT600 from DSHOT300 (`specification/AM32.md` section 3): the capture
+  clock of its speed classification went from 120 MHz / 18 (a 0.15 us tick, `Mcu/f421/Src/IO.c` line 16, `/ 7` up to 2.21) to
+  120 MHz / 21 (0.175 us, `/ 6`). Our unidirectional throttle-0 frame at DSHOT600 (all bits 0, shortest pulse 0.625 us) counts as 4 or
+  5 ticks on 2.16, so by the source it matched the DSHOT300 band; whether that had any effect was never observed (no reply on a
+  unidirectional line, and AM32's bit decision is relative to the frame length). On 2.22 it counts as 3 or 4 and matches DSHOT600
+  through any pulse counted as 3; the margin is 0.075 us, under the observer's 0.1 us resolution, so the observer's check reports a
+  warning for it. How often a first frame could count only 4s is not quantified. Bidirectional frames are not affected (their inverted
+  CRC adds a 0.417 us pulse, 2.4 ticks), nor is DSHOT300 (7.14 ticks, band 4 to 8). The 2026-11-14 recordings on 2.22 agree: both
+  bidirectional speeds pass the classification and the reply bit time, and the unidirectional lines read 0.6 us (DSHOT600) and 1.2 us
+  (DSHOT300). Comparing the rest of the code `specification/AM32.md` describes, and the KV, poles and low-RPM duty cap code BUG-009
+  relies on, found one more change in behaviour the bench depends on (other parts of `Src/main.c` changed and were not compared, as
+  listed above): the stuck-rotor protection switches
+  from its long limit (2.27 s) to its short one (0.25 s) at adjusted throttle 300 instead of 150, so every throttle up to the bench's
+  250 ceiling now gets the long limit (BUG-009, amendment 2026-11-14).
 - A flash takes a few minutes per ESC (108 chunks of about 0.2 s, then a read-back of the same size).
 - A retried chunk that does not start a page programs over flash that is already written. Real flash might reject that; it has not been
   observed. The remedy would be the same as for any stopped flash: run it again (the boot byte is still 0).

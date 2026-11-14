@@ -111,7 +111,7 @@ baseline decides, and the limits must be set above it.
 
 **Stuck-rotor timing test (prepared 2026-11-01, not yet run).** Question: are the "starts, then quits" runs (throttle 125 quit after about
 2.2-2.3 s, 170 after about 0.25-0.3 s, on channel 4 with props) AM32's stuck-rotor protection cutting the motor? Source facts (`Src/main.c`
-at the commit AM32.md cites): while `running`, every 22.5 ms interval without a back-EMF zero crossing counts; past the limit the ESC cuts the
+at commit 55c96847; the 150 step is the same in v2.16, `Src/main.c` L2004): while `running`, every 22.5 ms interval without a back-EMF zero crossing counts; past the limit the ESC cuts the
 phases and reports "not running". The limit is 100 intervals when the adjusted throttle is below 150 and 10 at 150 or above, and the cut comes when the counter *exceeds* it (`>`), so
 after 101 intervals (2.27 s) or 11 (0.25 s). In normal (non-3D) mode the adjusted throttle is the DShot value itself (`main.c` L1141 `adjusted_input = newinput;`,
 `dshot.c` L102/L131 `newinput = tocheck`, the raw 11-bit value); whether this ESC is in 3D mode is unknown, but the 125 and 170 observations fit normal mode
@@ -172,6 +172,15 @@ this one) remain unexplained. (3) GPIO 9 failed (cut) in 4 of these 8 runs and i
 *What the repo cannot say.* Why GPIO 9's rotor fails to catch. Already ruled out by test (2026-10-31): the state machine / PIO block assignment and the
 motors themselves (rotated between channels, all work on the other channels, owner), and now the position in the group order. Hardware actions that
 remain are yours to choose; the software-testable one left is the throttle profile around the start (a hold at 60 and a ramp, which crosses 150 on the way).
+
+**Amendment 2026-11-14 (AM32 2.22).** *Finding:* in AM32 2.22, on the bench since 2026-11-10, the step between the two stuck-rotor
+limits is at adjusted throttle **300**, not 150 (`Src/main.c` L2209 at v2.22, `specification/AM32.md` section 18); the limits themselves
+(101 and 11 intervals of 22.5 ms) are unchanged. The 125, 149, 150 and 170 results above were recorded on 2.16 and stand as recorded.
+*Decision:* the stuck-rotor timing test stays at 149 / 150; it is not moved to 299 / 300. *Consequences:* on 2.22 every throttle the
+bench sends (up to the 250 ceiling), the start-quality throttle 215 included, is under the long limit: a rotor that stops producing
+zero crossings is cut about 2.27 s after the last one, not 0.25 s, so a cut 0.25-0.3 s after the step on 2.22 is not this mechanism.
+This is expected to matter with the RPM disks, which are heavier than the props (owner): a disk that does not catch is driven for up to
+about 2.27 s before the ESC cuts it.
 
 **Result 3: start-health baseline at the KPI throttle 215 (2026-11-01 21:29-21:52, 28 runs, Gemfan 2218 3-Blade on all 4 motors, four-channel bidirectional
 scenario, `decode_every` 50, spy recording; telemetry-based, because the optical disks are not mounted).**

@@ -117,6 +117,30 @@ class InputSideTests(unittest.TestCase):
         late = recording([0] * 1100 + [60] * 10)
         self.assertEqual(result(check.run_checks(late, from_first_frame=True), "to arm").status, check.PASS)
 
+    def unidirectional_zero_frames(self, speed):
+        # throttle 0 with the plain CRC is an all-zero word: every pulse AM32 compares is a 0-bit's high, 3 of 8 cycles
+        period = PERIOD * 600 / speed
+        edges = []
+        for i in range(20):
+            t = 100 + i * SPACING
+            for _ in range(16):
+                edges += [(t, 0), (t + period * 3 / 8, 1)]
+                t += period
+        return [r for r in observer_edge_log.analyse(edges, unidirectional=True) if r["tx"] is not None]
+
+    def test_unidirectional_dshot300_classifies_with_margin_on_v2_22(self):
+        # 1.25us is 7.1 ticks of 0.175us, counted as 7 or 8: inside 4..8 with margin (v2.21's 0.15us tick: 8.3, at the edge)
+        band = check.check_speed_band(self.unidirectional_zero_frames(300))
+        self.assertEqual(band.status, check.PASS, band.detail)
+        self.assertAlmostEqual(band.values["designed_shortest_us"], 1.25, places=3)
+
+    def test_unidirectional_dshot600_is_inside_the_band_by_less_than_the_observer_resolves(self):
+        # 0.625us is 3.57 ticks, under 4, but 0.075us from the edge: a WARN, not a FAIL
+        band = check.check_speed_band(self.unidirectional_zero_frames(600))
+        self.assertEqual(band.status, check.WARN, band.detail)
+        self.assertAlmostEqual(band.values["designed_shortest_us"], 0.625, places=3)
+        self.assertLess(band.values["designed_shortest_us"] / check.IC_TICK_US, 4)
+
     def test_unidirectional_has_no_reply_checks(self):
         results = check.run_checks(self.good(), unidirectional=True)
         self.assertEqual(results[-1].status, check.NA)

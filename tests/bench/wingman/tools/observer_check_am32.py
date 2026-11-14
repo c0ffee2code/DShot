@@ -3,7 +3,7 @@ observer_check_am32.py - does what the observer recorded on the wire match what 
 
   python tests/bench/wingman/tools/observer_check_am32.py captures/<session>/signal_observation.bin [--unidirectional] [--from-first-frame]
 
-Each check is derived from AM32's source (pinned commit 55c96847, the same one specification/AM32.md cites:
+Each check is derived from AM32's source (release 2.22, commit 3863f9df, as specification/AM32.md:
 Src/dshot.c computeDshotDMA, Src/signal.c detectInput / checkDshot / the frame-time window, Src/main.c
 arming gate, signal-loss timeout and stuck-rotor protection) and tested against the edges the wingman
 recorded, so it reads the wire and not our own decoder's opinion of it. Statuses: PASS (the recording
@@ -20,8 +20,8 @@ saw (arming gate, the 101-frame latch) can only say INFO.
 The reply-side checks were first run on recordings with an ESC attached on 2026-10-28; their synthetic tests are in
 tests/pc/test_observer_check_am32.py. The input-side checks read our own frames.
 
-F421 is the only MCU family supported (owner, 2026-11-05): the bench ESC is an F421 (AM32 2.16, target
-SKYSTARS_KM55_V2_F421, read from the ESCs with tools/esc_buddy on 2026-11-04, specification/KM55A2_DEFAULTS.md). The
+F421 is the only MCU family supported (owner, 2026-11-05): the bench ESC is an F421 (target SKYSTARS_KM55_V2_F421,
+read from the ESCs with tools/esc_buddy on 2026-11-04, specification/KM55A2_DEFAULTS.md; AM32 2.22 since 2026-11-10). The
 speed classification's tick and the expected reply bit time are the F421 ones. Another ESC's family is not guessed here:
 read it with tools/esc_buddy/esc_buddy_run.py --read, then add its figures; a reply bit time off the F421 figure is
 reported as a warning for that reason. (The 1.02 s arming gate is the same on F421 and F051: a 1 MHz x 51 us loop timer.)
@@ -38,9 +38,13 @@ import observer_stats
 
 UNIT_US = 0.1
 MCU = "F421"                        # the only supported family (see the docstring)
-# capture-clock tick while the speed is classified: Mcu/f421/Src/IO.c, 120 MHz / (ic_timer_prescaler 17 + 1) = 6.667 MHz
-# (checked at AM32 v2.16, the bench ESC's firmware: CPU_FREQUENCY_MHZ 120, ic_timer_prescaler = 120 / 7)
-IC_TICK_US = 18 / 120
+# capture-clock tick while the speed is classified: Mcu/f421/Src/IO.c, 120 MHz / (ic_timer_prescaler 20 + 1) = 5.714 MHz
+# (AM32 v2.22, the bench ESC's firmware: CPU_FREQUENCY_MHZ 120, ic_timer_prescaler = 120 / 6; v2.21 and earlier used
+# 120 / 7, a 0.15 us tick)
+IC_TICK_US = 21 / 120
+# the transmit programs' shortest pulse (driver/dshot_pio.py, 8 cycles per bit): 2 cycles beside a 1-bit, 3 in a frame
+# whose first 15 bits are all 0 (the 16th bit's last pulse ends the frame and is not one of the intervals AM32 compares)
+TX_CYCLES_PER_BIT = 8
 RESOLUTION_US = 0.1                 # the observer's edge resolution
 CLASSIFY_FRAMES = 8                 # the speed is classified on the first frames AM32 captures
 LATCH_FRAMES = 101                  # high_pin_count > 100
@@ -51,6 +55,7 @@ SIGNAL_LOSS_DISARMED_MS = 2000
 TUNE_GAP_MS = (250, 400)            # playInputTune: three 100 ms beeps with interrupts disabled
 REBOOT_GAP_MS = 550                 # startup tune 600 ms, bootloader, then the 101-frame latch again
 STUCK_TIMEOUT_MS = 22.5
+STUCK_STEP_THROTTLE = 300          # below it the long limit (101 intervals), at or above the short one (11)
 REPLY_BIT_US = 1.2833                # F421 DSHOT600 reply bit time (half the DSHOT300 figure in AM32.md section 13)
 REPLY_BIT_TOLERANCE_PCT = 1.5
 
@@ -154,8 +159,8 @@ def check_speed_band(frames):
     speed = frame_speed(frames)
     name = "the first frames classify as DSHOT%d (shortest edge interval, average interval)" % speed
     source = ("signal.c detectInput/checkDshot: smallest of the intervals between edges 0-30 in 1..3 ticks and sum/32 < 60 ticks for "
-              "DSHOT600, in 4..8 ticks and sum/32 < 100 for DSHOT300 (F421: 0.15 us per tick - holds only if the reply bit time is "
-              "the F421 one)")
+              "DSHOT600, in 4..8 ticks and sum/32 < 100 for DSHOT300 (F421 on v2.22: 0.175 us per tick - holds only if the reply bit "
+              "time is the F421 one); AM32 counts whole ticks, so a pulse is read as the tick count below or above its length")
     low_ticks, high_ticks, average_limit = (1, 3.999, 60) if speed == 600 else (4, 8, 100)
     smallest = []
     averages = []
@@ -167,14 +172,17 @@ def check_speed_band(frames):
         averages.append(sum(intervals) / 32 * UNIT_US / IC_TICK_US)
     worst = max(smallest)
     best = min(smallest)
+    bit_us = 1000 / speed
+    designed = max((2 if any(r["tx"]["bits"][:15]) else 3) * bit_us / TX_CYCLES_PER_BIT for r in frames[:CLASSIFY_FRAMES])
     detail = ("first %d frames (throttle %s): shortest interval %.1f-%.1f us (%.1f-%.1f ticks; the band is %s ticks), "
-              "average %.1f-%.1f ticks (under %d)") % (
+              "average %.1f-%.1f ticks (under %d); the transmit program's own shortest pulse in these frames is %.3f us "
+              "(%.2f ticks)") % (
         len(smallest), "0" if all(r["tx"]["throttle"] == 0 for r in frames[:CLASSIFY_FRAMES]) else "mixed", best, worst,
         best / IC_TICK_US, worst / IC_TICK_US, "%g to under 4" % low_ticks if speed == 600 else "4 to 8",
-        min(averages), max(averages), average_limit)
+        min(averages), max(averages), average_limit, designed, designed / IC_TICK_US)
     low_us, high_us = low_ticks * IC_TICK_US, high_ticks * IC_TICK_US
     values = {"speed": speed, "shortest_min_us": best, "shortest_max_us": worst, "band_low_us": low_us, "band_high_us": high_us,
-              "average_ticks": max(averages), "average_limit_ticks": average_limit}
+              "average_ticks": max(averages), "average_limit_ticks": average_limit, "designed_shortest_us": designed}
     if worst - RESOLUTION_US >= high_us or best + RESOLUTION_US <= low_us or max(averages) >= average_limit:
         return Result(name, FAIL, detail, source, values)
     if worst + RESOLUTION_US >= high_us or best - RESOLUTION_US <= low_us:
@@ -337,7 +345,7 @@ def check_reply_timing(records, speed=600):
 
 def check_start_and_stop(rows):
     name = "motor start and stuck-rotor timing, as the replies show them"
-    source = "main.c: start at input >= 47; stuck-rotor cut after 101 failed zero-crossing checks of 22.5 ms (2.27 s) below throttle 150, or 11 (0.25 s) at 150 and above (AM32.md section 18)"
+    source = "main.c: start at input >= 47; stuck-rotor cut after 101 failed zero-crossing checks of 22.5 ms (2.27 s) below throttle 300, or 11 (0.25 s) at 300 and above (AM32.md section 18)"
     nonzero = next((r for r in rows if r["throttle"] >= 48), None)
     if nonzero is None or not any(r["reply"] != "none" for r in rows):
         return Result(name, NA, "no throttle step or no replies", source)
@@ -356,7 +364,7 @@ def check_start_and_stop(rows):
                 break
     if stop is not None:
         elapsed = stop["t_ms"] - nonzero["t_ms"]
-        limit = (11 if nonzero["throttle"] >= 150 else 101) * STUCK_TIMEOUT_MS
+        limit = (11 if nonzero["throttle"] >= STUCK_STEP_THROTTLE else 101) * STUCK_TIMEOUT_MS
         text += "; replies went back to not-running at %.0f ms (%.0f ms after the step) with throttle still %d - the source's stuck-rotor cut needs at least %.0f ms of failed checks at this throttle" % (
             stop["t_ms"], elapsed, stop["throttle"], limit)
         values.update({"stopped": True, "stop_after_ms": elapsed})

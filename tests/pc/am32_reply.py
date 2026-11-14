@@ -2,10 +2,10 @@
 am32_reply.py - AM32's own reply encoder, ported line for line, and a waveform of its reply for the PIO receiver model.
 Test support for tests/pc (not a test itself): test_am32_reply_path.py and test_gcr_decode.py use it.
 
-make_dshot_package() is from AM32 Src/dshot.c (am32-firmware/AM32 at 55c96847, 2026-09-25). The reply bit period is the
+make_dshot_package() is from AM32 Src/dshot.c (am32-firmware/AM32 release 2.22; the file is unchanged from the 2026-09-25 reading). The reply bit period is the
 F421's, the only MCU family supported (the bench ESC's, read from the ESC with tools/esc_buddy): AM32 clocks the reply from
 the input-capture timer switched to PWM output, one timer period per bit, (PSC + 1) * (ARR + 1) / f_timer, with PSC =
-output_timer_prescaler from Src/signal.c checkDshot() and ARR from Mcu/f421/Src/IO.c (pr = 76, checked at v2.16, the
+output_timer_prescaler from Src/signal.c checkDshot() and ARR from Mcu/f421/Src/IO.c (pr = 76, checked at v2.22, the
 bench ESC's firmware).
 """
 
