@@ -325,8 +325,9 @@ def check_reply_integrity(records):
 
 
 def check_reply_timing(records, speed=600):
-    name = "reply bit time is the F421 one (the bench ESC's family)"
-    source = "Mcu/f421/Src/IO.c (AM32.md section 13): DSHOT600 reply bit 1.2833 us, twice that at DSHOT300"
+    name = "reply bit time is the F421 one at the speed we send"
+    source = ("Mcu/f421/Src/IO.c (AM32.md section 13): DSHOT600 reply bit 1.2833 us, twice that at DSHOT300; the ESC times "
+              "its reply from the speed it classified the line as (AM32.md section 3)")
     replies = [r["reply"] for r in records if r["reply"] is not None]
     if not replies:
         return Result(name, NA, "no replies", source)
@@ -337,6 +338,11 @@ def check_reply_timing(records, speed=600):
     detail = "measured %.3f us per reply bit, F421 figure %.4f us (%+.1f%%); the reply starts %.1f us after our frame ends (%.1f bit times; the source pads %d bit times of idle first)" % (
         bit, expected, off, delay, delay / bit, 14 if speed == 600 else 7)
     values = {"bit_us": bit, "expected_us": expected, "off_pct": off, "delay_us": delay}
+    other_speed = 300 if speed == 600 else 600
+    other = REPLY_BIT_US * 600 / other_speed
+    if abs(bit - other) / other * 100 <= REPLY_BIT_TOLERANCE_PCT:
+        return Result(name, FAIL, detail + "; that is the DSHOT%d reply bit: the ESC classified this DSHOT%d line as DSHOT%d"
+                      % (other_speed, speed, other_speed), source, values)
     if abs(off) > REPLY_BIT_TOLERANCE_PCT:
         return Result(name, WARN, detail + "; not an F421 ESC? identify it with tools/esc_buddy/esc_buddy_run.py --read "
                       "before trusting the speed classification", source, values)

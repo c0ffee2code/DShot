@@ -197,6 +197,13 @@ class ReplySideTests(unittest.TestCase):
             self.assertEqual(timing.status, check.PASS, speed)
             self.assertAlmostEqual(timing.values["off_pct"], 0, delta=0.1)
 
+    def test_a_reply_at_the_other_speed_fails_as_a_wrong_speed_classification(self):
+        for speed, units, other in ((600, 25.67, 300), (300, 12.83, 600)):
+            records = [{"reply": {"bit_units": units, "delay": 231}} for _ in range(20)]
+            timing = check.check_reply_timing(records, speed)
+            self.assertEqual(timing.status, check.FAIL, speed)
+            self.assertIn("classified this DSHOT%d line as DSHOT%d" % (speed, other), timing.detail)
+
     def test_start_and_stuck_rotor_report(self):
         throttles = [0] * 300 + [60] * 700
         replies = {i: NOT_RUNNING for i in range(110, 1000)}
