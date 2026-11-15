@@ -93,19 +93,27 @@ class PinSampler:
                 break
         return self.finish()
 
-    def edges(self, buf, bit, scratch, unit_ns=1000):
+    def edges(self, buf, bit, scratch, unit_ns=1000, idle_high=True):
         """Generator of (time, level) for one pin, the time in units of unit_ns nanoseconds (default 1000:
         microseconds; use 100 for a 10 MHz recording), so the edges are never all held as objects at once (a
         recording holds thousands). scratch is an array('I') the raw edges are written to; its length is
         the capacity. Raises OverflowError when the recording held more edges than that. self.last_count is
-        the number of edges once the generator has started."""
+        the number of edges once the generator has started.
+
+        idle_high=False is for a line that idles low (unidirectional DShot): the edge the recorder invents
+        at sample 0 is dropped and every level is inverted, so the edges read like a bidirectional frame's
+        and dshot_frame_decode decodes them with inverted_crc=False."""
         count = find_edges_raw(buf, len(buf) // 4, bit, scratch, len(scratch))
         self.last_count = count
         if count > len(scratch):
             raise OverflowError("recording holds " + str(count) + " edges, capacity " + str(len(scratch)))
-        for i in range(count):
+        first = 0
+        if not idle_high and count and scratch[0] == 0:     # sample 0 low, level 0: the invented edge
+            first = 1
+        flip = 0 if idle_high else 1
+        for i in range(first, count):
             value = scratch[i]
-            yield (value >> 1) * self.sample_ns // unit_ns, value & 1
+            yield (value >> 1) * self.sample_ns // unit_ns, (value & 1) ^ flip
 
     def close(self):
         self.sm.active(0)

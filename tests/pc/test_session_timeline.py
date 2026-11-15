@@ -196,7 +196,7 @@ class WholeSessionTests(unittest.TestCase):
                   "sample_every": "10", "update_interval_us": "1045", "bidir_motor_indices": "0",
                   "schedule_behind_at_ms_since_arm": "5,9"}
         (directory / "session.json").write_text(json.dumps({"session": "fake", "device": device}), encoding="utf-8")
-        (directory / "scenario.json").write_text(json.dumps({"motors": [{"pin": 6}]}), encoding="utf-8")
+        (directory / "scenario.json").write_text(json.dumps({"motors": [{"pin": 6, "bidirectional": True}]}), encoding="utf-8")
         return reply_ends_ms
 
     def test_lag_and_alignment_come_back_as_built(self):
@@ -217,6 +217,18 @@ class WholeSessionTests(unittest.TestCase):
             self.assertIsNotNone(lag)
             self.assertAlmostEqual(lag, self.LAG_MS, delta=0.1)
         self.assertEqual([round(b) for b in result["behind"]], [17, 21])   # 12 ms of arm() + 5 and 9
+
+    def test_a_unidirectional_line_is_read_inverted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            edges = []
+            for k in range(10):
+                # unidirectional DShot idles low and carries each bit in a high pulse: the bidirectional shape, level flipped
+                edges += [(t, 1 - level) for t, level in tx_frame_edges(48 << 5, 1000 + k * INSTR_PER_FRAME)]
+            self.build(directory)
+            (Path(directory) / "signal_observation.bin").write_bytes(packets({0: edge_payload(edges)}, start="first_pin=6 pins=6 marker=v2"))
+            (Path(directory) / "scenario.json").write_text(json.dumps({"motors": [{"pin": 6, "bidirectional": False}]}), encoding="utf-8")
+            result = session_timeline.build(session_timeline.load_session(directory))
+        self.assertEqual(len(result["lines"][0]["rows"]), 10)
 
     def test_the_picture_is_written(self):
         with tempfile.TemporaryDirectory() as directory:

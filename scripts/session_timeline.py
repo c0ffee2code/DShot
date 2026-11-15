@@ -228,7 +228,10 @@ def build(session):
     line_high = session["line_high"]
     result = {"lines": {}, "behind": behind_events_ms(device, line_high), "session": session}
     for line, payload in sorted(session["channels"].items()):
-        records = observer_edge_log.analyse(observer_edge_log.edges(payload))
+        # a line the scenario declares unidirectional idles low and has no reply: read it inverted, as session_summary does
+        unidirectional = any(motor.get("pin") == session["pins"].get(line) and not motor.get("bidirectional")
+                             for motor in session["scenario"].get("motors", []))
+        records = observer_edge_log.analyse(observer_edge_log.edges(payload, invert=unidirectional), unidirectional)
         rows = observer_stats.frame_table(records, 0)
         result["lines"][line] = {"rows": rows, "replies": wire_replies(records), "samples": [], "lags": [], "gaps": [], "placement": None}
     return result

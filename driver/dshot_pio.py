@@ -27,28 +27,36 @@ class UnsupportedOperationException(Exception):
         self.message=message
 
 # DShot TX. Sends the top 16 bits of each 32-bit FIFO word, MSB first, 8 cycles
-# per bit: high 3 cycles for a 0, 6 for a 1. The line idles low between frames.
-@asm_pio(sideset_init=PIO.OUT_LOW, out_shiftdir=PIO.SHIFT_LEFT, autopull=True, pull_thresh=16)
+# per bit: high 3 cycles for a 0, 6 for a 1. After the 16th bit it holds off
+# for 512 cycles (64 bit times) before it takes the next word, so frames start
+# at least 642 cycles apart (643 after a last bit of 0) however early one is
+# queued. The line is low between frames and through the hold-off.
+@asm_pio(sideset_init=PIO.OUT_LOW, out_shiftdir=PIO.SHIFT_LEFT, autopull=False, pull_thresh=16)
 def dshot():
     wrap_target()
-    label("start")
-    out(x, 1)            .side(0)    [1] # 2 cycles, LOW; stalls here when the FIFO is empty
-    jmp(not_x, "zero")   .side(1)    [2] # 3 cycles, HIGH
-    jmp("start")         .side(1)    [2] # 3 cycles, HIGH: bit 1
-    label("zero")
-    jmp("start")         .side(0)    [2] # 3 cycles, LOW: bit 0
+    pull()                 .side(0)       # waits here, LOW, for the next word
+    label("bit")
+    out(x, 1)              .side(0)  [1]  # 2 cycles, LOW
+    jmp(not_x, "zero")     .side(1)  [2]  # 3 cycles, HIGH
+    jmp(not_osre, "bit")   .side(1)  [2]  # 3 cycles, HIGH: bit 1; more bits left
+    label("gap")
+    set(x, 31)             .side(0)       # after bit 16: hold-off, 32 passes
+    label("hold")
+    jmp(x_dec, "hold")     .side(0)  [15] # 16 cycles a pass, LOW
     wrap()
+    label("zero")
+    jmp(not_osre, "bit")   .side(0)  [2]  # 3 cycles, LOW: bit 0; more bits left
+    jmp("gap")             .side(0)       # after bit 16 (bit 0)
 
 # Bidirectional DShot TX. dshot()'s bit timing with every level inverted: the
 # line idles high, which is how AM32 detects bidirectional mode while disarmed.
-# After the 16th bit it releases the pin (input, held high by the pull-up) so
-# the ESC can reply, and raises irq(rel(1)) to start the paired receiver. It
-# then holds off for 512 cycles (64 bit times) before it takes the next word,
-# so a word queued early is not sent while the ESC replies: AM32 drives the
-# line for its reply and listens again only afterwards. Bits are counted by
-# hand with a manual pull(), because autopull gives no point at which to
-# release. Both bit paths end in one tail, which drives the line high before
-# it releases it; a last 0 bit takes one more cycle to reach it. rel(1)
+# After the 16th bit it drives the line high, releases the pin (input, held
+# high by the pull-up) so the ESC can reply, and raises irq(rel(1)) to start
+# the paired receiver. It then holds off for 512 cycles (64 bit times) before
+# it takes the next word, so frames start at least 650 cycles apart (651 after
+# a last bit of 0) and the pin stays released for at least the hold-off,
+# however early the next word is queued. Bits are counted by hand with a
+# manual pull(), because autopull gives no point at which to release. rel(1)
 # reaches the receiver only if it runs on state machine id + 1 of the same
 # block.
 @asm_pio(sideset_init=PIO.OUT_HIGH, set_init=PIO.OUT_HIGH, out_shiftdir=PIO.SHIFT_LEFT, autopull=False)
@@ -204,7 +212,13 @@ class DShotPIO:
 
 
 class UnidirectionalDShot(DShotPIO):
-    """Sends commands only, with the plain DShot waveform; no reply capture."""
+    """
+    Sends commands only, with the plain DShot waveform; no reply capture.
+
+    The line idles low. Frames start at least 642 PIO cycles apart (134us at
+    DSHOT600, 268us at DSHOT300), however early one is queued; a send blocks
+    while four are queued.
+    """
 
     def __init__(self, state_machine_id, pin, dshot_speed=DSHOT_SPEEDS.DSHOT600):
         super().__init__(state_machine_id, pin, dshot_speed, dshot, 0x0)

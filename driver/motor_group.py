@@ -189,14 +189,13 @@ class MotorGroup:
         One command-loop tick: drain bidirectional replies, send one frame to
         every motor, advance arming.
 
-        Call it every UPDATE_INTERVAL_US, at a steady period. A call that
-        comes while a transmitter still holds a queued frame waits, busy,
-        until all have taken theirs, then sends: no frame is dropped, and
-        update() never queues more than one per motor. The drain comes before
-        the sends, because an undrained RX FIFO stalls the receiver. While
-        ARMING every motor is sent 0 whatever its throttle, and replies are
-        only counted for the reply gate, never published. Does nothing while
-        inactive, so it is safe before arm() and after deactivate().
+        Call it every UPDATE_INTERVAL_US, at a steady period. While a
+        transmitter still holds a queued frame it waits, busy, until all have
+        taken theirs, then sends: no frame is dropped, and update() queues at
+        most one per motor. While ARMING every motor is sent 0 whatever its
+        throttle, and replies are only counted for the reply gate, never
+        published. Does nothing while inactive, so it is safe before arm()
+        and after deactivate().
         """
         # The state is read again on every pass, so the one acted on below is
         # as fresh as the last look at the queues, and deactivate() ends the wait
@@ -236,7 +235,7 @@ class MotorGroup:
             if (utime.ticks_diff(now, self.arm_started_ms) >= self.arm_duration_ms
                     and self.bidir_ready(now)):
                 # Re-read, not the snapshot: a deactivate() on another core may have
-                # landed since, and ARMED over it would leave update() waiting for good
+                # landed since, and ARMED over it would leave update() waiting until the next deactivate()
                 if self.state == ARMING:
                     self.state = ARMED
         else:
