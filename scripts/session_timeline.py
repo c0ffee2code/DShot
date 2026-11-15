@@ -35,6 +35,7 @@ Panels:
   5. Spin-up: the ESC's real eRPM per line as a percentage of that motor's own settled speed, so all lines share one scale;
      small tick = first nonzero throttle frame, dot = where it reached 80% (the start KPI's spin-up, measured by
      observer_start_summary.spin_up), dashed line = the 80% level. A line with no dot never settled or never got there.
+     Settled speed is that of the first throttle step; a profile with later, higher steps plots them above 100%.
 """
 
 import argparse
@@ -428,7 +429,9 @@ def plot(result, out_path, title, from_ms=None, to_ms=None, show=False):
         axes["spinup"].annotate("spin-up: " + "; ".join(spin_labels), (0.005, 1), xycoords=("axes fraction", "axes fraction"),
                                 xytext=(0, -3), textcoords="offset points", ha="left", va="top", fontsize=8, color=P.INK_SECONDARY)
     axes["spinup"].axhline(100.0 * observer_start_summary.SPIN_UP_FRACTION, color=P.INK_SECONDARY, linewidth=0.8, linestyle=(0, (4, 3)))
-    axes["spinup"].set_ylim(-5, 125)
+    # A profile with later, higher steps plots above 100%; the scale grows to show them
+    plotted = [max(line.get_ydata()) for line in axes["spinup"].get_lines() if len(line.get_ydata())]
+    axes["spinup"].set_ylim(-5, max([125] + plotted) * 1.05 if max([125] + plotted) > 125 else 125)
     axes["spinup"].set_ylabel("% of settled", color=P.INK_SECONDARY, fontsize=9)
     axes["spacing"].set_ylabel("us", color=P.INK_SECONDARY, fontsize=9)
     axes["lag"].set_ylabel("ms", color=P.INK_SECONDARY, fontsize=9)

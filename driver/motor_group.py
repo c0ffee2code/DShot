@@ -51,7 +51,7 @@ class MotorGroup:
     READY_FRESH_MS = 50    # the latest at most this long ago
 
     # TEMPORARY: highest throttle set_throttle() accepts until higher ones are tested (BUG-005)
-    THROTTLE_CEILING = 250
+    THROTTLE_CEILING = 500
     # Lowest non-zero throttle; 1-47 are DShot commands, which this class does not send
     MIN_THROTTLE = 48
 
@@ -362,7 +362,7 @@ class MotorGroup:
 
         Args:
             motor_index: Motor index (0-based)
-            value: 0 (stop) or MIN_THROTTLE-THROTTLE_CEILING (48-250, a
+            value: 0 (stop) or MIN_THROTTLE-THROTTLE_CEILING (48-500, a
                 temporary bench ceiling). Negative values, 1-47 and anything
                 above the ceiling raise MotorGroupException.
 

@@ -57,7 +57,8 @@ found only by reading logs afterwards.
   218 of the 2,001 throttle values outside the command range (0 and 48 to 2047) give an
   own-frame capture that passes the CRC at some phase, and so do 9 of the values 1 to 47: 227 of
   2,048, the same count as item 1. At DSHOT300 the count is 197 of 2,001 (7 more in 1 to 47).
-  Within today's bench ceiling (`MotorGroup` sends only 0 and 48 to 250), 13 values pass at
+  Within that day's bench ceiling (`MotorGroup` sent only 0 and 48 to 250; *note 2026-11-15:* 500 now, BUG-005, count for
+  48 to 500 not made), 13 values pass at
   DSHOT600 and 15 at DSHOT300, all between 60 and 122. Throttles 67, 72, 93
   and 98 are among them at both speeds. No value passes at every phase (at most 28 of 64), so
   whether a given frame passes depends on the clock phase as well as the throttle. For the four

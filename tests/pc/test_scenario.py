@@ -341,14 +341,14 @@ class ThrottleProfileTest(unittest.TestCase):
             {"type": "hold", "throttle": 60, "duration_ms": 0}]}], "zero duration")
 
     def test_hold_throttle_out_of_range_is_rejected(self):
-        self.rejected([{"type": "hold", "throttle": 251, "duration_ms": 100}], "0..250")
-        self.rejected([{"type": "hold", "throttle": 2048, "duration_ms": 100}], "0..250")
-        self.rejected([{"type": "hold", "throttle": -1, "duration_ms": 100}], "0..250")
+        self.rejected([{"type": "hold", "throttle": 501, "duration_ms": 100}], "0..500")
+        self.rejected([{"type": "hold", "throttle": 2048, "duration_ms": 100}], "0..500")
+        self.rejected([{"type": "hold", "throttle": -1, "duration_ms": 100}], "0..500")
 
     def test_ramp_target_out_of_range_is_rejected(self):
-        self.rejected([{"type": "ramp", "to": 251, "step": 1, "duration_ms": 100}], "0..250")
-        self.rejected([{"type": "ramp", "to": 2048, "step": 1, "duration_ms": 100}], "0..250")
-        self.rejected([{"type": "ramp", "to": -1, "step": 1, "duration_ms": 100}], "0..250")
+        self.rejected([{"type": "ramp", "to": 501, "step": 1, "duration_ms": 100}], "0..500")
+        self.rejected([{"type": "ramp", "to": 2048, "step": 1, "duration_ms": 100}], "0..500")
+        self.rejected([{"type": "ramp", "to": -1, "step": 1, "duration_ms": 100}], "0..500")
 
 
 if __name__ == "__main__":

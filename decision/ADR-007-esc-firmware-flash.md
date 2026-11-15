@@ -103,7 +103,8 @@ and keeps no older layout (`.claude/rules/esc-buddy.md`).
   relies on, found one more change in behaviour the bench depends on (other parts of `Src/main.c` changed and were not compared, as
   listed above): the stuck-rotor protection switches
   from its long limit (2.27 s) to its short one (0.25 s) at adjusted throttle 300 instead of 150, so every throttle up to the bench's
-  250 ceiling now gets the long limit (BUG-009, amendment 2026-11-14).
+  250 ceiling now gets the long limit (BUG-009, amendment 2026-11-14). *Note 2026-11-15:* the ceiling is 500 now (BUG-005); throttles of
+  300 and more, which the throttle-step scenarios send, get the short limit.
 - **Amendment 2026-11-14: the unidirectional DSHOT600 speed-detection margin is accepted.**
   *Decision:* the driver sends the same pulse shape in every frame; there is no separate transmit program or shorter pulse
   for the arming frames to widen the 0.075 us margin (owner).

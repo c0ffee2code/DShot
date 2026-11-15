@@ -72,6 +72,10 @@ def start_block(lines, propeller_names, esc_mock):
         outside.append("the replies were played by the ESC mock")
     if not props_ok:
         outside.append("the propellers are not all %s (%s)" % (KPI_PROPELLER, ", ".join(sorted(set(names))) or "none recorded"))
+    planned = sorted({line["scenario_max_throttle"] for line in lines
+                      if line.get("mode") == "bidirectional" and line.get("scenario_max_throttle") not in (None, KPI_THROTTLE)})
+    if planned:
+        outside.append("the scenario's profile goes to throttle %s, the KPI's step is 0 -> %d" % (", ".join(str(t) for t in planned), KPI_THROTTLE))
     not_started = not outside and len(names) == KPI_MOTORS and len(commanded) < KPI_MOTORS
     if not not_started:
         if len(commanded) != KPI_MOTORS:

@@ -1,0 +1,182 @@
+{
+  "_comment": "Throttle-step pair: how the four motors' speed (eRPM) responds to throttle steps of 100 from 100 to 500 (each held 5 s: 100, 200, 300, 400, 500; 0 to 100 is the first step after arming), at DSHOT600 and DSHOT300, for the owner to look at in the session timeline. It is observational, not judged against a response-time limit. MATCHED PAIR with four_channel_bidirectional_steps_300.json: identical except for the speed; same motors (four bidirectional on GPIO 6-9, sm/rx 0/1, 2/3, 4/5, 6/7), arm window, poll_ms and profile. First use of throttles above 250 (the bench ceiling was 250 until 2026-11-15, BUG-005); at 300 and above AM32's stuck-rotor protection cuts a motor after 11 back-EMF timeouts instead of 101 (AM32.md section 18). expect: the CRC-valid share and the longest gap as in four_channel_bidirectional_600.json; min_median_erpm 10000 is a coarse floor over the whole run from the first step on (the median across all four holds), well under the 21,800 eRPM that throttle 100 reads on this bench (NORMAL_ERPM in observer_start_summary.py), so it only shows that the motors spun at all; it cannot judge each step. Not a start-KPI run: its first step is 0 -> 100, not 0 -> 215.",
+  "dshot_speed": "DSHOT600",
+  "duration_ms": 25000,
+  "arm_duration_ms": 2000,
+  "status_interval_ms": 5000,
+  "poll_ms": 10,
+  "expect": {
+    "max_gap_ms": 150,
+    "min_crc_valid_pct": {
+      "0": 99.0,
+      "1": 99.0,
+      "2": 99.0,
+      "3": 99.0
+    },
+    "min_median_erpm": {
+      "0": 10000,
+      "1": 10000,
+      "2": 10000,
+      "3": 10000
+    }
+  },
+  "motors": [
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 6,
+      "sm_id": 0,
+      "rx_sm_id": 1,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 200,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 300,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 400,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 500,
+          "duration_ms": 5000
+        }
+      ],
+      "bidirectional": true
+    },
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 7,
+      "sm_id": 2,
+      "rx_sm_id": 3,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 200,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 300,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 400,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 500,
+          "duration_ms": 5000
+        }
+      ],
+      "bidirectional": true
+    },
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 8,
+      "sm_id": 4,
+      "rx_sm_id": 5,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 200,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 300,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 400,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 500,
+          "duration_ms": 5000
+        }
+      ],
+      "bidirectional": true
+    },
+    {
+      "hardware": {
+        "name": "BETAFPV LAVA Series 1104",
+        "kv": 7200,
+        "magnets": 12,
+        "propeller": "Gemfan 2218 3-Blade"
+      },
+      "pin": 9,
+      "sm_id": 6,
+      "rx_sm_id": 7,
+      "profile": [
+        {
+          "type": "hold",
+          "throttle": 100,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 200,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 300,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 400,
+          "duration_ms": 5000
+        },
+        {
+          "type": "hold",
+          "throttle": 500,
+          "duration_ms": 5000
+        }
+      ],
+      "bidirectional": true
+    }
+  ],
+  "decode_every": 50
+}

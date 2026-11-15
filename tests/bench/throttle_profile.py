@@ -21,7 +21,7 @@
 MAX_THROTTLE = 2047
 # Mirrors MotorGroup.THROTTLE_CEILING (driver/motor_group.py), the temporary bench ceiling: a profile above it is a load
 # error, so a scenario never reaches the point where MotorGroup would reject it mid-run.
-THROTTLE_CEILING = 250
+THROTTLE_CEILING = 500
 # Mirrors MotorGroup.MIN_THROTTLE: DShot values 1-47 are commands, which
 # MotorGroup refuses, so a profile that would produce one is a load error.
 MIN_THROTTLE = 48

@@ -512,7 +512,7 @@ class ThrottleTest(GroupTestCase):
         group = self.make([uni(0, 6)])
         group.set_throttle(0, group.THROTTLE_CEILING)
         self.assertEqual(group.get_all_throttles(), [group.THROTTLE_CEILING])
-        for value in (group.THROTTLE_CEILING + 1, 300, 2047, 99999):
+        for value in (group.THROTTLE_CEILING + 1, 600, 2047, 99999):
             with self.assertRaises(MotorGroupException):
                 group.set_throttle(0, value)
         self.assertEqual(group.get_all_throttles(), [group.THROTTLE_CEILING])

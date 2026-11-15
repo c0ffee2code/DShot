@@ -67,7 +67,7 @@ recorded only when asked.
 ### ESC settings as configured
 
 The ESCs hold the vendor's settings except for the three below (owner's go for each write, via `tools/esc_buddy/`; the vendor's values, identity and
-wire facts: `specification/KM55A2_DEFAULTS.md`). Last read 2026-11-09/10 (after the 2.22 flash, layout 4): the four ESCs of each board identical to each other, the two boards differ in poles only.
+wire facts: `specification/KM55A2_DEFAULTS.md`). Last read 2026-11-09/10 (after the 2.22 flash, layout 4): the four ESCs of each board identical to each other, the two boards differ in poles only. Read again 2026-11-15, the four ESCs on GPIO 6-9: identical, the three rows below unchanged.
 
 | Setting | Byte | Vendor | Now | Why |
 |---------|------|--------|-----|-----|
@@ -84,6 +84,10 @@ wire facts: `specification/KM55A2_DEFAULTS.md`). Last read 2026-11-09/10 (after 
 - **What KV and poles do at the start test (AM32 2.16 source; poles checked on the bench on 2.22, BUG-009).** They only set a low-speed duty cap with a floor of 400/2000, and
   throttle 215 asks for about 194/2000, so the cap never limits; poles have no effect at all (`32/14` and `32/12` are both 2). What shapes the start is startup
   power (100). Detail and line numbers: BUG-009, "KV and poles do not act at this start". Bench check on 2.22 (poles 14 against 12, eRPM at throttle 215): no effect beyond the run-to-run spread; figures in BUG-009.
+- **Ramp rate and minimum duty cycle (read 2026-11-15, the four ESCs on GPIO 6-9, identical).** Ramp rate (byte 5) 160 = 16% duty per ms; minimum duty
+  cycle (byte 6) 1 = 0.5%. Both are the values AM32 2.22 writes when it converts an older settings block (`Src/main.c` L618-619), so they came with the
+  2.22 flash and nobody set them. A ramp rate of 160 does not lower AM32's built-in ramp limits (16, 6 and 2% duty per ms at high speed, low speed and
+  start; `specification/AM32.md` section 20).
 - Read them again with `tools/esc_buddy/` (`--read`) before relying on this table. Do not change this section without the owner's go.
 
 ## Architecture
@@ -261,7 +265,7 @@ What this driver guarantees, and what it does not.
 |-----------|-------|
 | Arming success rate | **≥ 99%** of `arm()` attempts reach `ARMED` |
 | Arming duration | **≤ 3.0 s** from `arm()` to `ARMED`, for every configured motor |
-| Throttle range | `0` (stop) or `48`-`250`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) and, as a temporary bench ceiling, anything above `250` (`THROTTLE_CEILING` in `driver/dshot_pio.py`, mirrored in `tests/bench/throttle_profile.py`; owner, 2026-10-19: nothing higher is tested yet, raise it when higher throttles are tested) |
+| Throttle range | `0` (stop) or `48`-`500`; `MotorGroup` rejects `1`-`47` (DShot commands, not supported yet) and, as a temporary bench ceiling, anything above `500` (`MotorGroup.THROTTLE_CEILING` in `driver/motor_group.py`, mirrored in `tests/bench/throttle_profile.py`; BUG-005: the first runs above 250 were the throttle-step scenarios up to 500 on 2026-11-15, bare shafts; raise it further when higher throttles are tested) |
 | ESC firmware | AM32 only |
 | AM32 input match | Measured on the wire with a second Pico recording the signal lines, no ESC (2026-10-28, unidirectional frames, DSHOT600 and DSHOT300, `tests/bench/wingman/tools/observer_am32_table.py`): every bit reads the same under AM32's own decision rule as in our decoder (0 of 74,752 differ per run), with margins of 0.18 / 0.44 us (DSHOT600) and 0.37 / 0.88 us (DSHOT300) for the 0 and 1 bits; frame length within 2.7% of the window AM32 learns (limit 6.25%); correct CRC polarity and no command values in every frame; largest gap between frames 1.1 ms (limit 500 ms); 4 lines, 3 runs at DSHOT600 and 2 at DSHOT300, identical run to run (properties of the PIO waveform; the observer resolves 0.1 us). With one ESC attached (bidirectional, single motor, throttle 100, DSHOT600 and DSHOT300): the ESC's first reply after 104 frames (latch 101 in AM32's source), every frame answered outside its 301 ms arming silence (which starts 1020 ms after our first frame, as the source's 1.02 s gate predicts), no CRC errors in 9,309 replies per run, the start glitch `data12=2` sent by the ESC itself for 6-9 replies after the throttle step (BUG-009). Speed detection on AM32 2.22 (F421, from its source; recordings of 2026-11-14): bidirectional frames at both speeds and unidirectional DSHOT300 classify with margin; unidirectional DSHOT600 at throttle 0 classifies by 0.075 us, under the observer's resolution. A PC model finds DSHOT600 at every starting phase with nominal clocks; the small margin is an accepted limit, and the pulse shape is not changed for it (`decision/ADR-007-esc-firmware-flash.md`, amendment 2026-11-14). Other motors, throttles and ESCs not yet covered |
 | Start quality | **Pending - not yet guaranteed.** Scope (owner, 2026-11-02): all four motors with Gemfan 2218 3-Blade props (no RPM disks, no heavier or draggier props). Target: **≥ 99%** of runs that succeed when jumped from `0` to throttle 215: all four motors spin up and hold, and the slowest spin-up is within 0.5 s (provisional limit); a drone with fewer than four motors turning does not fly. Defined in `bug-reports/BUG-009-motors-sometimes-start-rough.md` ("Current KPI"), measured from the observer's telemetry in each session's `summary.json`. Baseline 2026-11-01: all four held in 28 of 28 runs, 26 of 28 fully succeed (93%, exact one-sided 95% lower bound 79%). Second batch 2026-11-02, 32 runs: 30 of 32 fully succeed, both failures a slow GPIO 6 spin-up; the cause is not found (BUG-009 "Result 4" to "Result 6") |

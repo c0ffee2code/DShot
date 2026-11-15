@@ -81,5 +81,6 @@ display (`tests/pc/test_esc_buddy_settings.py`).
   a 14-pole, ~2220 KV motor whatever is on the shaft.
 - In layout 2, bytes 5-16 hold the firmware name. `minimum_duty_cycle` and `max_ramp`, settings in the newer layout,
   are **not settings in firmware 2.16** but built-in values. That holds for the shipped firmware only: the bench ESCs
-  run 2.22 (layout 4), where both are settings (`AM32.md`; values in the README, "ESC settings as configured").
+  run 2.22 (layout 4), where both are settings (`AM32.md`, sections 19 and 20). Their values on the bench ESCs are in the
+  README's "ESC settings as configured".
 - The stored KV and poles assumed a 14-pole, 2220 KV motor; the fitted motors are BETAFPV LAVA 1104 (7200 KV, 12 magnets). What was changed to match: the top-level README, "ESC settings as configured".

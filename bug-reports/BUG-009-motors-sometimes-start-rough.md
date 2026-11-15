@@ -181,6 +181,8 @@ bench sends (up to the 250 ceiling), the start-quality throttle 215 included, is
 zero crossings is cut about 2.27 s after the last one, not 0.25 s, so a cut 0.25-0.3 s after the step on 2.22 is not this mechanism.
 This is expected to matter with the RPM disks, which are heavier than the props (owner): a disk that does not catch is driven for up to
 about 2.27 s before the ESC cuts it.
+*Note 2026-11-15:* the bench ceiling is 500 now (BUG-005), and the throttle-step scenarios hold 300, 400 and 500, where the short limit
+(0.25 s) applies. The start test at 215 is unaffected.
 
 **Result 3: start-health baseline at the KPI throttle 215 (2026-11-01 21:29-21:52, 28 runs, Gemfan 2218 3-Blade on all 4 motors, four-channel bidirectional
 scenario, `decode_every` 50, spy recording; telemetry-based, because the optical disks are not mounted).**

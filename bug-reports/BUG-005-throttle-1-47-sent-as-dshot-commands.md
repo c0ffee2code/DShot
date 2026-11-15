@@ -22,6 +22,7 @@ sending the last throttle, the ESC keeps receiving valid frames and its signal-l
 not fire (ADR-004, the 2026-11-11 note under "The library reports facts, not health").
 *Paths (2026-11-11):* `tests/harness/throttle_profile.py` is now `tests/bench/throttle_profile.py`
 (tests restructured in commit `2cbde0c`).
+*Amendment 2026-11-15: the temporary bench ceiling is 500.* Decision: `THROTTLE_CEILING` is 500 (`MotorGroup` in `driver/motor_group.py`, mirrored in `tests/bench/throttle_profile.py`). Motivation: throttle-step scenarios up to 500 are run on the bench, and the ceiling was to be raised when higher throttles are tested. Consequences: values up to 500 are accepted by `MotorGroup` and the scenario loader; the first runs above 250 are the two throttle-step scenarios `four_channel_bidirectional_steps_600.json` and `_300.json` (100 to 500 in steps of 100, 5 s each), run on 2026-11-15 on bare shafts (sessions 2026-11-15_19-08-56 and 19-09-51): both passed, no motor was cut, no damaged replies; the limit stays temporary. Source fact (`specification/AM32.md` section 18): at a DShot value of 300 or above, AM32's stuck-rotor protection cuts the motor after 11 back-EMF timeouts (about 0.25 s) instead of 101 (about 2.27 s).
 **Severity:** High (latent) - no current scenario hits it, but any throttle ramp from 0 does.
 Consequences include ESC EEPROM writes.
 **Component:** `driver/motor_group.py` (`clamp_throttle()`, `set_throttle()`),

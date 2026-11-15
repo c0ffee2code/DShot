@@ -107,6 +107,9 @@ class StartBlockTest(unittest.TestCase):
         self.assertEqual("not_started", start["status"])
         self.assertFalse(start["in_kpi_scope"])
         self.assertIn("never reached the throttle step (0 of 4 motors commanded)", start_kpi.start_text(start))
+        planned = [dict(l, scenario_max_throttle=400) for l in never]        # a multi-step scenario that never started is not a KPI run either
+        self.assertEqual("out_of_scope", block(planned)["status"])
+        self.assertEqual("not_started", block([dict(l, scenario_max_throttle=215) for l in never])["status"])
 
     def test_a_run_that_commanded_nothing_with_other_props_is_out_of_scope(self):
         start = block([line(6, None, commanded=False)], props=["none"] * 4)
